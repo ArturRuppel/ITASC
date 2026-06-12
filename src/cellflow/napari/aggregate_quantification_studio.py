@@ -50,6 +50,7 @@ from cellflow.aggregate_quantification.catalog import (
     save_catalog,
 )
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
     PluginEntry,
@@ -166,6 +167,7 @@ class AggregateQuantificationStudioWidget(QWidget):
         layout.addWidget(CollapsibleSection("Catalogue", catalogue, expanded=True))
 
         self._build_plugins_section(layout)
+        self._build_plot_section(layout)
 
         self._reload_plugins()
         self._refresh_table()
@@ -301,10 +303,10 @@ class AggregateQuantificationStudioWidget(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(2)
-        header.addWidget(QLabel("Expand a plugin to use it:"))
+        header.addWidget(QLabel("Build a quantity, or use a tool:"))
         header.addStretch(1)
         reload_btn = QPushButton("↻")
-        reload_btn.setToolTip("Re-scan for plugins.")
+        reload_btn.setToolTip("Re-scan for builders and tools.")
         action_button(reload_btn)
         reload_btn.clicked.connect(self._reload_plugins)
         header.addWidget(reload_btn)
@@ -321,7 +323,14 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plugin_host_layout.setAlignment(Qt.AlignTop)
         col.addWidget(self._plugin_host)
 
-        layout.addWidget(CollapsibleSection("Plugins", container, expanded=True))
+        layout.addWidget(CollapsibleSection("Build & tools", container, expanded=True))
+
+    def _build_plot_section(self, layout) -> None:
+        """The Plot area: every registered plot, grouped by family and gated by
+        product availability. Separate from building — it plots whatever the
+        in-scope positions have built."""
+        self._plot_area = PlotAreaWidget(self.viewer)
+        layout.addWidget(CollapsibleSection("Plots", self._plot_area, expanded=True))
 
     # ----------------------------------------------------------- catalog actions
     def _set_catalog_status(self, message: str) -> None:
@@ -588,11 +597,6 @@ class AggregateQuantificationStudioWidget(QWidget):
             return
         for entry in self._plugin_entries:
             body = entry.factory(self.viewer)
-            # A group plugin that owns a quantity's build delegates execution to
-            # the studio's centralized (threaded, status-refreshed) build path.
-            set_build_callback = getattr(body, "set_build_callback", None)
-            if callable(set_build_callback):
-                set_build_callback(self._run_quantity_build)
             section = CollapsibleSection(entry.display_name, body, expanded=False)
             section._toggle.toggled.connect(
                 lambda checked, e=entry: self._on_plugin_toggled(e, checked)
@@ -625,9 +629,12 @@ class AggregateQuantificationStudioWidget(QWidget):
         return cached
 
     def _push_context(self) -> None:
-        """Feed every plugin the current scope and refresh availability."""
+        """Feed every plugin + the Plot area the current scope, refresh availability."""
         for plugin in self._plugin_sections.values():
             self._push_context_to(plugin.body)
+        plot_area = getattr(self, "_plot_area", None)
+        if plot_area is not None:
+            self._push_context_to(plot_area)
         self._update_plugin_availability()
 
     def _push_context_to(self, body: QWidget) -> None:

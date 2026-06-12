@@ -74,10 +74,6 @@ class AnalysisPlugin(QWidget):
     #: checkbox for a selection where no in-scope position supplies them. Empty
     #: means "always available" (e.g. a cohort summary).
     requires: ClassVar[tuple[str, ...]] = ()
-    #: ``quantity_id``s whose build UI this plugin provides itself (a "group"
-    #: plugin that unifies compute + plot). The studio suppresses the generic
-    #: auto-builder for these so a quantity is not offered twice.
-    owns_quantities: ClassVar[tuple[str, ...]] = ()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)

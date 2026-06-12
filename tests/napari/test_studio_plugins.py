@@ -24,17 +24,16 @@ def test_available_studio_plugins_has_contacts_builder_and_analysis_plugins():
     assert builder.requires == ("cell_labels_path",)
 
 
-def test_group_plugin_suppresses_its_quantitys_auto_builder():
+def test_every_quantifier_gets_a_generic_builder():
     entries = sp.available_studio_plugins(build_callback=lambda *a: None)
     ids = {e.plugin_id for e in entries}
-    # The Shape group plugin owns all three shape quantities, so none get a
-    # generic auto-builder.
-    assert "shape" in ids
-    assert "build:cell_shape" not in ids
-    assert "build:nucleus_shape" not in ids
-    assert "build:shape_relational" not in ids
-    # Quantities without a dedicated plugin keep their free auto-builder.
-    assert "build:contacts" in ids
+    # Plotting is no longer a plugin concern, so no quantity is suppressed — every
+    # registered quantifier gets a generic builder (it is plotted in the Plot area).
+    for quantity_id in ("cell_shape", "nucleus_shape", "shape_relational", "contacts"):
+        assert f"build:{quantity_id}" in ids
+    # The retired plot plugins are gone from the tool list.
+    assert "shape" not in ids
+    assert "track_dynamics" not in ids
 
 
 def test_position_inputs_from_record_maps_catalogue_keys():

@@ -118,6 +118,25 @@ def output_for_record(quantifier: Quantifier, record: dict) -> Path:
     return quantifier.default_output(position_inputs_from_record(record))
 
 
+def built_quantity_ids(records: Iterable[dict]) -> frozenset[str]:
+    """The ``quantity_id``\\s built for at least one of *records*.
+
+    This is the *product availability* the plot area gates on: a plot whose
+    ``consumes`` is a subset of this set is live for the given scope. Mirrors the
+    per-quantifier ``is_built(output_for_record(...))`` check the builder uses, so
+    "built" means the same thing on both sides of the producer/consumer seam.
+    """
+    record_list = list(records)
+    built: set[str] = set()
+    for q_cls in available_quantifiers():
+        quantifier = q_cls()
+        for record in record_list:
+            if quantifier.is_built(output_for_record(quantifier, record)):
+                built.add(quantifier.quantity_id)
+                break
+    return frozenset(built)
+
+
 def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list[dict]:
     """The records whose inputs supply every field in *requires*."""
     needed = tuple(requires)
@@ -132,22 +151,19 @@ def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list
 
 
 def available_studio_plugins(*, build_callback: BuildCallback) -> list[PluginEntry]:
-    """All plugin entries: builders (one per quantifier) then meta plugins.
+    """All plugin entries: builders (one per quantifier) then the remaining tools.
 
-    A quantity whose build UI a group plugin owns (``owns_quantities``) gets no
-    generic auto-builder entry — the group plugin offers compute + plot together.
+    Every registered quantifier gets a generic builder — plotting is no longer a
+    plugin concern (it lives in the Plot area over the
+    :class:`~cellflow.napari.aggregate_quantification.plots.Plot` registry), so a
+    quantity is built here and plotted there. The surviving analysis plugins are
+    the non-plot tools (NLS classification, contacts visualizer, catalogue
+    summary).
     """
     plugin_classes = available_analysis_plugins()
-    owned = {
-        quantity_id
-        for p_cls in plugin_classes
-        for quantity_id in getattr(p_cls, "owns_quantities", ())
-    }
     entries: list[PluginEntry] = []
     for q_cls in available_quantifiers():
         quantifier = q_cls()
-        if quantifier.quantity_id in owned:
-            continue
         entries.append(
             PluginEntry(
                 plugin_id=f"build:{quantifier.quantity_id}",
