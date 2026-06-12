@@ -127,14 +127,14 @@ class _FrameDynamicsPlot(PoolPlot):
 
 class CellFrameDynamicsPlot(_FrameDynamicsPlot):
     plot_id = "cell_dynamics_frame"
-    display_name = "Cell · per-frame motion"
+    display_name = "Cell motion"
     consumes = ("cell_dynamics",)
     label_field = _CELL_FIELD
 
 
 class NucleusFrameDynamicsPlot(_FrameDynamicsPlot):
     plot_id = "nucleus_dynamics_frame"
-    display_name = "Nucleus · per-frame motion"
+    display_name = "Nucleus motion"
     consumes = ("nucleus_dynamics",)
     label_field = _NUCLEUS_FIELD
 
@@ -153,14 +153,14 @@ class _TrackDynamicsPlot(PoolPlot):
 
 class CellTrackDynamicsPlot(_TrackDynamicsPlot):
     plot_id = "cell_dynamics_track"
-    display_name = "Cell · per-track summary"
+    display_name = "Cell summary"
     consumes = ("cell_dynamics",)
     label_field = _CELL_FIELD
 
 
 class NucleusTrackDynamicsPlot(_TrackDynamicsPlot):
     plot_id = "nucleus_dynamics_track"
-    display_name = "Nucleus · per-track summary"
+    display_name = "Nucleus summary"
     consumes = ("nucleus_dynamics",)
     label_field = _NUCLEUS_FIELD
 
@@ -193,13 +193,13 @@ class _TissueDynamicsPlot(PoolPlot):
 
 class CellTissueDynamicsPlot(_TissueDynamicsPlot):
     plot_id = "cell_dynamics_tissue"
-    display_name = "Cell · per-tissue ensemble"
+    display_name = "Cell ensemble"
     consumes = ("cell_dynamics",)
 
 
 class NucleusTissueDynamicsPlot(_TissueDynamicsPlot):
     plot_id = "nucleus_dynamics_tissue"
-    display_name = "Nucleus · per-tissue ensemble"
+    display_name = "Nucleus ensemble"
     consumes = ("nucleus_dynamics",)
 
 

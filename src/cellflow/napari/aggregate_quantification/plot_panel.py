@@ -134,13 +134,18 @@ class ValueSource:
     adaptive: bool = False
 
 
-#: level key → the pooled column whose presence makes that level meaningful, and
-#: a short human tag. A level is offered only when its entity column exists (you
-#: cannot aggregate "per cell" a table that carries no ``cell_id``). The tags label
-#: the Level selector and the stats read-out — the *only* place the level appears
-#: now (it used to also be baked into every value name, which duplicated it).
+#: level key → the pooled column whose presence makes the *aggregation* level
+#: meaningful. A level is offered (in the Level selector) only when its entity
+#: column exists — you cannot aggregate "per cell" a table that carries no
+#: ``cell_id``.
 _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
-_LEVEL_LABELS = {"cell": "per cell", "position": "per position"}
+#: Short human labels, shared by the native-grain tag in the value picker, the
+#: Level selector, and the stats read-out. ``frame`` is a *native grain* only
+#: (data recorded per frame); it is never an aggregation level, so it appears as
+#: a tag but not in the Level selector. The grain is shown once, in the picker
+#: tag — the level qualifier is no longer baked into the value names too.
+_LEVEL_LABELS = {"frame": "per frame", "cell": "per cell", "position": "per position",
+                 "date": "per date"}
 #: Skip building filter checkboxes for a column with more distinct values than
 #: this — a long checkbox wall (e.g. hundreds of position ids) helps no one.
 _FILTER_MAX_VALUES = 40
@@ -470,14 +475,21 @@ class PlotPanel(QWidget):
     # ---------------------------------------------------------- value catalog
     def _populate_value_combo(self) -> None:
         """Fill the value picker — flat columns (single mode) or source-grouped
-        entries with disabled headers (catalog mode)."""
+        entries with disabled headers (catalog mode).
+
+        Each value carries a bracketed native-grain tag (``[per frame]`` / ``[per
+        cell]`` / ``[per position]``) so the picker reveals which data is recorded
+        at which granularity — the thing the value names used to (redundantly)
+        spell out. The brackets keep it distinct from the Level *selector*, which
+        chooses the aggregation unit rather than describing the data."""
         combo = self._value_combo
         blocked = combo.blockSignals(True)
         combo.clear()
         self._source_by_index = {}
         if self._catalog is None:
+            tag = _native_level_tag(self._df)
             for name in self._value_columns:
-                combo.addItem(name, name)
+                combo.addItem(f"{name}  ·  [{tag}]" if tag else name, name)
         else:
             last_source = None
             for src in self._catalog:
@@ -486,7 +498,9 @@ class PlotPanel(QWidget):
                     item = combo.model().item(combo.count() - 1)
                     item.setEnabled(False)
                     last_source = src.source
-                combo.addItem(f"  {src.label}", src.value)
+                tag = _native_level_tag(src.df)
+                label = f"  {src.label}  ·  [{tag}]" if tag else f"  {src.label}"
+                combo.addItem(label, src.value)
                 self._source_by_index[combo.count() - 1] = src
             # Start on the first real (non-header) value.
             for index in range(combo.count()):
@@ -1607,6 +1621,19 @@ def _py(value):
         return value.item()  # numpy scalar -> Python scalar
     except AttributeError:
         return value
+
+
+def _native_level_tag(df: pd.DataFrame) -> str:
+    """Short tag for a table's finest independent unit, shown beside each value so
+    the picker reveals which data is per-frame vs per-cell vs per-position."""
+    columns = df.columns
+    if "frame" in columns and "cell_id" in columns:
+        return _LEVEL_LABELS["frame"]
+    if "cell_id" in columns:
+        return _LEVEL_LABELS["cell"]
+    if "position_id" in columns:
+        return _LEVEL_LABELS["position"]
+    return ""
 
 
 def _fmt(value: float) -> str:

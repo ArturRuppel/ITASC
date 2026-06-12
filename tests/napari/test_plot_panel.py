@@ -139,17 +139,28 @@ def test_level_combo_constrained_to_supported_levels():
     panel.deleteLater(); app.processEvents()
 
 
-def test_value_picker_omits_level_tag():
-    # The aggregation level lives only in the Level selector now, not baked into
-    # every value name (which duplicated the qualifier).
+def test_value_picker_tags_native_grain():
+    # The native grain is shown once, as a bracketed tag in the value picker — the
+    # data here is recorded per frame (frame + cell_id columns).
     app = _app()
     panel = _panel()  # carries frame + cell_id
     texts = [panel._value_combo.itemText(i) for i in range(panel._value_combo.count())]
-    assert texts == ["area"]
-    assert "·" not in texts[0] and "per " not in texts[0]
-    # The level qualifier is still offered — just in the dedicated selector.
+    assert texts == ["area  ·  [per frame]"]
+    # The aggregation level is a separate concern, in the dedicated selector.
     levels = [panel._level_combo.itemData(i) for i in range(panel._level_combo.count())]
     assert "cell" in levels and "position" in levels
+
+
+def test_native_grain_tag_tracks_the_table():
+    # A per-position table (no cell_id / frame) tags as "per position".
+    app = _app()
+    tissue = pd.DataFrame({
+        "condition": ["A", "B"], "date": ["d1", "d2"], "position_id": ["p1", "p2"],
+        "order_param": [0.4, 0.6],
+    })
+    panel = PlotPanel(tissue, value_columns=("order_param",),
+                      group_columns=("condition", "date", "position_id"))
+    assert panel._value_combo.itemText(0) == "order_param  ·  [per position]"
     panel.deleteLater(); app.processEvents()
 
 
