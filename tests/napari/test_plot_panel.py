@@ -8,11 +8,25 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import QApplication
 
+from cellflow.aggregate_quantification.reduce import Collapse
 from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel, ValueSource
 
 
 def _app():
     return QApplication.instance() or QApplication([])
+
+
+def _set_level(panel, level: str) -> None:
+    """Drive the panel's Reduce editor to the collapse equivalent of the old Level
+    dropdown (one collapse to the named unit), then re-render."""
+    by_for = {
+        "cell": ("condition", "date", "position_id", "cell_id"),
+        "position": ("condition", "date", "position_id"),
+        "date": ("condition", "date"),
+    }[level]
+    by = tuple(c for c in by_for if c in panel._df.columns)
+    panel._collapse_editor.set_columns(panel._collapse_columns(), (Collapse(by=by, stat="mean"),))
+    panel._render()
 
 
 def _df():
@@ -119,9 +133,10 @@ def test_filter_skips_single_value_columns():
     panel.deleteLater(); app.processEvents()
 
 
-def test_level_combo_constrained_to_supported_levels():
+def test_collapse_columns_exclude_absent_entities():
     app = _app()
-    # A per-position table (no cell_id) must not offer "per cell".
+    # A per-position table (no cell_id) must not offer "cell_id" as a collapse axis,
+    # and its effective unit can't be "cell".
     tissue = pd.DataFrame({
         "condition": ["A", "B"],
         "date": ["d1", "d2"],
@@ -130,12 +145,11 @@ def test_level_combo_constrained_to_supported_levels():
     })
     panel = PlotPanel(tissue, value_columns=("order_param",),
                       group_columns=("condition", "date", "position_id"))
-    model = panel._level_combo.model()
-    by_level = {panel._level_combo.itemData(i): i for i in range(panel._level_combo.count())}
-    assert model.item(by_level["cell"]).isEnabled() is False
-    assert model.item(by_level["position"]).isEnabled() is True
-    # The selection landed on an enabled level, not the disabled "cell" default.
-    assert panel._level_combo.currentData() != "cell"
+    columns = panel._collapse_columns()
+    assert "cell_id" not in columns
+    assert "position_id" in columns
+    # The default pipeline collapses to the finest unit present — position, not cell.
+    assert panel._effective_level() != "cell"
     panel.deleteLater(); app.processEvents()
 
 
@@ -146,9 +160,10 @@ def test_value_picker_tags_native_grain():
     panel = _panel()  # carries frame + cell_id
     texts = [panel._value_combo.itemText(i) for i in range(panel._value_combo.count())]
     assert texts == ["area  ·  [per frame]"]
-    # The aggregation level is a separate concern, in the dedicated selector.
-    levels = [panel._level_combo.itemData(i) for i in range(panel._level_combo.count())]
-    assert "cell" in levels and "position" in levels
+    # The aggregation unit is a separate concern, in the dedicated Reduce editor:
+    # the table carries both per-cell and per-position nesting to collapse over.
+    columns = panel._collapse_columns()
+    assert "cell_id" in columns and "position_id" in columns
 
 
 def test_native_grain_tag_tracks_the_table():
@@ -254,6 +269,29 @@ def test_closing_detached_window_redocks_plot():
     app.processEvents()
 
 
+def test_collapse_pipeline_drives_the_unit():
+    """The Reduce editor's collapse pipeline — not a Level dropdown — sets the
+    independent unit: per-cell counts every cell, per-position collapses each
+    position to one unit (climbing to a coarser unit cuts the unit count)."""
+    from cellflow.aggregate_quantification.plotting import summary_table
+    app = _app()
+    # 12 cells; position_id p1/p2 each appear under both conditions → 4 positions.
+    panel = _panel()
+    panel._group_checks["condition"].setChecked(True)
+    panel._plot_combo.setCurrentText("box")
+
+    _set_level(panel, "cell")
+    cell_n = int(summary_table(panel._plot_df, panel.current_spec())["n"].sum())
+
+    _set_level(panel, "position")
+    pos_n = int(summary_table(panel._plot_df, panel.current_spec())["n"].sum())
+
+    assert cell_n == 12  # one unit per cell
+    assert pos_n == 4    # one unit per (condition, position)
+    assert pos_n < cell_n  # climbing to a coarser unit reduces the datapoint count
+    panel.deleteLater(); app.processEvents()
+
+
 def test_each_control_rerenders_without_error():
     app = _app()
     panel = _panel()
@@ -263,7 +301,7 @@ def test_each_control_rerenders_without_error():
         panel._plot_combo.setCurrentText(plot)
         assert panel._canvas is not None
 
-    panel._level_combo.setCurrentIndex(1)  # per position
+    _set_level(panel, "position")  # collapse to per position
     panel._stat_combo.setCurrentText("count")
     panel._group_checks["condition"].setChecked(True)
     panel._group_checks["class_label"].setChecked(True)
@@ -440,7 +478,7 @@ def test_level_shapes_load_target_and_status():
         panel = PlotPanel(_df(), value_columns=("area",),
                           group_columns=("condition", "date", "position_id", "class_label", "frame"),
                           target_resolver=resolver, default_plot="strip")
-        panel._level_combo.setCurrentIndex(panel._level_combo.findData(level))
+        _set_level(panel, level)
         artist = next(c for c in panel._canvas.figure.axes[0].collections
                       if hasattr(c, _PICK_ROWS_ATTR))
         offsets = np.asarray(artist.get_offsets(), dtype=float)

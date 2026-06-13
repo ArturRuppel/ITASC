@@ -63,7 +63,8 @@ from cellflow.aggregate_quantification.plotting import (
     summary_table,
     write_csv,
 )
-from cellflow.aggregate_quantification.reduce import Filter, run_pipeline
+from cellflow.aggregate_quantification.reduce import Collapse, Filter, run_pipeline
+from cellflow.napari.aggregate_quantification.reduce_editor import CollapsePipelineEditor
 from cellflow.napari.aggregate_quantification._mpl_toolbar import theme_toolbar_icons
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
@@ -262,7 +263,12 @@ class PlotPanel(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
-        layout.addWidget(CollapsibleSection("Plot", self._build_analytical(), expanded=True))
+        # The analytical controls split along the pipeline: Aggregate (what value /
+        # statistic / group axes) → Reduce (the collapse pipeline that fixes the
+        # independent unit) → Plot (the rendering and its plot-specific options).
+        layout.addWidget(CollapsibleSection("Aggregate", self._build_aggregate(), expanded=True))
+        layout.addWidget(CollapsibleSection("Reduce", self._build_reduce(), expanded=True))
+        layout.addWidget(CollapsibleSection("Plot", self._build_plot(), expanded=True))
         layout.addWidget(CollapsibleSection("Filter", self._build_filters(), expanded=False))
         layout.addWidget(CollapsibleSection("Styling", self._build_styling(), expanded=False))
 
@@ -350,8 +356,10 @@ class PlotPanel(QWidget):
         self._sync_plot_options()
         self._render()
 
-    # ----------------------------------------------------------- analytical UI
-    def _build_analytical(self) -> QWidget:
+    # ----------------------------------------------------------- aggregate UI
+    def _build_aggregate(self) -> QWidget:
+        """The Aggregate section: which value to plot, the summary statistic, and
+        the categorical group axes the comparison splits on."""
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
@@ -360,18 +368,6 @@ class PlotPanel(QWidget):
         self._value_combo = _shrinkable(QComboBox())
         self._populate_value_combo()
         col.addLayout(_labelled("Value:", self._value_combo))
-
-        self._level_combo = _shrinkable(QComboBox())
-        # The independent unit for error bars / comparisons. "Per cell" collapses
-        # each track's frames to one value first (no frame is its own datapoint);
-        # the coarser levels climb to the field of view and the biological replicate.
-        self._level_combo.addItem("Per cell (track)", "cell")
-        self._level_combo.addItem("Per position", "position")
-        self._level_combo.addItem("Per date (replicate)", "date")
-        col.addLayout(_labelled("Level:", self._level_combo))
-
-        self._plot_combo = _combo(_PLOT_TYPES)
-        col.addLayout(_labelled("Plot:", self._plot_combo))
 
         self._stat_combo = _combo(("mean", "median", "count"))
         col.addLayout(_labelled("Stat:", self._stat_combo))
@@ -390,19 +386,44 @@ class PlotPanel(QWidget):
         col.addLayout(self._group_grid)
         self._rebuild_group_checks()
 
+        # The value combo may swap the active product (catalog mode); the stat is a
+        # pure re-render.
+        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+        self._stat_combo.currentIndexChanged.connect(self._render)
+        return body
+
+    # -------------------------------------------------------------- reduce UI
+    def _build_reduce(self) -> QWidget:
+        """The Reduce section: the editable collapse pipeline that fixes the
+        independent unit the comparison aggregates over, rather than a single Level
+        dropdown — "per cell" is one collapse step, "per position" is that step
+        then a second, and so on. The default pipeline for the active table is
+        seeded in ``_sync_collapse``."""
+        self._collapse_editor = CollapsePipelineEditor()
+        self._collapse_editor.changed.connect(self._render)
+        # Seed the active table's default collapse pipeline.
+        self._sync_collapse()
+        return self._collapse_editor
+
+    # ------------------------------------------------------------------ plot UI
+    def _build_plot(self) -> QWidget:
+        """The Plot section: the plot type and the plot-specific options it
+        supports (bins, box knobs, markers …)."""
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+
+        self._plot_combo = _combo(_PLOT_TYPES)
+        col.addLayout(_labelled("Plot:", self._plot_combo))
+
         # Plot-specific controls (bins, box knobs, markers …) live in one box that
         # shows only the options the chosen plot supports — see the capability map
         # ``plot_options`` and ``_sync_plot_options``.
         col.addWidget(self._build_plot_options())
 
-        # The value combo may swap the active product (catalog mode), and the plot
-        # combo re-syncs which options show; the rest are pure re-renders.
-        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+        # The plot combo re-syncs which options show, then re-renders.
         self._plot_combo.currentIndexChanged.connect(self._on_plot_changed)
-        for combo in (self._level_combo, self._stat_combo):
-            combo.currentIndexChanged.connect(self._render)
-        # Offer only the levels the active table can actually aggregate to.
-        self._sync_levels()
         return body
 
     # ------------------------------------------------------------ plot options
@@ -572,7 +593,7 @@ class PlotPanel(QWidget):
                 )
                 self._rebuild_group_checks()
                 self._rebuild_filters()
-                self._sync_levels()
+                self._sync_collapse()
                 # Jump to the new product's natural rendering (only on a product
                 # switch — flipping between a product's own values keeps your plot).
                 self._apply_suggested_plot(src)
@@ -681,28 +702,25 @@ class PlotPanel(QWidget):
             return self._df
         return run_pipeline(self._df, steps).reset_index(drop=True)
 
-    # ------------------------------------------------------------- data levels
-    def _sync_levels(self) -> None:
-        """Enable only the Level options the active table supports, and bump the
-        current selection off a now-invalid one.
+    # ------------------------------------------------------------- reduce levels
+    def _collapse_columns(self) -> list[str]:
+        """The columns a collapse step may group by for the active table: the
+        group axes (catalogue metadata, ``class_label``, categorical axes) plus
+        whichever nesting entities the table carries — never ``frame`` (always
+        collapsed away, never an independent datapoint)."""
+        candidates = [c for c in self._group_columns if c != "frame"]
+        for entity in ("date", "position_id", "cell_id"):
+            if entity not in candidates:
+                candidates.append(entity)
+        return [c for c in candidates if c in self._df.columns]
 
-        A level needs its entity column (``cell`` → ``cell_id`` …): a per-tissue
-        table with no ``cell_id`` can't be aggregated "per cell". The current
-        choice, if disabled, drops to the first enabled (finest) level."""
-        columns = set(self._df.columns)
-        model = self._level_combo.model()
-        first_enabled = -1
-        for i in range(self._level_combo.count()):
-            level = self._level_combo.itemData(i)
-            enabled = _LEVEL_ENTITY[level] in columns
-            model.item(i).setEnabled(enabled)
-            if enabled and first_enabled < 0:
-                first_enabled = i
-        current = self._level_combo.currentIndex()
-        if first_enabled >= 0 and not model.item(current).isEnabled():
-            blocked = self._level_combo.blockSignals(True)
-            self._level_combo.setCurrentIndex(first_enabled)
-            self._level_combo.blockSignals(blocked)
+    def _sync_collapse(self) -> None:
+        """Seed the Reduce editor for the active table: its selectable columns and
+        a default pipeline of one collapse to the finest unit (e.g. per cell),
+        which the user is free to edit, extend, or clear."""
+        columns = self._collapse_columns()
+        default = (Collapse(by=tuple(columns), stat="mean"),) if columns else ()
+        self._collapse_editor.set_columns(columns, default)
 
     # -------------------------------------------------------------- styling UI
     def _build_styling(self) -> QWidget:
@@ -981,16 +999,52 @@ class PlotPanel(QWidget):
     # ----------------------------------------------------------------- specs
     def current_spec(self) -> PlotSpec:
         group_by = tuple(name for name, check in self._group_checks.items() if check.isChecked())
+        # Keep the comparison axes through every collapse: union each step's ``by``
+        # with the checked group-by columns so a group axis is never collapsed away
+        # (which would drop the column the figure then groups on).
+        collapse = tuple(
+            Collapse(by=tuple(dict.fromkeys((*group_by, *step.by))), stat=step.stat)
+            for step in self._collapse_editor.pipeline()
+        )
         return PlotSpec(
             value=self._value_combo.currentData(),
             group_by=group_by,
-            level=self._level_combo.currentData(),
+            # Only consulted when ``collapse`` is empty (the editor cleared): fall
+            # back to the finest unit the table still carries — frames are never an
+            # independent datapoint.
+            level=self._idempotent_level(),
             plot=self._plot_combo.currentData(),
             stat=self._stat_combo.currentData(),
             error=self._error_combo.currentData(),
             bins=self._bins_spin.value(),
             bin_mode="adaptive" if self._adaptive_bins_cb.isChecked() else "uniform",
+            collapse=collapse,
         )
+
+    def _idempotent_level(self) -> str:
+        """The finest aggregation level the (filtered) table still carries — used
+        only as the empty-pipeline fallback so a cleared editor still collapses
+        frames to the finest unit rather than plotting per-frame."""
+        columns = set(getattr(self, "_plot_df", self._df).columns)
+        for level, entity in _LEVEL_ENTITY.items():
+            if entity in columns:
+                return level
+        return "cell"
+
+    def _effective_level(self) -> str:
+        """The unit the drawn points represent, for click-to-load granularity: the
+        finest nesting entity the *last* collapse retains (group axes included). A
+        per-cell unit loads that cell; per-position loads the whole position movie;
+        per-date pools positions and loads nothing. Empty pipeline → finest unit."""
+        pipeline = self._collapse_editor.pipeline()
+        if not pipeline:
+            return self._idempotent_level()
+        group_by = {n for n, c in self._group_checks.items() if c.isChecked()}
+        by = set(pipeline[-1].by) | group_by
+        for level, entity in _LEVEL_ENTITY.items():
+            if entity in by:
+                return level
+        return "date"
 
     def current_style(self) -> StyleSpec:
         return StyleSpec(
@@ -1140,10 +1194,12 @@ class PlotPanel(QWidget):
             return
         if not _retry_after_overflow:
             self._swarm_overflowed = False
-        spec = self.current_spec()
         # Draw (and pick / stat / export) from the filter-narrowed snapshot, so the
-        # figure, the numbers under it, and the CSV all describe the same rows.
+        # figure, the numbers under it, and the CSV all describe the same rows. The
+        # spec reads it (its fallback level is the finest unit the table carries),
+        # so narrow first, then build the spec.
         self._plot_df = self._render_df()
+        spec = self.current_spec()
         # A swarm that overflowed at the displayed size is drawn as a strip so no
         # point is dropped; everything else renders as selected.
         render_spec = (
@@ -1375,7 +1431,7 @@ class PlotPanel(QWidget):
     def _select_row(self, row: int) -> None:
         record = self._plot_df.iloc[row]
         identity = {c: _py(record[c]) for c in self._identity_columns}
-        level = self._level_combo.currentData()
+        level = self._effective_level()
         # A per-date point pools whole positions, so no single movie is "it" —
         # report the pick but offer nothing to load.
         if level == "date":

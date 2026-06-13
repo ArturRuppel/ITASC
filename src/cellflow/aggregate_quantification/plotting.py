@@ -150,7 +150,8 @@ class PlotSpec:
     group_by: tuple[str, ...] = ()
     # The independent unit: "cell" (per track) | "position" | "date" (replicate).
     # Frames are always collapsed to one value per track first, so no level ever
-    # treats a frame as an independent datapoint.
+    # treats a frame as an independent datapoint. Used only when ``collapse`` is
+    # empty — an explicit reduce pipeline overrides the level convenience.
     level: str = "cell"
     plot: str = "hist"  # hist | box | violin | bar | line
     stat: str = "mean"  # mean | median | count
@@ -159,6 +160,13 @@ class PlotSpec:
     # How the ``potential`` mode bins: "uniform", or "adaptive" for sinh-spaced
     # bins tighter near x=0 (the transition state). Ignored by every other plot.
     bin_mode: str = "uniform"
+    # An explicit reduce pipeline of ``collapse`` steps (see
+    # :mod:`cellflow.aggregate_quantification.reduce`). When non-empty it *is* the
+    # unit reduction — ``reduce_to_units`` runs it instead of the ``level`` chain,
+    # so the careful nested statistics become user-visible composition. Empty
+    # falls back to the ``level`` convenience. The ``potential`` draw pools raw
+    # samples and ignores both, as before.
+    collapse: tuple = ()
 
     def __post_init__(self) -> None:
         for name, value, allowed in (
@@ -445,10 +453,17 @@ def _dedup(keys: Iterable[str]) -> list[str]:
 
 
 def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
-    """Nesting columns retained at ``spec.level`` — the prefix of the present
-    nesting down to (and including) the level's entity. When that entity column
-    is missing, fall back to the finest nesting available."""
+    """Nesting columns retained at the chosen unit.
+
+    With an explicit ``spec.collapse`` pipeline the unit is whatever the *last*
+    collapse keeps, so the retained nesting keys are the present nesting columns
+    that step still groups by. Otherwise it is the ``spec.level`` prefix of the
+    present nesting down to (and including) the level's entity; when that entity
+    column is missing, fall back to the finest nesting available."""
     present = _nesting_keys(df)
+    if spec.collapse:
+        last_by = set(spec.collapse[-1].by)
+        return [k for k in present if k in last_by]
     target = _LEVEL_ENTITY[spec.level]
     if target in present:
         return present[: present.index(target) + 1]
@@ -464,7 +479,15 @@ def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     keys, and ``spec.value`` — one row per unit. When the table carries none of
     the nesting columns (no cell_id/position_id/date), each row is already its
     own unit and the frame is returned unchanged.
+
+    When ``spec.collapse`` is non-empty it overrides the ``level`` chain: the
+    explicit reduce pipeline *is* the unit reduction (the panel composes it from
+    the Reduce editor), so the nested statistics become user-visible steps.
     """
+    if spec.collapse:
+        from .reduce import run_pipeline
+
+        return run_pipeline(df, spec.collapse)
     present = _nesting_keys(df)
     if not present:
         return df
