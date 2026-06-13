@@ -150,8 +150,16 @@ class Collapse:
     column outside ``by`` is dropped — it is being collapsed away, never
     averaged). A non-numeric attribute outside ``by`` is **kept if constant**
     within each group and **dropped if it varies** — to preserve a varying
-    attribute, add it to ``by``. ``count`` reports the group size in an ``n``
-    column. An empty ``by`` collapses the whole table to a single row.
+    attribute, add it to ``by``. **Every** collapse attaches the current group
+    size as an ``n`` column (whole-table collapse → ``n = len(df)``), so an
+    ``n``-threshold filter (drop undersampled units) works after any collapse, not
+    only after ``count``. An empty ``by`` collapses the whole table to a single
+    row.
+
+    ``n`` is **reserved**: each collapse recomputes it to the *current* group size
+    and never treats a pre-existing ``n`` as a value column to average — chaining
+    ``collapse by cell`` then ``collapse by position`` yields per-position child
+    counts, not the mean of the per-cell counts.
     """
 
     by: tuple[str, ...]
@@ -170,7 +178,10 @@ class Collapse:
         if df.empty:
             return df
         by = [c for c in self.by if c in df.columns]
-        others = [c for c in df.columns if c not in by]
+        # ``n`` is reserved for the group size — excluded here so it is never
+        # carried through as a value/attribute and never averaged; it is always
+        # recomputed below to the current group size.
+        others = [c for c in df.columns if c not in by and c != "n"]
 
         if self.stat == "count":
             # Plain tally per group; attributes constant within a group ride along.
@@ -190,6 +201,7 @@ class Collapse:
             for c in numeric_values:
                 values = pd.to_numeric(df[c], errors="coerce")
                 row[c] = float(getattr(values, agg)()) if values.notna().any() else float("nan")
+            row["n"] = len(df)
             base = _one_row(row)
             kept = _constant_attributes(df, by, attributes)
             return pd.concat([base, kept], axis=1) if not kept.empty else base
@@ -198,6 +210,7 @@ class Collapse:
         out = grouped[numeric_values].agg(agg).reset_index() if numeric_values else (
             df[by].drop_duplicates().reset_index(drop=True)
         )
+        out = out.merge(grouped.size().reset_index(name="n"), on=by, how="left")
         kept = _constant_attributes(df, by, attributes)
         if not kept.empty:
             out = out.merge(kept, on=by, how="left")

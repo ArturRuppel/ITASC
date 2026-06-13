@@ -63,8 +63,8 @@ from cellflow.aggregate_quantification.plotting import (
     summary_table,
     write_csv,
 )
-from cellflow.aggregate_quantification.reduce import Collapse, Filter, run_pipeline
-from cellflow.napari.aggregate_quantification.reduce_editor import CollapsePipelineEditor
+from cellflow.aggregate_quantification.reduce import Collapse
+from cellflow.napari.aggregate_quantification.shape_editor import ShapePipelineEditor
 from cellflow.napari.aggregate_quantification._mpl_toolbar import theme_toolbar_icons
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
@@ -150,8 +150,9 @@ _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: tag — the level qualifier is no longer baked into the value names too.
 _LEVEL_LABELS = {"frame": "per frame", "cell": "per cell", "position": "per position",
                  "date": "per date"}
-#: Skip building filter checkboxes for a column with more distinct values than
-#: this — a long checkbox wall (e.g. hundreds of position ids) helps no one.
+#: A categorical filter column with more distinct values than this is treated as
+#: numeric (free entry) instead of a value dropdown — a dropdown of hundreds of
+#: position ids helps no one.
 _FILTER_MAX_VALUES = 40
 
 _PLOT_TYPES = ("hist", "box", "violin", "strip", "swarm", "bar", "line", "potential")
@@ -212,9 +213,10 @@ class PlotPanel(QWidget):
         if dataframe is None:
             raise ValueError("PlotPanel needs a dataframe or a non-empty value_catalog")
         self._df = dataframe
-        #: The (filter-narrowed) DataFrame the *current* figure was drawn from —
-        #: what picking, stats, and CSV export read so they always match the plot.
-        #: Reset on every render; equals ``_df`` when no filter is active.
+        #: The DataFrame the *current* figure was drawn from — what picking, stats,
+        #: and CSV export read so they always match the plot. The whole Shape
+        #: pipeline (filters + collapses) runs inside ``spec.collapse``, so this is
+        #: the held snapshot; representative pick rows index into it.
         self._plot_df = dataframe
         # Only offer values the snapshot actually carries (symmetric with the
         # identity-column filter below). A stale ``.h5`` built before a column
@@ -263,13 +265,12 @@ class PlotPanel(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(6)
-        # The analytical controls split along the pipeline: Aggregate (what value /
-        # statistic / group axes) → Reduce (the collapse pipeline that fixes the
-        # independent unit) → Plot (the rendering and its plot-specific options).
-        layout.addWidget(CollapsibleSection("Aggregate", self._build_aggregate(), expanded=True))
-        layout.addWidget(CollapsibleSection("Reduce", self._build_reduce(), expanded=True))
+        # The analytical controls split along the pipeline: Shape (one ordered
+        # filter + collapse pipeline that narrows the rows and fixes the independent
+        # unit) → Plot (the value / stat / group mapping, the rendering, and its
+        # plot-specific options) → Styling.
+        layout.addWidget(CollapsibleSection("Shape", self._build_shape(), expanded=True))
         layout.addWidget(CollapsibleSection("Plot", self._build_plot(), expanded=True))
-        layout.addWidget(CollapsibleSection("Filter", self._build_filters(), expanded=False))
         layout.addWidget(CollapsibleSection("Styling", self._build_styling(), expanded=False))
 
         # The canvas + its toolbar live in their own container so the whole plot
@@ -356,10 +357,25 @@ class PlotPanel(QWidget):
         self._sync_plot_options()
         self._render()
 
-    # ----------------------------------------------------------- aggregate UI
-    def _build_aggregate(self) -> QWidget:
-        """The Aggregate section: which value to plot, the summary statistic, and
-        the categorical group axes the comparison splits on."""
+    # -------------------------------------------------------------- shape UI
+    def _build_shape(self) -> QWidget:
+        """The Shape section: one ordered ``filter`` + ``collapse`` pipeline that
+        narrows the rows and fixes the independent unit the comparison aggregates
+        over — "per cell" is one collapse step, "per position" is that step then a
+        second, and ``filter n ≥ 5`` after a collapse drops undersampled units.
+        The default pipeline for the active table is seeded in ``_sync_shape``."""
+        self._shape_editor = ShapePipelineEditor()
+        self._shape_editor.changed.connect(self._render)
+        # Seed the active table's default shape pipeline (one collapse to the unit).
+        self._sync_shape()
+        return self._shape_editor
+
+    # ------------------------------------------------------------------ plot UI
+    def _build_plot(self) -> QWidget:
+        """The Plot section: the value / statistic / group-by mapping, the plot
+        type, and the plot-specific options it supports (bins, box knobs, markers
+        …). Value, Stat, and Group-by define what the figure draws; the Shape
+        section above defines the rows they draw over."""
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
@@ -386,34 +402,6 @@ class PlotPanel(QWidget):
         col.addLayout(self._group_grid)
         self._rebuild_group_checks()
 
-        # The value combo may swap the active product (catalog mode); the stat is a
-        # pure re-render.
-        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
-        self._stat_combo.currentIndexChanged.connect(self._render)
-        return body
-
-    # -------------------------------------------------------------- reduce UI
-    def _build_reduce(self) -> QWidget:
-        """The Reduce section: the editable collapse pipeline that fixes the
-        independent unit the comparison aggregates over, rather than a single Level
-        dropdown — "per cell" is one collapse step, "per position" is that step
-        then a second, and so on. The default pipeline for the active table is
-        seeded in ``_sync_collapse``."""
-        self._collapse_editor = CollapsePipelineEditor()
-        self._collapse_editor.changed.connect(self._render)
-        # Seed the active table's default collapse pipeline.
-        self._sync_collapse()
-        return self._collapse_editor
-
-    # ------------------------------------------------------------------ plot UI
-    def _build_plot(self) -> QWidget:
-        """The Plot section: the plot type and the plot-specific options it
-        supports (bins, box knobs, markers …)."""
-        body = QWidget()
-        col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
-
         self._plot_combo = _combo(_PLOT_TYPES)
         col.addLayout(_labelled("Plot:", self._plot_combo))
 
@@ -422,7 +410,10 @@ class PlotPanel(QWidget):
         # ``plot_options`` and ``_sync_plot_options``.
         col.addWidget(self._build_plot_options())
 
-        # The plot combo re-syncs which options show, then re-renders.
+        # The value combo may swap the active product (catalog mode); the stat is a
+        # pure re-render; the plot combo re-syncs which options show, then re-renders.
+        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+        self._stat_combo.currentIndexChanged.connect(self._render)
         self._plot_combo.currentIndexChanged.connect(self._on_plot_changed)
         return body
 
@@ -592,8 +583,7 @@ class PlotPanel(QWidget):
                     c for c in _IDENTITY_COLUMNS if c in self._df.columns
                 )
                 self._rebuild_group_checks()
-                self._rebuild_filters()
-                self._sync_collapse()
+                self._sync_shape()
                 # Jump to the new product's natural rendering (only on a product
                 # switch — flipping between a product's own values keeps your plot).
                 self._apply_suggested_plot(src)
@@ -614,95 +604,7 @@ class PlotPanel(QWidget):
         self._adaptive_bins_cb.setChecked(src.adaptive)
         self._adaptive_bins_cb.blockSignals(blocked)
 
-    # ---------------------------------------------------------------- filtering
-    def _build_filters(self) -> QWidget:
-        """The Filter section: a checkbox per distinct value of each categorical
-        group axis, so the user can restrict the plot to specific catalogue
-        elements (a condition, a date, a position, a subpopulation). All ticked =
-        no filter; unticking a value drops its rows from a pure re-render."""
-        body = QWidget()
-        col = QVBoxLayout(body)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(4)
-        hint = QLabel("Show only the ticked catalogue elements. All ticked = no filter.")
-        hint.setWordWrap(True)
-        status_label(hint, muted=True)
-        col.addWidget(hint)
-        #: column -> {value(str) -> checkbox}. Rebuilt when the product swaps.
-        self._filter_checks: dict[str, dict[str, QCheckBox]] = {}
-        self._filter_body = QVBoxLayout()
-        self._filter_body.setContentsMargins(0, 0, 0, 0)
-        self._filter_body.setSpacing(4)
-        col.addLayout(self._filter_body)
-        self._rebuild_filters()
-        return body
-
-    def _rebuild_filters(self) -> None:
-        """Repopulate the filter checkboxes for the active table, carrying over
-        which values were *un*ticked for a column the new product still offers."""
-        if not hasattr(self, "_filter_body"):
-            return  # filter section not built yet
-        unticked = {
-            (col, val)
-            for col, checks in self._filter_checks.items()
-            for val, cb in checks.items()
-            if not cb.isChecked()
-        }
-        while self._filter_body.count():
-            item = self._filter_body.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-            elif item.layout() is not None:
-                _clear_layout(item.layout())
-        self._filter_checks = {}
-        for col in self._group_columns:
-            if col == "frame" or col not in self._df.columns:
-                continue  # ``frame`` is a continuous axis, not a categorical filter
-            values = sorted(str(v) for v in pd.unique(self._df[col]))
-            if len(values) < 2 or len(values) > _FILTER_MAX_VALUES:
-                continue  # nothing to filter, or too many to show as checkboxes
-            self._filter_body.addWidget(QLabel(f"{col}:"))
-            grid = QGridLayout()
-            grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(4)
-            grid.setColumnStretch(2, 1)
-            checks: dict[str, QCheckBox] = {}
-            for i, val in enumerate(values):
-                cb = QCheckBox(val)
-                cb.setChecked((col, val) not in unticked)
-                cb.toggled.connect(self._render)
-                checks[val] = cb
-                grid.addWidget(cb, i // 2, i % 2)
-            self._filter_body.addLayout(grid)
-            self._filter_checks[col] = checks
-        if not self._filter_checks:
-            none = QLabel("No filterable columns for this quantity.")
-            status_label(none, muted=True)
-            self._filter_body.addWidget(none)
-
-    def _render_df(self) -> pd.DataFrame:
-        """The snapshot narrowed to the ticked filter values — what the current
-        figure draws. A fully-ticked column does not filter; the result is
-        re-indexed so the positional pick-row stamping stays aligned.
-
-        The narrowing is the reduce layer's ``filter`` primitive: each *un*ticked
-        value becomes a ``Filter(col, "!=", value)`` step, chained (AND-ed) through
-        :func:`~cellflow.aggregate_quantification.reduce.run_pipeline`, so the
-        panel reduces through the same backend the headless path uses. The
-        level/stat collapse stays inside ``build_figure`` as the convenience that
-        expands to a default collapse chain."""
-        steps: list[Filter] = []
-        for col, checks in getattr(self, "_filter_checks", {}).items():
-            unticked = [val for val, cb in checks.items() if not cb.isChecked()]
-            # Keep rows whose value is *not* any unticked value (== ticked set);
-            # all ticked → no steps (no constraint), all unticked → drops every row.
-            steps.extend(Filter(col, "!=", val) for val in unticked)
-        if not steps:
-            return self._df
-        return run_pipeline(self._df, steps).reset_index(drop=True)
-
-    # ------------------------------------------------------------- reduce levels
+    # ------------------------------------------------------------- shape levels
     def _collapse_columns(self) -> list[str]:
         """The columns a collapse step may group by for the active table: the
         group axes (catalogue metadata, ``class_label``, categorical axes) plus
@@ -714,13 +616,41 @@ class PlotPanel(QWidget):
                 candidates.append(entity)
         return [c for c in candidates if c in self._df.columns]
 
-    def _sync_collapse(self) -> None:
-        """Seed the Reduce editor for the active table: its selectable columns and
-        a default pipeline of one collapse to the finest unit (e.g. per cell),
-        which the user is free to edit, extend, or clear."""
+    def _shape_columns(self) -> list[str]:
+        """The columns the Shape editor offers for both filter columns and collapse
+        ``by`` columns: the collapse candidates (group axes + nesting entities) plus
+        the value columns (so a pre-collapse ``area > 50`` filter is possible)."""
         columns = self._collapse_columns()
-        default = (Collapse(by=tuple(columns), stat="mean"),) if columns else ()
-        self._collapse_editor.set_columns(columns, default)
+        for value in self._value_columns:
+            if value in self._df.columns and value not in columns:
+                columns.append(value)
+        return columns
+
+    def _shape_categorical(self, columns: list[str]) -> dict[str, list[str]]:
+        """Distinct-value lists for the categorical columns among *columns* (a
+        filter on one offers a value dropdown); numeric columns are omitted (free
+        entry). A column with too many distinct values is treated as numeric so the
+        dropdown never becomes an unusable wall of hundreds of ids."""
+        categorical: dict[str, list[str]] = {}
+        for col in columns:
+            if col not in self._df.columns or pd.api.types.is_numeric_dtype(self._df[col]):
+                continue
+            values = sorted(str(v) for v in pd.unique(self._df[col]))
+            if 1 <= len(values) <= _FILTER_MAX_VALUES:
+                categorical[col] = values
+        return categorical
+
+    def _sync_shape(self) -> None:
+        """Seed the Shape editor for the active table: its selectable columns, the
+        categorical value lists, and a default pipeline of one collapse to the
+        finest unit (e.g. per cell), which the user is free to edit, extend, filter,
+        or clear."""
+        collapse_cols = self._collapse_columns()
+        columns = self._shape_columns()
+        default = (Collapse(by=tuple(collapse_cols), stat="mean"),) if collapse_cols else ()
+        self._shape_editor.set_columns(
+            columns, default, categorical=self._shape_categorical(columns)
+        )
 
     # -------------------------------------------------------------- styling UI
     def _build_styling(self) -> QWidget:
@@ -999,12 +929,16 @@ class PlotPanel(QWidget):
     # ----------------------------------------------------------------- specs
     def current_spec(self) -> PlotSpec:
         group_by = tuple(name for name, check in self._group_checks.items() if check.isChecked())
-        # Keep the comparison axes through every collapse: union each step's ``by``
+        # The Shape pipeline is one ordered list of filters and collapses. Keep the
+        # comparison axes through every collapse: union each *collapse* step's ``by``
         # with the checked group-by columns so a group axis is never collapsed away
-        # (which would drop the column the figure then groups on).
+        # (which would drop the column the figure then groups on). Filter steps pass
+        # through untouched — a group axis is never folded into a filter.
         collapse = tuple(
             Collapse(by=tuple(dict.fromkeys((*group_by, *step.by))), stat=step.stat)
-            for step in self._collapse_editor.pipeline()
+            if isinstance(step, Collapse)
+            else step
+            for step in self._shape_editor.pipeline()
         )
         return PlotSpec(
             value=self._value_combo.currentData(),
@@ -1022,8 +956,8 @@ class PlotPanel(QWidget):
         )
 
     def _idempotent_level(self) -> str:
-        """The finest aggregation level the (filtered) table still carries — used
-        only as the empty-pipeline fallback so a cleared editor still collapses
+        """The finest aggregation level the table carries — used only as the
+        empty-pipeline fallback so a Shape pipeline with no collapse still folds
         frames to the finest unit rather than plotting per-frame."""
         columns = set(getattr(self, "_plot_df", self._df).columns)
         for level, entity in _LEVEL_ENTITY.items():
@@ -1033,18 +967,31 @@ class PlotPanel(QWidget):
 
     def _effective_level(self) -> str:
         """The unit the drawn points represent, for click-to-load granularity: the
-        finest nesting entity the *last* collapse retains (group axes included). A
-        per-cell unit loads that cell; per-position loads the whole position movie;
-        per-date pools positions and loads nothing. Empty pipeline → finest unit."""
-        pipeline = self._collapse_editor.pipeline()
-        if not pipeline:
+        finest nesting entity the *last collapse* retains (group axes included);
+        trailing filter steps only narrow it, never change the unit. A per-cell unit
+        loads that cell; per-position loads the whole position movie; per-date pools
+        positions and loads nothing. No collapse at all → finest unit."""
+        collapses = [s for s in self._shape_editor.pipeline() if isinstance(s, Collapse)]
+        if not collapses:
             return self._idempotent_level()
         group_by = {n for n, c in self._group_checks.items() if c.isChecked()}
-        by = set(pipeline[-1].by) | group_by
+        by = set(collapses[-1].by) | group_by
         for level, entity in _LEVEL_ENTITY.items():
             if entity in by:
                 return level
         return "date"
+
+    def _update_row_counts(self, spec: PlotSpec) -> None:
+        """Push the per-step row-count trail to the Shape editor: run the same
+        group-by-unioned pipeline the figure uses cumulatively over the snapshot and
+        report the row count after each step, so the trail matches what is plotted.
+        ``spec.collapse`` has one entry per active editor step, in order."""
+        counts: list[int] = []
+        out = self._df
+        for step in spec.collapse:
+            out = step.apply(out)
+            counts.append(len(out))
+        self._shape_editor.set_row_counts(counts, start=len(self._df))
 
     def current_style(self) -> StyleSpec:
         return StyleSpec(
@@ -1194,12 +1141,14 @@ class PlotPanel(QWidget):
             return
         if not _retry_after_overflow:
             self._swarm_overflowed = False
-        # Draw (and pick / stat / export) from the filter-narrowed snapshot, so the
-        # figure, the numbers under it, and the CSV all describe the same rows. The
-        # spec reads it (its fallback level is the finest unit the table carries),
-        # so narrow first, then build the spec.
-        self._plot_df = self._render_df()
+        # The whole Shape pipeline (filters + collapses) runs inside the spec, so the
+        # panel draws / picks / stats / exports straight from the held snapshot: the
+        # representative pick rows index into it, and ``build_figure`` reduces it via
+        # ``spec.collapse``. Picking, stats, and CSV therefore all describe the same
+        # snapshot, reduced the same way.
+        self._plot_df = self._df
         spec = self.current_spec()
+        self._update_row_counts(spec)
         # A swarm that overflowed at the displayed size is drawn as a strip so no
         # point is dropped; everything else renders as selected.
         render_spec = (
@@ -1716,14 +1665,3 @@ def _native_level_tag(df: pd.DataFrame) -> str:
 def _fmt(value: float) -> str:
     """A statistic for the summary table: 4 significant figures, or ``–`` for NaN."""
     return "–" if value != value else f"{value:.4g}"  # noqa: PLR0124 - NaN test
-
-
-def _clear_layout(layout) -> None:
-    """Recursively delete every widget / nested layout in *layout*."""
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget()
-        if widget is not None:
-            widget.deleteLater()
-        elif item.layout() is not None:
-            _clear_layout(item.layout())

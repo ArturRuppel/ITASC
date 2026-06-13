@@ -462,7 +462,15 @@ def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
     column is missing, fall back to the finest nesting available."""
     present = _nesting_keys(df)
     if spec.collapse:
-        last_by = set(spec.collapse[-1].by)
+        from .reduce import Collapse
+
+        # The Shape pipeline interleaves filters and collapses; the unit is fixed
+        # by the *last collapse* (a trailing filter only narrows it). With no
+        # collapse at all (filter-only pipeline) the rows stay at native grain.
+        collapses = [s for s in spec.collapse if isinstance(s, Collapse)]
+        if not collapses:
+            return present
+        last_by = set(collapses[-1].by)
         return [k for k in present if k in last_by]
     target = _LEVEL_ENTITY[spec.level]
     if target in present:

@@ -94,6 +94,34 @@ def test_count_stat_reports_group_size():
     assert set(out["n"]) == {4}
 
 
+def test_mean_collapse_attaches_group_size_n():
+    df = _pooled()
+    # Every collapse (not just ``count``) carries ``n`` = the current group size, so
+    # an ``n``-threshold filter works after a mean/median collapse too.
+    out = run_pipeline(df, [Collapse(by=("condition",), stat="mean")])
+    assert set(out["n"]) == {4}  # 1 position × 2 cells × 2 frames per condition
+    # Whole-table (no ``by``) collapse → n = len(df).
+    whole = run_pipeline(df, [Collapse(by=(), stat="median")])
+    assert int(whole["n"].iloc[0]) == len(df)
+
+
+def test_chained_collapse_recomputes_n_as_child_count():
+    df = _pooled()
+    # cell then position: ``n`` is recomputed to the per-position child (cell) count,
+    # never the mean of the per-cell frame counts (which a reserved ``n`` would give).
+    out = run_pipeline(df, [
+        Collapse(by=("condition", "position_id", "cell_id"), stat="mean"),
+        Collapse(by=("condition", "position_id"), stat="mean"),
+    ])
+    assert set(out["n"]) == {2}  # each (condition, position) pools 2 cells
+
+
+def test_collapse_does_not_average_a_reserved_n_column():
+    df = _pooled().assign(n=99)  # a pre-existing ``n`` must be overwritten, not averaged
+    out = run_pipeline(df, [Collapse(by=("condition",), stat="mean")])
+    assert set(out["n"]) == {4}  # recomputed group size, not the mean of 99
+
+
 def test_step_order_matters():
     df = _pooled()
     filter_first = run_pipeline(

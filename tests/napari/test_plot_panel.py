@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtWidgets import QApplication
 
-from cellflow.aggregate_quantification.reduce import Collapse
+from cellflow.aggregate_quantification.reduce import Collapse, Filter
 from cellflow.napari.aggregate_quantification.plot_panel import PlotPanel, ValueSource
 
 
@@ -17,7 +17,7 @@ def _app():
 
 
 def _set_level(panel, level: str) -> None:
-    """Drive the panel's Reduce editor to the collapse equivalent of the old Level
+    """Drive the panel's Shape editor to the collapse equivalent of the old Level
     dropdown (one collapse to the named unit), then re-render."""
     by_for = {
         "cell": ("condition", "date", "position_id", "cell_id"),
@@ -25,7 +25,9 @@ def _set_level(panel, level: str) -> None:
         "date": ("condition", "date"),
     }[level]
     by = tuple(c for c in by_for if c in panel._df.columns)
-    panel._collapse_editor.set_columns(panel._collapse_columns(), (Collapse(by=by, stat="mean"),))
+    panel._shape_editor.set_columns(
+        panel._shape_columns(), (Collapse(by=by, stat="mean"),), categorical={}
+    )
     panel._render()
 
 
@@ -107,29 +109,60 @@ def test_catalog_mode_spans_sources_and_swaps_on_selection():
         app.processEvents()
 
 
-def test_filter_narrows_the_plotted_data():
+def test_shape_filter_step_narrows_the_plot():
+    from cellflow.aggregate_quantification.plotting import reduce_to_units
     app = _app()
     panel = _panel()
-    # Two conditions, A and B; the full snapshot has 12 rows.
-    assert len(panel._render_df()) == 12
-    assert set(panel._filter_checks) >= {"condition", "position_id", "class_label"}
-    # Untick condition B → only the 6 A rows feed the plot, and picking/export use
-    # that same narrowed frame.
-    panel._filter_checks["condition"]["B"].setChecked(False)
-    narrowed = panel._render_df()
-    assert len(narrowed) == 6
-    assert set(narrowed["condition"]) == {"A"}
-    assert panel._plot_df is narrowed or len(panel._plot_df) == 6
-    # Re-ticking restores the full snapshot (all-ticked = no filter).
-    panel._filter_checks["condition"]["B"].setChecked(True)
-    assert panel._render_df() is panel._df
+    # A filter step (condition == A) ahead of the default collapse narrows the plot
+    # through the one Shape pipeline, not a separate filter pass.
+    panel._shape_editor.set_columns(
+        panel._shape_columns(),
+        (
+            Filter("condition", "==", "A"),
+            Collapse(by=tuple(panel._collapse_columns()), stat="mean"),
+        ),
+        categorical={"condition": ["A", "B"]},
+    )
+    panel._render()
+    spec = panel.current_spec()
+    # The filter rides at the head of the pipeline, before the collapse.
+    assert spec.collapse[0] == Filter("condition", "==", "A")
+    units = reduce_to_units(panel._plot_df, spec)
+    assert set(units["condition"]) == {"A"}  # the B rows were filtered out
+    assert len(units) == 6  # 6 A cells survive (one row each after the collapse)
+    panel.deleteLater(); app.processEvents()
 
 
-def test_filter_skips_single_value_columns():
+def test_shape_offers_categorical_filter_values():
     app = _app()
     panel = _panel()
-    # Every row shares date d1 → nothing to filter, so no date checkboxes.
-    assert "date" not in panel._filter_checks
+    cat = panel._shape_categorical(panel._shape_columns())
+    # ``condition`` / ``class_label`` are categorical (value dropdowns); the numeric
+    # value column ``area`` and the single-date ``date`` are not multi-value picks.
+    assert set(cat["condition"]) == {"A", "B"}
+    assert "pos" in cat["class_label"]
+    assert "area" not in cat  # numeric → free entry, not a dropdown
+    panel.deleteLater(); app.processEvents()
+
+
+def test_filter_n_drops_undersampled_units_after_collapse():
+    from cellflow.aggregate_quantification.plotting import reduce_to_units
+    app = _app()
+    panel = _panel()
+    # Collapse to per (condition, position) — each position pools 3 cells → n == 3 —
+    # then filter n >= 4 to drop them all (the pseudoreplication payoff).
+    panel._shape_editor.set_columns(
+        panel._shape_columns(),
+        (
+            Collapse(by=("condition", "position_id"), stat="mean"),
+            Filter("n", ">=", "4"),
+        ),
+        categorical={},
+    )
+    panel._render()
+    spec = panel.current_spec()
+    units = reduce_to_units(panel._plot_df, spec)
+    assert units.empty  # every position had only 3 cells, all dropped by n >= 4
     panel.deleteLater(); app.processEvents()
 
 
