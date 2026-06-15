@@ -37,11 +37,13 @@ are inherently live and per-plot. The dock becomes:
 Shape → Plot → Styling
 ```
 
-- **Shape** — one unified, ordered pipeline of `filter` and `collapse` steps with
-  a live row-count trail. Replaces both the old Filter section and the Reduce
-  (collapse) editor.
-- **Plot** — absorbs Value, Group-by, and Stat (the old "Aggregate" controls, no
-  longer called that) alongside plot type and plot-specific options.
+- **Shape** — the **Value** picker heading one unified, ordered pipeline of
+  `filter` and `collapse` steps with a live row-count trail. Value sits at the top
+  because (in catalog mode) it is what selects the source table, so it heads the
+  trail — its label shows the raw, pre-shaping row count the steps reduce from.
+  Replaces both the old Filter section and the Reduce (collapse) editor.
+- **Plot** — **plot type leads**, followed by Group-by and Stat (the old
+  "Aggregate" controls, no longer called that) and the plot-specific options.
 - **Styling** — unchanged.
 
 ## Non-goals
@@ -80,14 +82,30 @@ One ordered, editable list of steps, each created via `[+ filter]` or
   - The column dropdown lists **only columns present at that point in the
     pipeline** (so `n` appears as a filterable column only *after* a collapse).
 - **collapse step** → `Collapse(by, stat)`:
-  - The existing `by`-checkbox grid + `stat` dropdown (`COLLAPSE_STATS`), as in the
-    current collapse editor.
+  - One `by` **dropdown per chosen axis** plus a `+` button to add another, and a
+    `stat` dropdown (`COLLAPSE_STATS`). A collapse groups by **one or more** axes —
+    the combination that uniquely identifies a unit. This matters because an id is
+    often only *locally* unique: a `cell_id` recurs across positions/dates, so "one
+    row per real cell" is the combination `(date, position_id, cell_id)`, not a bare
+    `cell_id` (which would pool distinct cells that share an id). The `+`/dropdown
+    pattern (rather than a multi-tick grid of every column) keeps the row showing
+    only the 2–3 axes actually picked. A dropdown's leading `(none)` clears that
+    axis — removing the slot when others remain, else leaving a sole empty slot (a
+    skipped no-op); a slot whose axis was folded away upstream keeps its stored `by`
+    so it re-applies once the fold is removed. Climb several *levels* by **chaining**
+    whole collapses (per-cell → per-position).
 - Per-step controls: reorder (`↑`/`↓`) and remove (`×`), as the collapse editor
   already has.
 - **Row-count trail**: each step row displays the running row count *after* that
   step (`12,400 → 8,200 → 312 …`); the section header shows the starting count.
-- **Default seed** for a table: one `collapse by <finest unit>` step (the current
-  default), with no filter steps.
+- **Default seed** for a table: one `collapse` step grouping by the **full nesting
+  prefix** the table carries (`date`, `position_id`, `cell_id`), with no filter
+  steps — the combination that yields one row per *real* finest unit. This restores
+  the old multi-column default exactly (it is the first rung of
+  `reduce_to_units`/`unit_collapse_chain`): grouping by a bare `cell_id` would pool
+  cells that share an id across positions, so the seed groups by the combination.
+  Group-by columns are unioned in on top by `current_spec`; this is the identity
+  combination underneath them.
 
 Headless contract (unit-testable without data or a render):
 

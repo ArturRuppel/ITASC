@@ -172,10 +172,11 @@ def test_summary_table_describes_per_unit_values():
     independent units a distribution draws — tracks, not cell-frames."""
     df = pool_object_tables(_multiframe_sources())
     out = summary_table(
-        df, PlotSpec(value="area", group_by=("condition",), level="cell")
+        df, PlotSpec(value="area", group_by=("condition",), level="cell", plot="box")
     ).set_index("condition")
     units = [12.0, 30.0, 50.0, 100.0]  # the four track means
     assert out.loc["A", "n"] == 4  # tracks, not the 10 frame rows
+    # (box → per-unit summary; a hist would instead describe the raw rows.)
     assert out.loc["A", "mean"] == pytest.approx(np.mean(units))
     assert out.loc["A", "median"] == pytest.approx(np.median(units))
     assert out.loc["A", "sd"] == pytest.approx(np.std(units, ddof=1))
@@ -188,7 +189,7 @@ def test_summary_table_single_unit_has_nan_spread():
     df = pool_object_tables(_multiframe_sources())
     # Per date: d2 has a single position/track → its sd / sem are undefined.
     out = summary_table(
-        df, PlotSpec(value="area", group_by=("date",), level="date")
+        df, PlotSpec(value="area", group_by=("date",), level="date", plot="box")
     ).set_index("date")
     assert out.loc["d2", "n"] == 1
     assert math.isnan(out.loc["d2", "sd"])
@@ -807,10 +808,33 @@ def test_effective_barrier_nan_when_zero_not_bracketed():
     assert math.isnan(effective_barrier(centers, u))
 
 
-def test_potential_pools_raw_samples_not_units():
-    # A table whose nesting keys (position_id) would collapse a distribution plot
-    # to one value per position. The potential mode must ignore that and bin every
-    # raw sample, so its curve has many occupied bins, not one point per position.
+def test_potential_inverts_the_shape_reduced_table_like_distributions():
+    # potential renders over the SAME Shape-reduced table as the distribution
+    # family (reduce_to_units), differing only in the -ln transform — the Shape
+    # section is the single source of truth for which rows feed the plot. With an
+    # explicit collapse to per position, the curve inverts the 2 per-position unit
+    # means, not the 1000 raw samples.
+    from cellflow.aggregate_quantification.plotting import reduce_to_units
+    from cellflow.aggregate_quantification.reduce import Collapse
+
+    rng = np.random.RandomState(1)
+    df = pd.DataFrame({
+        "position_id": ["p1"] * 500 + ["p2"] * 500,
+        "signed_length": np.concatenate([rng.normal(-2, 0.5, 500), rng.normal(2, 0.5, 500)]),
+    })
+    spec = PlotSpec(
+        value="signed_length", plot="potential", bins=30,
+        collapse=(Collapse(by=("position_id",), stat="mean"),),
+    )
+    assert len(reduce_to_units(df, spec)) == 2
+    table = potential_table(df, spec)
+    assert int(table["counts"].sum()) == 2  # the 2 unit means, not 1000 raw rows
+
+
+def test_potential_has_no_hidden_collapse_when_pipeline_empty():
+    # The crux: even with a nesting key present (position_id), an empty Shape
+    # pipeline bins every RAW sample — no hidden level-chain collapse to one value
+    # per position. hist behaves identically (shaped_rows), so the two match.
     rng = np.random.RandomState(1)
     df = pd.DataFrame({
         "position_id": ["p1"] * 500 + ["p2"] * 500,
@@ -819,7 +843,8 @@ def test_potential_pools_raw_samples_not_units():
     spec = PlotSpec(value="signed_length", plot="potential", bins=30)
     table = potential_table(df, spec)
     assert table["group"].nunique() == 1  # ungrouped → "all"
-    assert len(table) > 10  # a full curve, not 2 per-position points
+    assert int(table["counts"].sum()) == 1000  # all raw rows, not 2 per-position means
+    assert len(table) > 10  # a full curve, not a degenerate two-point one
 
 
 def test_potential_table_one_block_per_group_with_barrier():
@@ -946,6 +971,22 @@ def test_plotted_table_distribution_is_per_unit_values():
     assert list(table.columns) == ["condition", "area"]
     assert len(table) == 4  # four distinct cell tracks
     assert set(np.round(sorted(table["area"]), 0)) == {12.0, 30.0, 50.0, 100.0}
+
+
+def test_hist_bins_raw_rows_no_hidden_collapse():
+    # A histogram is a distribution-shape plot: with no Shape pipeline it bins the
+    # raw rows (10 cell-frames), NOT the per-unit reduction a strip would draw (4
+    # tracks). The stats read-out (summary_table) reports the same raw n, so the
+    # "n" under the plot matches the rows it binned.
+    from cellflow.aggregate_quantification.plotting import plotted_table, summary_table
+
+    df = pool_object_tables(_multiframe_sources())
+    spec = PlotSpec(value="area", plot="hist", level="cell", group_by=("condition",))
+    table = plotted_table(df, spec)
+    assert len(table) == 10  # raw cell-frames, not 4 tracks
+    assert int(summary_table(df, spec).set_index("condition").loc["A", "n"]) == len(
+        table[table["condition"] == "A"]
+    )
 
 
 def test_plotted_table_bar_is_the_aggregate():

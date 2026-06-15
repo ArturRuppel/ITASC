@@ -150,6 +150,17 @@ _LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
 #: tag — the level qualifier is no longer baked into the value names too.
 _LEVEL_LABELS = {"frame": "per frame", "cell": "per cell", "position": "per position",
                  "date": "per date"}
+#: Native-grain key columns, coarse→fine. A row's finest identifying unit is the
+#: last of these the table carries — *unless* the rows are finer still (several
+#: share that key, e.g. many T1 events per frame), in which case the table is
+#: "raw" (:func:`_is_raw_table`) and carries no nesting unit to collapse to.
+_NATIVE_KEYS = ("date", "position_id", "cell_id", "frame")
+#: native key column → its short level-label key.
+_COLUMN_LEVEL = {"date": "date", "position_id": "position", "cell_id": "cell",
+                 "frame": "frame"}
+#: Tag for a raw table whose rows are finer than any nesting key it carries — so
+#: it is *not* aggregated at all (one row per raw measurement).
+_LEVEL_LABEL_RAW = "per row"
 #: A categorical filter column with more distinct values than this is treated as
 #: numeric (free entry) instead of a value dropdown — a dropdown of hundreds of
 #: position ids helps no one.
@@ -359,23 +370,16 @@ class PlotPanel(QWidget):
 
     # -------------------------------------------------------------- shape UI
     def _build_shape(self) -> QWidget:
-        """The Shape section: one ordered ``filter`` + ``collapse`` pipeline that
-        narrows the rows and fixes the independent unit the comparison aggregates
-        over — "per cell" is one collapse step, "per position" is that step then a
-        second, and ``filter n ≥ 5`` after a collapse drops undersampled units.
-        The default pipeline for the active table is seeded in ``_sync_shape``."""
-        self._shape_editor = ShapePipelineEditor()
-        self._shape_editor.changed.connect(self._render)
-        # Seed the active table's default shape pipeline (one collapse to the unit).
-        self._sync_shape()
-        return self._shape_editor
+        """The Shape section: the Value picker heading one ordered ``filter`` +
+        ``collapse`` pipeline that narrows the rows and fixes the independent unit
+        the comparison aggregates over — "per cell" is one collapse step, "per
+        position" is that step then a second, and ``filter n ≥ 5`` after a collapse
+        drops undersampled units.
 
-    # ------------------------------------------------------------------ plot UI
-    def _build_plot(self) -> QWidget:
-        """The Plot section: the value / statistic / group-by mapping, the plot
-        type, and the plot-specific options it supports (bins, box knobs, markers
-        …). Value, Stat, and Group-by define what the figure draws; the Shape
-        section above defines the rows they draw over."""
+        Value sits at the top because (in catalog mode) it *is* what selects the
+        source table — so it heads the row-count trail, its label showing the raw,
+        pre-shaping row count the steps below reduce from. The default pipeline for
+        the active table is seeded in ``_sync_shape``."""
         body = QWidget()
         col = QVBoxLayout(body)
         col.setContentsMargins(0, 0, 0, 0)
@@ -383,7 +387,37 @@ class PlotPanel(QWidget):
 
         self._value_combo = _shrinkable(QComboBox())
         self._populate_value_combo()
-        col.addLayout(_labelled("Value:", self._value_combo))
+        self._value_rows_label = QLabel("")
+        status_label(self._value_rows_label, muted=True)
+        value_row = _labelled("Value:", self._value_combo)
+        value_row.addWidget(self._value_rows_label)
+        col.addLayout(value_row)
+        # The value combo may swap the active product (catalog mode); a swap reseeds
+        # the Shape pipeline and re-renders (see ``_on_value_changed``).
+        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+
+        self._shape_editor = ShapePipelineEditor()
+        self._shape_editor.changed.connect(self._render)
+        # Seed the active table's default shape pipeline (one collapse to the unit).
+        self._sync_shape()
+        col.addWidget(self._shape_editor)
+        return body
+
+    # ------------------------------------------------------------------ plot UI
+    def _build_plot(self) -> QWidget:
+        """The Plot section: the plot type leading the statistic / group-by mapping
+        and the plot-specific options it supports (bins, box knobs, markers …). Plot
+        type, Stat, and Group-by define what the figure draws; the Shape section
+        above (with the Value picker) defines the rows they draw over."""
+        body = QWidget()
+        col = QVBoxLayout(body)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(4)
+
+        # Plot type leads the section: it governs which plot-specific options below
+        # apply, and a value's natural rendering opens here on a product switch.
+        self._plot_combo = _combo(_PLOT_TYPES)
+        col.addLayout(_labelled("Plot:", self._plot_combo))
 
         self._stat_combo = _combo(("mean", "median", "count"))
         col.addLayout(_labelled("Stat:", self._stat_combo))
@@ -402,17 +436,13 @@ class PlotPanel(QWidget):
         col.addLayout(self._group_grid)
         self._rebuild_group_checks()
 
-        self._plot_combo = _combo(_PLOT_TYPES)
-        col.addLayout(_labelled("Plot:", self._plot_combo))
-
         # Plot-specific controls (bins, box knobs, markers …) live in one box that
         # shows only the options the chosen plot supports — see the capability map
         # ``plot_options`` and ``_sync_plot_options``.
         col.addWidget(self._build_plot_options())
 
-        # The value combo may swap the active product (catalog mode); the stat is a
-        # pure re-render; the plot combo re-syncs which options show, then re-renders.
-        self._value_combo.currentIndexChanged.connect(self._on_value_changed)
+        # The stat is a pure re-render; the plot combo re-syncs which options show,
+        # then re-renders. (The value combo lives in the Shape section.)
         self._stat_combo.currentIndexChanged.connect(self._render)
         self._plot_combo.currentIndexChanged.connect(self._on_plot_changed)
         return body
@@ -521,13 +551,18 @@ class PlotPanel(QWidget):
                 combo.addItem(f"{name}  ·  [{tag}]" if tag else name, name)
         else:
             last_source = None
+            # Several values of one product share its df; tag each df once (the grain
+            # scan walks every row) rather than per value column.
+            tag_cache: dict[int, str] = {}
             for src in self._catalog:
                 if src.source != last_source:
                     combo.addItem(f"── {src.source} ──", None)
                     item = combo.model().item(combo.count() - 1)
                     item.setEnabled(False)
                     last_source = src.source
-                tag = _native_level_tag(src.df)
+                tag = tag_cache.get(id(src.df))
+                if tag is None:
+                    tag = tag_cache[id(src.df)] = _native_level_tag(src.df)
                 label = f"  {src.label}  ·  [{tag}]" if tag else f"  {src.label}"
                 combo.addItem(label, src.value)
                 self._source_by_index[combo.count() - 1] = src
@@ -644,10 +679,32 @@ class PlotPanel(QWidget):
         """Seed the Shape editor for the active table: its selectable columns, the
         categorical value lists, and a default pipeline of one collapse to the
         finest unit (e.g. per cell), which the user is free to edit, extend, filter,
-        or clear."""
+        or clear.
+
+        The default collapses by the **full nesting prefix** the table carries
+        (``date``, ``position_id``, ``cell_id``), not a bare finest entity: a
+        ``cell_id`` is only unique within its position / date, so grouping by the
+        combination is what yields one row per *real* cell rather than pooling cells
+        that share an id across positions. (Group-by is unioned in later by
+        ``current_spec``; this is the identity combination underneath it.)
+
+        A **raw** table (:func:`_is_raw_table` — several rows per frame, e.g. T1
+        events / edges / labels with no ``cell_id``) has no nesting unit to collapse
+        to, so it seeds an *empty* pipeline: the shape plots then bin the raw
+        distribution (the potential's whole point) instead of a hidden per-position
+        mean, and a comparison plot still reduces via the ``level`` fallback."""
         collapse_cols = self._collapse_columns()
         columns = self._shape_columns()
-        default = (Collapse(by=tuple(collapse_cols), stat="mean"),) if collapse_cols else ()
+        nesting = [e for e in ("date", "position_id", "cell_id") if e in collapse_cols]
+        if nesting and not _is_raw_table(self._df):
+            default: tuple = (Collapse(by=tuple(nesting), stat="mean"),)
+        elif collapse_cols and not nesting:
+            default = (Collapse(by=(collapse_cols[-1],), stat="mean"),)
+        else:
+            # A raw table (several rows per frame — T1 events / edges / labels with
+            # no cell_id) is already its finest sample: seed no collapse so the
+            # shape plots invert the raw distribution rather than a hidden mean.
+            default = ()
         self._shape_editor.set_columns(
             columns, default, categorical=self._shape_categorical(columns)
         )
@@ -991,7 +1048,10 @@ class PlotPanel(QWidget):
         for step in spec.collapse:
             out = step.apply(out)
             counts.append(len(out))
-        self._shape_editor.set_row_counts(counts, start=len(self._df))
+        # The Value row heads the trail with the raw, pre-shaping row count; the
+        # editor then shows the per-step counts after each filter / collapse.
+        self._shape_editor.set_row_counts(counts)
+        self._value_rows_label.setText(f"{len(self._df):,} rows")
 
     def current_style(self) -> StyleSpec:
         return StyleSpec(
@@ -1266,9 +1326,15 @@ class PlotPanel(QWidget):
     def _stats_html(self, table: pd.DataFrame, spec: PlotSpec) -> str:
         """A compact HTML summary table (one row per group) plus a header naming
         the value, the unit level, and how many rows are in scope after filtering."""
+        # The whole Shape pipeline runs inside ``build_figure``, so ``_plot_df`` is
+        # the raw snapshot; the rows the figure actually draws is the summary's
+        # total ``n`` (units after collapse, or raw rows for hist/potential). Show
+        # that against the raw snapshot so the header's count matches the per-group
+        # ``n`` below instead of the (larger) pre-Shape row count.
         level = _LEVEL_LABELS.get(spec.level, spec.level)
-        shown, total = len(self._plot_df), len(self._df)
-        scope = f"{shown} of {total} rows" if shown != total else f"{total} rows"
+        drawn = int(table["n"].sum()) if not table.empty else 0
+        total = len(self._df)
+        scope = f"{drawn} of {total} rows" if drawn != total else f"{total} rows"
         header = f"<b>Summary</b> — {spec.value} · {level} · {scope}"
         if table.empty:
             return f"{header}<br><i>no numeric data</i>"
@@ -1649,17 +1715,43 @@ def _py(value):
         return value
 
 
+def _native_keys(df: pd.DataFrame) -> list[str]:
+    """The :data:`_NATIVE_KEYS` columns present in *df*, coarse→fine."""
+    return [c for c in _NATIVE_KEYS if c in df.columns]
+
+
+def _is_raw_table(df: pd.DataFrame) -> bool:
+    """True when each row is finer than the table's finest nesting/frame key.
+
+    The cell tables key one row per ``(frame, cell_id)``; the contacts / edge /
+    density tables instead carry several rows per frame (one per T1 event, contact
+    type, or label) with **no** ``cell_id``, so no nesting column identifies a row.
+    Such a table is already at its finest sample — it has no further unit to
+    collapse *to*, so the picker tags it ``[per row]`` and the Shape editor seeds
+    no default collapse (a hidden per-position mean would destroy the raw
+    distribution a histogram / potential is built to invert)."""
+    keys = _native_keys(df)
+    return bool(keys) and bool(df.duplicated(subset=keys).any())
+
+
 def _native_level_tag(df: pd.DataFrame) -> str:
     """Short tag for a table's finest independent unit, shown beside each value so
-    the picker reveals which data is per-frame vs per-cell vs per-position."""
-    columns = df.columns
-    if "frame" in columns and "cell_id" in columns:
-        return _LEVEL_LABELS["frame"]
-    if "cell_id" in columns:
-        return _LEVEL_LABELS["cell"]
-    if "position_id" in columns:
-        return _LEVEL_LABELS["position"]
-    return ""
+    the picker reveals which data is per-frame vs per-cell vs per-position — and
+    flags a raw per-row table (several rows per frame, never collapsed) rather than
+    misreporting its coarsest column as the unit.
+
+    The grain is the finest *native key* the table carries, read from the data
+    itself (so a per-track sub-table tags ``per cell`` and a per-position ensemble
+    ``per position``). When the rows are finer than every nesting key — an event /
+    edge table with ``frame`` but no ``cell_id`` — the finest column is *not* the
+    unit, so it is tagged :data:`_LEVEL_LABEL_RAW` instead of falling through to
+    the coarse ``position_id``."""
+    keys = _native_keys(df)
+    if not keys:
+        return ""
+    if _is_raw_table(df):
+        return _LEVEL_LABEL_RAW
+    return _LEVEL_LABELS[_COLUMN_LEVEL[keys[-1]]]
 
 
 def _fmt(value: float) -> str:

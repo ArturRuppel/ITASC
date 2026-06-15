@@ -87,8 +87,8 @@ DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
 #: so picking is exact, never collides equal-valued points, and survives zoom.
 _PICK_ROWS_ATTR = "_cellflow_pick_rows"
 #: Curve-family plots — a distribution Boltzmann-inverted into a ``U(x) = −ln P``
-#: curve. Unlike the distribution family these pool **raw** samples (no
-#: ``reduce_to_units``); see :func:`_plot_potential`.
+#: curve over the same Shape-reduced table as the distribution family (so ``hist``
+#: and ``potential`` differ only in the −ln transform); see :func:`_plot_potential`.
 CURVE_PLOTS = ("potential",)
 _PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line", *CURVE_PLOTS)
 _STATS = ("mean", "median", "count")
@@ -161,11 +161,12 @@ class PlotSpec:
     # bins tighter near x=0 (the transition state). Ignored by every other plot.
     bin_mode: str = "uniform"
     # An explicit reduce pipeline of ``collapse`` steps (see
-    # :mod:`cellflow.aggregate_quantification.reduce`). When non-empty it *is* the
-    # unit reduction — ``reduce_to_units`` runs it instead of the ``level`` chain,
-    # so the careful nested statistics become user-visible composition. Empty
-    # falls back to the ``level`` convenience. The ``potential`` draw pools raw
-    # samples and ignores both, as before.
+    # :mod:`cellflow.aggregate_quantification.reduce`) — the dock's Shape section.
+    # When non-empty it *is* the reduction every plot draws over, so the careful
+    # nested statistics become user-visible composition. When empty: the comparison
+    # plots fall back to the ``level`` convenience (``reduce_to_units``), while the
+    # distribution-shape plots (``hist`` / ``potential``) bin the rows as given —
+    # no hidden collapse (``shaped_rows``); see :func:`_plot_rows`.
     collapse: tuple = ()
 
     def __post_init__(self) -> None:
@@ -406,13 +407,15 @@ def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
 
 
 def summary_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
-    """Per-group descriptive statistics of ``spec.value`` over the independent
-    units at ``spec.level`` — the numbers behind the figure, as a tidy table.
+    """Per-group descriptive statistics of ``spec.value`` over exactly the rows
+    the figure draws (:func:`_plot_rows`) — the numbers behind the plot, as a tidy
+    table.
 
-    Mirrors :func:`aggregate`'s unit model (frames collapsed, each parent
-    equal-weighting its children via :func:`reduce_to_units`), so ``n`` is the
-    count of independent units a distribution actually draws — not raw cell-frames.
-    Columns: the group keys, ``n``, ``mean``, ``median``, ``sd`` (ddof=1),
+    For the comparison plots that is the per-unit reduction (frames collapsed, each
+    parent equal-weighting its children), so ``n`` is the count of independent
+    units — not raw cell-frames. For the distribution-shape plots (``hist`` /
+    ``potential``) it is the raw Shape-pipeline rows, so ``n`` matches the
+    histogram's bin total. Columns: the group keys, ``n``, ``mean``, ``median``, ``sd`` (ddof=1),
     ``sem``, ``min``, ``max``. ``sd``/``sem`` are NaN for a single-unit group.
     Empty when *df* lacks ``spec.value`` or carries no finite samples.
     """
@@ -420,7 +423,9 @@ def summary_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     columns = [*group, "n", "mean", "median", "sd", "sem", "min", "max"]
     if df.empty or spec.value not in df.columns:
         return pd.DataFrame(columns=columns)
-    units = reduce_to_units(df, spec)
+    # Same rows the figure draws (see :func:`_plot_rows`), so ``n`` matches the
+    # histogram's bin total rather than reporting a per-unit count it never showed.
+    units = _plot_rows(df, spec)
     rows: list[dict[str, Any]] = []
     grouped = units.groupby(group, dropna=False) if group else [(None, units)]
     for key, chunk in grouped:
@@ -478,6 +483,41 @@ def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
     return present
 
 
+def shaped_rows(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The rows a *distribution-shape* plot (``hist`` / ``potential``) bins —
+    the explicit Shape pipeline only, with **no hidden collapse**.
+
+    Unlike :func:`reduce_to_units`, this never falls back to the ``level`` chain:
+    when ``spec.collapse`` is empty the rows are returned unchanged (raw samples),
+    so a histogram / potential shows the within-sample distribution rather than a
+    per-unit summary. When the user composes a Shape pipeline its steps apply in
+    order, exactly as for the comparison plots — the two render the identical
+    sample, differing only in ``hist``'s count axis vs ``potential``'s −ln P.
+    """
+    if spec.collapse:
+        from .reduce import run_pipeline
+
+        return run_pipeline(df, spec.collapse)
+    return df
+
+
+#: Distribution-*shape* plots: they bin the raw Shape-pipeline rows
+#: (:func:`shaped_rows`, no hidden collapse) rather than the per-unit reduction the
+#: comparison plots use — so a histogram matches its potential curve point for point.
+_SHAPE_ONLY_PLOTS = ("hist", "potential")
+
+
+def _plot_rows(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The rows a plot draws / summarises over, by family: distribution-shape
+    plots (:data:`_SHAPE_ONLY_PLOTS`) bin the Shape pipeline output with no hidden
+    collapse; every other plot reduces to independent units. The one switch the
+    draw, the CSV export, and the stats read-out all share, so they never disagree.
+    """
+    if spec.plot in _SHAPE_ONLY_PLOTS:
+        return shaped_rows(df, spec)
+    return reduce_to_units(df, spec)
+
+
 def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     """Collapse the pooled per-frame table to one row per independent unit.
 
@@ -490,7 +530,10 @@ def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
 
     When ``spec.collapse`` is non-empty it overrides the ``level`` chain: the
     explicit reduce pipeline *is* the unit reduction (the panel composes it from
-    the Reduce editor), so the nested statistics become user-visible steps.
+    the Shape editor), so the nested statistics become user-visible steps. This
+    drives the *comparison* plots (box / violin / strip / swarm / bar / line) and
+    the stats read-out, where the per-unit pseudoreplication guard applies — the
+    distribution-shape plots use :func:`shaped_rows` instead.
     """
     if spec.collapse:
         from .reduce import run_pipeline
@@ -680,10 +723,13 @@ def potential_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
     columns = ["group", "center", "U", "counts", "delta_e_eff"]
     if df.empty or spec.value not in df.columns:
         return pd.DataFrame(columns=columns)
-    value_range = _shared_range(df, spec)
+    # Mirror the draw: invert exactly the rows the Shape pipeline yields (raw
+    # when it is empty — no hidden collapse), not a per-unit summary.
+    units = _plot_rows(df, spec)
+    value_range = _shared_range(units, spec)
     bins = _potential_bins(spec, value_range)
     blocks: list[pd.DataFrame] = []
-    for label, chunk in _group_series(df, list(spec.group_by)):
+    for label, chunk in _group_series(units, list(spec.group_by)):
         values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
         centers, u, counts = potential_landscape(values, bins=bins, value_range=value_range)
         if centers.size == 0:
@@ -706,9 +752,10 @@ def build_figure(
     reattaches its own).
 
     Distribution-family plots (``DISTRIBUTION_PLOTS``) route through seaborn,
-    whose ``hue=`` maps onto the group-by / ``class_label`` model — but over the
-    per-unit table from :func:`reduce_to_units`, not raw frames, so they carry the
-    same pseudoreplication guard as the others. ``bar``/``line`` stay custom
+    whose ``hue=`` maps onto the group-by / ``class_label`` model. The comparison
+    plots draw the per-unit table (the pseudoreplication guard); the
+    distribution-shape plots (``hist`` / ``potential``) bin the Shape-pipeline rows
+    with no hidden collapse — see :func:`_plot_rows`. ``bar``/``line`` stay custom
     matplotlib driven by :func:`aggregate`."""
     style_spec = style_spec or StyleSpec()
     with mpl.style.context([style_spec.style, _rc_overrides(style_spec)]):
@@ -962,10 +1009,11 @@ def _linewidth_kw(style_spec: StyleSpec) -> dict:
 
 def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     group = list(spec.group_by)
-    # Distributions show one point per independent unit (per ``spec.level``), not
-    # per frame: a histogram of cell areas has one observation per track, so a
-    # long-lived cell can't dominate the shape it draws.
-    units = reduce_to_units(df, spec)
+    # The comparison plots (box / violin / strip / swarm) show one point per
+    # independent unit (the pseudoreplication guard); the histogram is a
+    # distribution-*shape* plot that bins what the Shape pipeline yields with no
+    # hidden collapse — see :func:`_plot_rows`.
+    units = _plot_rows(df, spec)
     data, hue = _group_label_column(units, group)
     data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
     data = data.dropna(subset=[spec.value])
@@ -1135,17 +1183,19 @@ def _plot_swarm(
 def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
     """Render the effective potential ``U(x) = −ln P(x)`` curve per group.
 
-    Unlike the distribution plots this pools **raw** samples (no
-    :func:`reduce_to_units`): the landscape is the shape of the within-sample
-    fluctuation distribution, not a per-unit comparison, so collapsing to one
-    value per track would be wrong — and degenerate for a table that carries no
-    ``cell_id`` nesting (e.g. the contacts signed-junction-length table). Every
-    group shares one binning (``_shared_range``) so curves are comparable, and
-    each curve's effective barrier ``ΔE_eff`` rides in its legend label."""
+    Renders over the **same** Shape-reduced table as the distribution family
+    (:func:`reduce_to_units`), so ``hist`` and ``potential`` draw the identical
+    sample, differing only in the ``U = −ln P`` transform: the Shape section is the
+    single source of truth for which rows feed the plot. To Boltzmann-invert the
+    raw within-sample fluctuation distribution (no per-unit collapse), clear the
+    Shape pipeline's collapse step. Every group shares one binning
+    (``_shared_range``) so curves are comparable, and each curve's effective
+    barrier ``ΔE_eff`` rides in its legend label."""
     group = list(spec.group_by)
-    value_range = _shared_range(df, spec)
+    units = _plot_rows(df, spec)
+    value_range = _shared_range(units, spec)
     bins = _potential_bins(spec, value_range)
-    series_list = list(_group_series(df, group))
+    series_list = list(_group_series(units, group))
     colors, _ = _group_colors([lbl for lbl, _ in series_list], style_spec)
     marker = "o" if style_spec.markers else ""
     markersize = style_spec.marker_size if style_spec.marker_size is not None else 4
@@ -1257,11 +1307,13 @@ def plotted_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
         return aggregate(df, spec)
     if spec.plot == "line":
         return _line_table(df, spec)
-    # distribution family: the per-unit samples the plot is built from.
+    # distribution family: the samples the plot is built from — the histogram bins
+    # the raw Shape-pipeline rows (no hidden collapse), the comparison plots their
+    # per-unit reduction (see :func:`_plot_rows`).
     group = list(spec.group_by)
     if df.empty or spec.value not in df.columns:
         return pd.DataFrame(columns=[*group, spec.value])
-    units = reduce_to_units(df, spec)
+    units = _plot_rows(df, spec)
     keep = [c for c in group if c in units.columns] + [spec.value]
     out = units[keep].copy()
     out[spec.value] = pd.to_numeric(out[spec.value], errors="coerce")

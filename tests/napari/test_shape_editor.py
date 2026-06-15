@@ -115,6 +115,33 @@ def test_add_remove_and_reorder_emit_changed():
     assert ed.pipeline() == (Collapse(by=("cell_id",), stat="mean"),)
 
 
+def test_collapse_by_multi_select():
+    # A collapse groups by one *or more* axes: ``+`` appends a slot, each slot is
+    # set via ``_set_collapse_slot``, and "(none)" clears it. Building the unique
+    # combination (here position_id · cell_id) is what keeps cells that share a
+    # cell_id across positions from being pooled.
+    ed = _editor(
+        columns=("condition", "position_id", "cell_id"),
+        default=(Collapse(by=("cell_id",), stat="mean"),),
+    )
+    fired = []
+    ed.changed.connect(lambda: fired.append(True))
+
+    ed._add_collapse_slot(0)  # append an empty by slot
+    ed._set_collapse_slot(0, 1, "position_id")
+    # ``by`` follows column order, so the combination reads position_id · cell_id.
+    assert ed.pipeline() == (Collapse(by=("position_id", "cell_id"), stat="mean"),)
+    assert fired
+
+    # "(none)" on the extra slot removes it, back to the single axis.
+    ed._set_collapse_slot(0, 1, "")
+    assert ed.pipeline() == (Collapse(by=("cell_id",), stat="mean"),)
+
+    # Clearing the sole remaining slot makes the collapse a skipped no-op.
+    ed._set_collapse_slot(0, 0, "")
+    assert ed.pipeline() == ()
+
+
 def test_add_filter_emits_and_appends():
     ed = _editor(default=(Collapse(by=("cell_id",), stat="mean"),))
     fired = []
@@ -148,9 +175,11 @@ def test_set_row_counts_renders_trail_in_pipeline_order():
     # leaving the skipped row (1) blank.
     ed.set_row_counts([8, 2], start=12)
     assert "12" in ed._header.text()
-    assert "8" in ed._count_labels[0].text()
+    # Each active step reads before → after; the first step's "before" is the start
+    # count, the next active step's "before" is the previous active step's output.
+    assert ed._count_labels[0].text() == "12 → 8"
     assert ed._count_labels[1].text() == ""
-    assert "2" in ed._count_labels[2].text()
+    assert ed._count_labels[2].text() == "8 → 2"
 
 
 def test_set_row_counts_emits_no_signal():

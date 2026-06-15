@@ -133,6 +133,20 @@ def test_shape_filter_step_narrows_the_plot():
     panel.deleteLater(); app.processEvents()
 
 
+def test_default_seed_collapses_by_full_nesting_combination():
+    # The seeded "per cell" default must group by the whole nesting prefix
+    # (date · position_id · cell_id), not a bare cell_id — a cell_id is only unique
+    # within its position/date, so a bare collapse would pool distinct cells that
+    # happen to share an id across positions.
+    app = _app()
+    panel = _panel()
+    pipeline = panel._shape_editor.pipeline()
+    assert len(pipeline) == 1
+    assert isinstance(pipeline[0], Collapse)
+    assert pipeline[0].by == ("date", "position_id", "cell_id")
+    panel.deleteLater(); app.processEvents()
+
+
 def test_shape_offers_categorical_filter_values():
     app = _app()
     panel = _panel()
@@ -209,6 +223,52 @@ def test_native_grain_tag_tracks_the_table():
     panel = PlotPanel(tissue, value_columns=("order_param",),
                       group_columns=("condition", "date", "position_id"))
     assert panel._value_combo.itemText(0) == "order_param  ·  [per position]"
+    panel.deleteLater(); app.processEvents()
+
+
+def _edges_df():
+    # An edge / event table: several T1 events per (position, frame), keyed by an
+    # event id, with no cell_id — the contacts "signed length" shape. Each row is a
+    # raw measurement, finer than any nesting key.
+    return pd.DataFrame({
+        "condition": ["A"] * 6,
+        "date": ["d1"] * 6,
+        "position_id": (["p1"] * 3 + ["p2"] * 3),
+        "frame": [0, 0, 1, 0, 0, 1],
+        "t1_event_id": [0, 1, 2, 0, 1, 2],
+        "contact_type": ["T1"] * 6,
+        "signed_length": [-2.0, 1.0, 0.5, -1.0, 2.0, -0.5],
+    })
+
+
+def test_raw_event_table_tags_per_row_not_per_position():
+    # Several events share a (position, frame) and there is no cell_id, so no
+    # nesting column identifies a row: the table is raw, never collapsed. It must
+    # NOT be mislabeled "per position" (the old fall-through ignored ``frame``).
+    app = _app()
+    panel = PlotPanel(_edges_df(), value_columns=("signed_length",),
+                      group_columns=("condition", "date", "position_id", "contact_type"))
+    assert panel._value_combo.itemText(0) == "signed_length  ·  [per row]"
+    panel.deleteLater(); app.processEvents()
+
+
+def test_raw_event_table_seeds_no_collapse():
+    # A raw table has no nesting unit to collapse to, so the Shape editor seeds an
+    # empty pipeline — a histogram / potential then bins every raw event rather than
+    # a hidden per-position mean (which would flatten the distribution to ~2 points).
+    app = _app()
+    panel = PlotPanel(_edges_df(), value_columns=("signed_length",),
+                      group_columns=("condition", "date", "position_id", "contact_type"))
+    assert panel._shape_editor.pipeline() == ()
+    # With no collapse, the shape plots draw every raw row (no hidden reduction).
+    panel._plot_combo.setCurrentIndex(
+        next(i for i in range(panel._plot_combo.count())
+             if panel._plot_combo.itemData(i) == "hist")
+    )
+    panel._render()
+    from cellflow.aggregate_quantification.plotting import plotted_table
+    drawn = plotted_table(panel._plot_df, panel.current_spec())
+    assert len(drawn) == 6  # all six events, not collapsed to per-position
     panel.deleteLater(); app.processEvents()
 
 

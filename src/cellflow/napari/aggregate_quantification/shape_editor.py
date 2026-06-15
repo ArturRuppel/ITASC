@@ -5,11 +5,16 @@ The reduce layer's two primitives
 :class:`~cellflow.aggregate_quantification.reduce.Collapse`) made user-visible as a
 single editable, reorderable list — the plot dock's whole *Shape* step. A
 **filter** keeps rows matching ``column op value``; a **collapse** aggregates to one
-row per ticked column-combination, fixing the independent unit a comparison
-averages over. Chaining single-rung collapses is how the pseudoreplication-safe
-nested reduction is expressed (``collapse by cell`` then ``collapse by position`` →
-equal-weighted per-position); interleaving a filter (``n ≥ 5`` after a collapse)
-drops undersampled units. The order is the knob, and it is the user's.
+row per ``by``-combination, fixing the independent unit a comparison averages over.
+A collapse groups by **one or more** axes — the combination that uniquely
+identifies a unit (a ``cell_id`` is only unique *within* its ``position_id`` /
+``date``, so "one row per real cell" is the combination of the three, not a bare
+``cell_id`` which would pool cells across positions). Each axis is its own ``by``
+dropdown with a ``+`` to add another, so the row shows only the axes picked rather
+than a wall of every column. Chaining whole collapses then climbs levels
+(``collapse by …·cell_id`` then ``collapse by …·position_id`` → equal-weighted
+per-position); interleaving a filter (``n ≥ 5`` after a collapse) drops
+undersampled units. The order is the knob, and it is the user's.
 
 Two facts make the list pipeline-aware:
 
@@ -29,10 +34,8 @@ from collections.abc import Mapping, Sequence
 
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -87,9 +90,10 @@ class ShapePipelineEditor(QWidget):
         col.addWidget(self._header)
 
         hint = QLabel(
-            "Filter keeps matching rows; collapse aggregates to one row per ticked "
-            "column-combination (adding an n group-size column). Order matters — "
-            "chain collapses to climb levels, filter n to drop small units."
+            "Filter keeps matching rows; collapse aggregates to one row per "
+            "by-combination (adding an n group-size column) — use + to group by "
+            "several columns when a unit needs a unique combination of ids. Order "
+            "matters — chain collapses to climb levels, filter n to drop small units."
         )
         hint.setWordWrap(True)
         status_label(hint, muted=True)
@@ -143,7 +147,7 @@ class ShapePipelineEditor(QWidget):
                 steps.append(
                     {
                         "kind": "collapse",
-                        "by": {c for c in step.by if c in allowed},
+                        "by": [c for c in step.by if c in allowed],
                         "stat": step.stat,
                     }
                 )
@@ -232,7 +236,7 @@ class ShapePipelineEditor(QWidget):
         self._emit()
 
     def _on_add_collapse(self) -> None:
-        self._steps.append({"kind": "collapse", "by": set(), "stat": "mean"})
+        self._steps.append({"kind": "collapse", "by": [""], "stat": "mean"})
         self._rebuild()
         self._emit()
 
@@ -348,30 +352,68 @@ class ShapePipelineEditor(QWidget):
         edit.textChanged.connect(lambda text, i=index: self._set_filter_value(i, text))
         return edit
 
-    def _build_collapse_body(self, index: int) -> QGridLayout:
+    def _build_collapse_body(self, index: int) -> QVBoxLayout:
         step = self._steps[index]
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(3)
-        grid.setColumnStretch(3, 1)
+        # A collapse folds one *or more* axes — the combination that identifies a
+        # unit. Rather than a multi-tick grid of every column, each chosen axis is
+        # its own ``by`` dropdown and the ``+`` button appends another. The dropdowns
+        # **stack vertically** (one per line) so a wide column name never sets the
+        # dock's minimum width — horizontal space is precious. Candidates are the
+        # present columns minus ``n`` (you collapse by an identity / group axis, not
+        # a derived count). A dropdown's leading "(none)" clears that axis — removing
+        # the slot when others remain, else leaving a sole empty slot (a skipped
+        # no-op); a slot whose column was folded away upstream keeps its stored value
+        # and re-applies once the fold is removed. Chain whole collapses to climb
+        # levels.
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(2)
 
+        candidates = [c for c in self._columns_before(index) if c != "n"]
+        slots = list(step["by"]) or [""]
+        chosen = [c for c in slots if c]
+        for slot, current in enumerate(slots):
+            slot_row = QHBoxLayout()
+            slot_row.setContentsMargins(0, 0, 0, 0)
+            slot_row.setSpacing(3)
+            label = QLabel("by:" if slot == 0 else "")
+            label.setFixedWidth(26)  # align every stacked dropdown under the first
+            slot_row.addWidget(label)
+            by_combo = QComboBox()
+            by_combo.addItem("(none)", "")
+            for column in candidates:
+                # This slot's own column, plus any not already taken by another slot.
+                if column == current or column not in chosen:
+                    by_combo.addItem(column, column)
+            by_combo.setCurrentIndex(by_combo.findData(current) if current else 0)
+            by_combo.currentIndexChanged.connect(
+                lambda _ix, combo=by_combo, i=index, s=slot: self._set_collapse_slot(
+                    i, s, combo.currentData()
+                )
+            )
+            slot_row.addWidget(by_combo, 1)
+            body.addLayout(slot_row)
+
+        # Final row: ``+`` (append another by-axis) on the left, the stat picker on
+        # the right — one extra line beyond the stacked axes themselves.
+        bottom = QHBoxLayout()
+        bottom.setContentsMargins(0, 0, 0, 0)
+        bottom.setSpacing(3)
+        add = QPushButton("+")
+        add.setFixedWidth(26)
+        add.setToolTip("Group by an additional column (build a unique combination).")
+        add.setEnabled(any(c not in chosen for c in candidates))
+        add.clicked.connect(lambda _=False, i=index: self._add_collapse_slot(i))
+        bottom.addWidget(add)
+        bottom.addWidget(QLabel("stat:"))
         stat_combo = QComboBox()
         for stat in COLLAPSE_STATS:
             stat_combo.addItem(stat, stat)
         stat_combo.setCurrentText(step["stat"])
         stat_combo.currentTextChanged.connect(lambda text, i=index: self._set_stat(i, text))
-        grid.addWidget(QLabel("stat:"), 0, 0)
-        grid.addWidget(stat_combo, 0, 1, 1, 2)
-
-        # ``by`` candidates are the present columns minus ``n`` (you collapse by an
-        # identity / group axis, not by a derived count).
-        candidates = [c for c in self._columns_before(index) if c != "n"]
-        for i, column in enumerate(candidates):
-            cb = QCheckBox(column)
-            cb.setChecked(column in step["by"])
-            cb.toggled.connect(lambda checked, i=index, c=column: self._toggle(i, c, checked))
-            grid.addWidget(cb, 1 + i // 3, i % 3)
-        return grid
+        bottom.addWidget(stat_combo, 1)
+        body.addLayout(bottom)
+        return body
 
     def _set_filter_column(self, index: int, column: str) -> None:
         self._steps[index]["column"] = column
@@ -390,12 +432,27 @@ class ShapePipelineEditor(QWidget):
         self._steps[index]["stat"] = stat
         self._emit()
 
-    def _toggle(self, index: int, column: str, checked: bool) -> None:
-        if checked:
-            self._steps[index]["by"].add(column)
+    def _set_collapse_slot(self, index: int, slot: int, column: str) -> None:
+        """Set / clear one ``by`` axis of a collapse. A real column replaces that
+        slot's value; "(none)" (empty) removes the slot when others remain, else
+        clears the sole slot to empty (a skipped no-op). A collapse's ``by`` changes
+        which columns later steps see (``n``, folded keys), so rebuild the rows
+        below it."""
+        by = list(self._steps[index]["by"]) or [""]
+        if not 0 <= slot < len(by):
+            return
+        if column == "" and len(by) > 1:
+            del by[slot]
         else:
-            self._steps[index]["by"].discard(column)
-        # A collapse's ``by`` changes which columns later steps see (n, folded keys).
+            by[slot] = column
+        self._steps[index]["by"] = by
+        self._rebuild()
+        self._emit()
+
+    def _add_collapse_slot(self, index: int) -> None:
+        """Append an empty ``by`` slot (the ``+`` button) so the collapse can group
+        by an additional column — building the unique combination a unit needs."""
+        self._steps[index]["by"].append("")
         self._rebuild()
         self._emit()
 
@@ -404,11 +461,17 @@ class ShapePipelineEditor(QWidget):
             self._header.setText(f"Shape — {self._start_count:,} rows in")
         for label in self._count_labels:
             label.setText("")
-        # Counts arrive in pipeline order; map each onto its displayed step row.
+        # Counts arrive in pipeline order; map each onto its displayed step row,
+        # showing the running count *before* (the previous active step's output, or
+        # the start count for the first step) and *after* this step, so each row
+        # reads as a ``before → after`` transition rather than just the result.
+        prev = self._start_count
         for k, index in enumerate(self._active_indices()):
             count = self._row_counts[k] if k < len(self._row_counts) else None
             if count is not None and index < len(self._count_labels):
-                self._count_labels[index].setText(f"→ {count:,}")
+                before = f"{prev:,}" if prev is not None else "?"
+                self._count_labels[index].setText(f"{before} → {count:,}")
+                prev = count
 
     def _update_summary(self) -> None:
         pipeline = self.pipeline()
