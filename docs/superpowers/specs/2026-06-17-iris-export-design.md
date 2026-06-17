@@ -55,8 +55,8 @@ results.
 {
   "spec_version": "2.0",
   "id": "superplot__class_label__cell_shape.area_um2",
-  "encodings": {"x": "class_label", "y": "cell_shape.area_um2",
-                "color": "date", "shape": "date", "size": null},
+  "encodings": {"x": {"column": "class_label"}, "y": {"column": "cell_shape.area_um2"},
+                "color": {"column": "date"}, "shape": {"column": "date"}, "size": null},
   "facet": {"row": null, "col": null, "share_x": true, "share_y": true},
   "hierarchy": {"spine": ["date", "position_id", "cell_id", "frame"], "fn": {}},
   "style": {"overrides": {"notch": true}},
@@ -69,12 +69,23 @@ results.
 }
 ```
 
-The test is **unpinned** (`stats: {}`): Iris's recommender chooses it on load. The
-coarsest layer level (`date`) is the grain the test reads, so the inferential unit
-is the date — Iris's pseudoreplication guard. For a categorical comparison whose
-home level is finer than `date` (e.g. `class_label`, which lives at the cell
-level), Iris's pairing detection sees the same date holding both levels and treats
-the test as paired across dates.
+Each **encoding is an object** `{"column": name}` (not a bare string); an unmapped
+channel is `null`. The test is **unpinned** (`stats: {}`): Iris's recommender
+chooses it on load. The coarsest layer level (`date`) is the grain the test reads,
+so the inferential unit is the date — Iris's pseudoreplication guard. (Verified
+end-to-end against the Iris engine: `inferential_level == "date"`, a recommended
+test is run, and the figure serializes to valid gid-tagged SVG.) For `class_label`
+(home level = cell), Iris reports the comparison as *unpaired* — a cell carries
+only one class, so no single cell crosses both levels; it is a nested design, not
+a pairing.
+
+**Single-level axis ⇒ describe-only.** An unpinned test on a one-group axis raises
+422 in Iris ("needs at least 2 groups"); it does **not** silently degrade. So the
+exporter inspects each axis's level count and emits `stats:
+{"chosen_by": "describe_only"}` when an axis has `< 2` levels (this dataset's
+`condition`), and the unpinned `stats: {}` only when it has `≥ 2`. Either way the
+bundle opens; describe-only renders the SuperPlot with descriptive stats and no
+test.
 
 ## The SuperPlot template
 
@@ -123,11 +134,16 @@ by Iris's `hierarchy.materialize_levels`.
 
 | Table | Object key `<object_key>` | Axes (≥1 level) | Swarm? (objects vs 3000) |
 |---|---|---|---|
-| `cells_by_frame` | cell_id | condition, class_label | yes (1726) |
-| `cell_neighbors_by_frame` | cell_id | condition, class_label | no (3452) |
+| `cells_by_frame` | cell_id | condition, class_label | yes (1726 cells) |
+| `cell_neighbors_by_frame` | cell_id | condition, class_label | yes (cells < cap) |
 | `contact_types_by_frame` | contact_type | condition | yes (81) |
 | `density_by_frame` | label | condition | yes (81) |
-| `edges_by_frame` | t1_event_id | condition | no (9610) |
+| `edges_by_frame` | t1_event_id | condition | no (9610 events) |
+
+The cap is measured at the swarm's own grain — distinct `(date, position, object)`
+— not the raw row count: `cell_neighbors` has many neighbor-pair rows but its
+*cell* count is under the cap, so its swarm is kept; only `edges` (per-event)
+exceeds it.
 
 **Caveat — non-cell tables.** For `contact_types`, `density`, and `edges` the
 object key is itself category-like (`contact_type`) or event-like
@@ -185,7 +201,7 @@ All under `src/cellflow/aggregate_quantification/iris_export/` (backend-only):
 ## Run target
 
 ```
-python -m cellflow.aggregate_quantification.iris_export.export \
+python -m cellflow.aggregate_quantification.iris_export \
     /home/aruppel/Data/aggregate_quantification
 # → /home/aruppel/Data/aggregate_quantification/iris/{cells_by_frame, ...}.iris
 ```
