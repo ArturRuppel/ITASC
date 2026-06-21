@@ -107,6 +107,53 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
     assert record["nucleus_tracked_labels_path"] is None
 
 
+def test_experiment_id_defaults_to_date_when_absent(tmp_path):
+    """experiment_id falls back to date as a *default* when not supplied."""
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+    save_catalog(csv_path, [{
+        "path": source, "date": "2026-05-09", "condition": "c", "id": "p1", "notes": "",
+    }])
+
+    record = load_catalog(csv_path)[0]
+    assert record["experiment_id"] == "2026-05-09"
+
+
+def test_experiment_id_is_distinct_from_date_when_provided(tmp_path):
+    """experiment_id is its own field, not an alias for date: the same experiment
+    (paired) can carry two conditions / dates while sharing one experiment_id."""
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+    save_catalog(csv_path, [{
+        "path": source, "experiment_id": "EXP-01", "date": "2026-05-09",
+        "condition": "treated", "id": "p1", "notes": "",
+    }])
+
+    record = load_catalog(csv_path)[0]
+    assert record["experiment_id"] == "EXP-01"
+    assert record["date"] == "2026-05-09"
+
+
+def test_experiment_id_column_is_optional_for_legacy_catalogs(tmp_path):
+    """A hand-written CSV lacking the experiment_id column still loads, with
+    experiment_id defaulting to date (backward compatible)."""
+    from cellflow.aggregate_quantification.catalog import load_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+    csv_path.write_text("path,date,condition,id\ncontact_analysis.h5,day1,ctrl,p1\n")
+
+    record = load_catalog(csv_path)[0]
+    assert record["experiment_id"] == "day1"
+
+
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
     """A folder's inputs are grouped into one entry; the contact path is derived."""
     from cellflow.aggregate_quantification.catalog import discover_catalog_entries

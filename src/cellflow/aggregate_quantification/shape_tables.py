@@ -57,7 +57,7 @@ __all__ = [
 AGGREGATE_SUBDIR = OUTPUT_SUBDIR
 
 #: The catalogue-metadata axes stamped (bare) onto every pooled row, in order.
-METADATA_COLUMNS = ("condition", "date", "position_id")
+METADATA_COLUMNS = ("condition", "experiment_id", "date", "position_id")
 #: Subpopulation column left-joined from the NLS sidecar (by ``cell_id``).
 CLASS_COLUMN = "class_label"
 #: Bucket for cells with no classification (no sidecar, or never classified).
@@ -138,7 +138,7 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
             continue
         if spec.joins_class:
             merged = _join_class(merged, record)
-        # Insert in reverse so the columns end up condition · date · position_id.
+        # Insert in reverse so the columns end up condition · experiment_id · date · position_id.
         for key, value in reversed(list(_position_metadata(record).items())):
             merged.insert(0, key, value)
         frames.append(merged)
@@ -188,6 +188,7 @@ def _position_frame(
 def _position_metadata(record: dict) -> dict[str, str]:
     return {
         "condition": str(record.get("condition", "")),
+        "experiment_id": str(record.get("experiment_id", "")),
         "date": str(record.get("date", "")),
         "position_id": str(record.get("id", "")),
     }

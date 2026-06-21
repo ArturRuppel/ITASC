@@ -22,13 +22,17 @@ from cellflow.aggregate_quantification.quantifiers.neighbor_count import (
 )
 
 
-def _record(tmp: Path, pid: str, condition: str = "ctrl", date: str = "d1") -> dict:
+def _record(
+    tmp: Path, pid: str, condition: str = "ctrl", date: str = "d1",
+    experiment_id: str | None = None,
+) -> dict:
     pdir = tmp / condition / pid
     pdir.mkdir(parents=True, exist_ok=True)
     return {
         "id": pid,
         "condition": condition,
         "date": date,
+        "experiment_id": experiment_id if experiment_id is not None else date,
         "position_path": pdir,
         "cell_tracked_labels_path": pdir / "cells.tif",
         "contact_analysis_path": pdir / "aggregate_quantification" / "contact_analysis.h5",
@@ -66,6 +70,20 @@ def _write_nls(record: dict, labels: dict[int, str]) -> None:
 
 
 # --------------------------------------------------------------------- pooling
+
+
+def test_experiment_id_broadcast_onto_pooled_rows(tmp_path):
+    """The catalogue's experiment_id (paired-replicate key) is stamped onto rows,
+    distinct from date."""
+    cs = CellShapeQuantifier()
+    rec = _record(tmp_path, "a", date="2026-05-09", experiment_id="EXP-01")
+    _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
+
+    df = build_table("cells_by_frame", [rec])
+
+    assert "experiment_id" in df.columns
+    assert (df["experiment_id"] == "EXP-01").all()
+    assert (df["date"] == "2026-05-09").all()
 
 
 def test_two_positions_pool_into_one_table(tmp_path):

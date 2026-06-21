@@ -43,6 +43,7 @@ CSV_COLUMNS = (
     "path",
     "date",
     "condition",
+    "experiment_id",
     "id",
     "cell_labels",
     "nucleus_labels",
@@ -93,6 +94,7 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
                 "path": _path_for_csv(normalized["contact_analysis_path"], file_base),
                 "date": normalized["date"],
                 "condition": normalized["condition"],
+                "experiment_id": normalized["experiment_id"],
                 "id": normalized["id"],
                 "cell_labels": _optional_path_for_csv(
                     normalized.get("cell_tracked_labels_path"), file_base
@@ -142,7 +144,11 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         normalized.get("path", normalized.get("contact_analysis_path", "")), file_base
     )
 
-    date = str(normalized.get("date", normalized.get("experiment_id", "unknown_date")))
+    date = str(normalized.get("date", "unknown_date"))
+    # The paired-replicate key. Its own annotation, *not* an alias for date;
+    # defaults to date only when the catalog leaves it blank (single-replicate
+    # experiments need not fill it). See the artifact-contract spec, §2.
+    experiment_id = str(normalized.get("experiment_id") or date)
     condition = str(
         normalized.get("condition", normalized.get("condition_id", "unknown_condition"))
     )
@@ -164,7 +170,7 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         "id": source_id,
         "notes": notes,
         "condition_id": condition,
-        "experiment_id": date,
+        "experiment_id": experiment_id,
         "position_id": source_id,
         "position_path": position_path,
         "contact_analysis_path": contact_analysis_path,
@@ -283,6 +289,6 @@ def _optional_path_for_csv(path: Path | str | None, base_dir: Path) -> str:
 def _catalog_sort_key(record: dict) -> tuple[str, str, str]:
     return (
         str(record.get("condition", record.get("condition_id", ""))),
-        str(record.get("date", record.get("experiment_id", ""))),
+        str(record.get("date", "")),
         str(record.get("id", record.get("position_id", ""))),
     )
