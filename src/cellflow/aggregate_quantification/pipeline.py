@@ -21,6 +21,7 @@ it unchanged.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
 import pandas as pd
@@ -96,20 +97,27 @@ def build_quantities(
     usable when an optional knob like the density FOV is unset.
     *progress_cb* is called ``(done, total, position_name)`` before each build.
 
-    Jobs are planned up front (so ``total`` is known and a derived quantity sees
-    only the inputs present *before* the run): build a producer like contacts in
-    one call, its dependents in the next. Exceptions propagate — a failed build
-    aborts the run rather than being silently swallowed.
+    Quantifiers run in **dependency order** (:func:`_dependency_order`): a producer
+    like contacts builds before the derived quantities whose ``requires`` names its
+    ``produces``. Planning tracks, per position, which ``PositionInputs`` fields a
+    producer *will* make available, so a derived quantity is scheduled (not silently
+    skipped) even though its input is unbuilt at the start of the run; ``total`` is
+    therefore known up front. At build time each position's inputs are re-derived so
+    a dependent sees the artifact its producer just wrote. Exceptions propagate — a
+    failed build aborts the run rather than being silently swallowed.
     """
     quants = (
         list(quantifiers)
         if quantifiers is not None
         else [cls() for cls in available_quantifiers()]
     )
+    quants = _dependency_order(quants)
     records = list(catalog)
-    inputs_by_record = [position_inputs_from_record(record) for record in records]
+    # Per position, the PositionInputs fields available so far. A producer planned
+    # below grows this set for the dependents planned after it.
+    available = [_available_fields(position_inputs_from_record(r)) for r in records]
 
-    jobs: list[tuple[Quantifier, PositionInputs, Path, dict | None]] = []
+    jobs: list[tuple[Quantifier, dict, dict | None]] = []
     for quantifier in quants:
         # A metric missing a required shared param (e.g. density's FOV) is greyed
         # out in the studio; here we skip it whole rather than fail its builds.
@@ -118,18 +126,71 @@ def build_quantities(
         # Only quantifiers that opt in get the shared bar's knobs; the rest keep
         # their own ``params`` schema clean (mirrors the studio's build planning).
         q_params = dict(params) if (params and quantifier.wants_build_params) else None
-        for record, inputs in zip(records, inputs_by_record):
-            if not quantifier.can_build(inputs):
+        for record, fields in zip(records, available):
+            if not set(quantifier.requires) <= fields:
                 continue
-            jobs.append(
-                (quantifier, inputs, output_for_record(quantifier, record), q_params)
-            )
+            jobs.append((quantifier, record, q_params))
+            produced = _produced_field_for(quantifier, record)
+            if produced is not None:
+                fields.add(produced)
 
     total = len(jobs)
-    for index, (quantifier, inputs, output, q_params) in enumerate(jobs, start=1):
+    for index, (quantifier, record, q_params) in enumerate(jobs, start=1):
+        # Re-derive now: a producer built earlier this run has written its
+        # artifact, so the dependent's inputs resolve it (``position_inputs_from_record``
+        # gates a produced input on the file existing).
+        inputs = position_inputs_from_record(record)
         if progress_cb is not None:
             progress_cb(index, total, inputs.position_dir.name)
-        quantifier.build(inputs, output, params=q_params)
+        quantifier.build(inputs, output_for_record(quantifier, record), params=q_params)
+
+
+def _dependency_order(quants: Sequence[Quantifier]) -> list[Quantifier]:
+    """*quants* sorted so each producer precedes the quantifiers whose ``requires``
+    names its ``produces``. Independent quantifiers keep their given order; a
+    dependency cycle raises ``ValueError``."""
+    produced_by = {q.produces: q for q in quants if q.produces}
+    order: list[Quantifier] = []
+    state: dict[int, str] = {}  # id(q) -> "visiting" | "done"
+
+    def visit(q: Quantifier) -> None:
+        mark = state.get(id(q))
+        if mark == "done":
+            return
+        if mark == "visiting":
+            name = q.quantity_id or type(q).__name__
+            raise ValueError(f"Quantifier dependency cycle involving {name!r}")
+        state[id(q)] = "visiting"
+        for field in q.requires:
+            producer = produced_by.get(field)
+            if producer is not None and producer is not q:
+                visit(producer)
+        state[id(q)] = "done"
+        order.append(q)
+
+    for q in quants:
+        visit(q)
+    return order
+
+
+def _available_fields(inputs: PositionInputs) -> set[str]:
+    """The populated (non-``None``) ``PositionInputs`` field names — the satisfied
+    prerequisites a quantifier's ``requires`` is checked against."""
+    return {f.name for f in _dataclass_fields(inputs) if getattr(inputs, f.name) is not None}
+
+
+def _produced_field_for(quantifier: Quantifier, record: dict) -> str | None:
+    """The ``PositionInputs`` field *quantifier*'s build makes available to
+    dependents for *record*, or ``None`` when its output will not be surfaced as an
+    input. Mirrors :func:`position_inputs_from_record`: a produced field is only
+    visible when the record points its same-named input path at the built artifact
+    (so planning predicts exactly what re-derivation will resolve at build time)."""
+    if not quantifier.produces:
+        return None
+    read_path = record.get(quantifier.produces)
+    if read_path and Path(read_path) == output_for_record(quantifier, record):
+        return quantifier.produces
+    return None
 
 
 def aggregate(

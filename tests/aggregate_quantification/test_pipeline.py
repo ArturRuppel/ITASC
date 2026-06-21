@@ -51,6 +51,23 @@ class _ParamHungryQuantifier(_RecordingQuantifier):
     wants_build_params = True
 
 
+class _ProducerQuantifier(_RecordingQuantifier):
+    """Writes the artifact a derived quantifier consumes (mirrors contacts)."""
+
+    display_name = "Producer (test)"
+    requires = ("cell_labels_path",)
+    produces = "contact_analysis_path"
+    default_output_name = "contact_analysis.h5"
+
+
+class _ConsumerQuantifier(_RecordingQuantifier):
+    """Builds only from the producer's artifact (mirrors a contacts-derived)."""
+
+    display_name = "Consumer (test)"
+    requires = ("contact_analysis_path",)
+    default_output_name = "derived.txt"
+
+
 def _record(tmp: Path, pid: str, *, with_cell: bool = True) -> dict:
     pdir = tmp / pid
     pdir.mkdir(parents=True, exist_ok=True)
@@ -81,6 +98,46 @@ def test_build_quantities_runs_one_build_per_buildable_position(tmp_path):
     built_dirs = {out.parent.parent.name for out, _ in q.calls}
     assert built_dirs == {"a", "b"}  # c skipped: can_build is False
     assert all(out.is_file() for out, _ in q.calls)
+
+
+def test_build_quantities_builds_derived_after_producer_on_cold_run(tmp_path):
+    """On a cold run a derived quantifier's input does not exist until its
+    producer builds. The scheduler must run the producer first, then re-derive
+    inputs so the consumer becomes buildable — even when listed producer-last."""
+    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
+    producer = _ProducerQuantifier()
+    consumer = _ConsumerQuantifier()
+    rec = _record(tmp_path, "a")
+    # Cold: the producer's artifact (the consumer's only input) is not built yet.
+    rec["contact_analysis_path"] = (
+        Path(rec["position_path"]) / OUTPUT_SUBDIR / "contact_analysis.h5"
+    )
+
+    # Consumer first to prove ordering is by dependency, not list position.
+    pipeline.build_quantities([rec], quantifiers=[consumer, producer])
+
+    assert len(producer.calls) == 1
+    assert len(consumer.calls) == 1  # 0 with the old plan-all-up-front loop
+
+
+def test_build_quantities_reports_total_including_derived(tmp_path):
+    """Progress total counts the derived job that only becomes buildable mid-run."""
+    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
+    producer = _ProducerQuantifier()
+    consumer = _ConsumerQuantifier()
+    rec = _record(tmp_path, "a")
+    rec["contact_analysis_path"] = (
+        Path(rec["position_path"]) / OUTPUT_SUBDIR / "contact_analysis.h5"
+    )
+    seen: list[tuple[int, int, str]] = []
+
+    pipeline.build_quantities(
+        [rec], quantifiers=[consumer, producer], progress_cb=lambda *a: seen.append(a)
+    )
+
+    assert [(d, t) for d, t, _ in seen] == [(1, 2), (2, 2)]
 
 
 def test_build_quantities_threads_params_only_into_opt_in_quantifiers(tmp_path):
