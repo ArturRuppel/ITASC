@@ -212,5 +212,5 @@ questions, contact Artur Ruppel at `artur@ruppel.pro`.
 
 ## License
 
-CellFlow is distributed under the GPL-3.0 license. See the repository-level
+CellFlow is distributed under the AGPL-3.0 license. See the repository-level
 `LICENSE` file for the full license terms.

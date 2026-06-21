@@ -8,14 +8,14 @@ version = "0.2.0"
 description = "Fast, interactive cell tracking"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPL-3.0"}
+license = {text = "AGPL-3.0"}
 authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
 keywords = ["cell-tracking", "microscopy", "napari", "segmentation"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: napari",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
