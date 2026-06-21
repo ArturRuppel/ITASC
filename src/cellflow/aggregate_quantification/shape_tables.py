@@ -146,7 +146,25 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
             pooled[CLASS_COLUMN] = (
                 pooled[CLASS_COLUMN].replace("", _UNCLASSIFIED).fillna(_UNCLASSIFIED)
             )
+    _assign_row_id(pooled, spec.keys)
     return pooled
+
+
+#: Identity axes that prefix every row ``id``, ahead of the table's own grain keys.
+#: ``date`` is a descriptor, not identity, so it is excluded.
+_ROW_ID_IDENTITY = ("experiment_id", "condition", "position_id")
+#: Separator joining the id components; chosen not to occur in the identifier
+#: values it concatenates.
+_ROW_ID_SEP = "|"
+
+
+def _assign_row_id(df: pd.DataFrame, keys: tuple[str, ...]) -> None:
+    """Insert a deterministic ``id`` first column: the row's identity axes plus the
+    table's grain keys, joined as a string. Stable across regeneration (a function
+    of identity, not row order) so the curation artifact can reference rows by it."""
+    components = [*_ROW_ID_IDENTITY, *(k for k in keys if k not in _ROW_ID_IDENTITY)]
+    present = [c for c in components if c in df.columns]
+    df.insert(0, "id", df[present].astype(str).agg(_ROW_ID_SEP.join, axis=1))
 
 
 def _position_frame(

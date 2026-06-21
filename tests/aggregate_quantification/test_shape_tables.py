@@ -86,6 +86,34 @@ def test_experiment_id_broadcast_onto_pooled_rows(tmp_path):
     assert (df["date"] == "2026-05-09").all()
 
 
+def test_build_table_assigns_deterministic_row_id(tmp_path):
+    """Each row gets a stable ``id`` derived from its identity — the join key the
+    curation artifact references, so it must survive a regeneration unchanged."""
+    cs = CellShapeQuantifier()
+    rec = _record(tmp_path, "a", experiment_id="EXP-01")
+    _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
+
+    df1 = build_table("cell_shape", [rec])
+    df2 = build_table("cell_shape", [rec])
+
+    assert "id" in df1.columns
+    assert list(df1["id"]) == list(df2["id"])  # deterministic, not a row counter
+    assert df1["id"].is_unique
+
+
+def test_row_id_distinguishes_same_cell_across_positions(tmp_path):
+    """cell_id/frame alone do not identify a row: position + condition matter."""
+    cs = CellShapeQuantifier()
+    rec_a = _record(tmp_path, "a", condition="ctrl", experiment_id="EXP-01")
+    rec_b = _record(tmp_path, "b", condition="drug", experiment_id="EXP-01")
+    _write_object_table(cs, rec_a, _cell_shape_table([1], [0]))
+    _write_object_table(cs, rec_b, _cell_shape_table([1], [0]))
+
+    df = build_table("cell_shape", [rec_a, rec_b])
+
+    assert df["id"].nunique() == 2
+
+
 def test_two_positions_pool_into_one_table(tmp_path):
     cs = CellShapeQuantifier()
     rec_a = _record(tmp_path, "a")
