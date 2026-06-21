@@ -84,18 +84,28 @@ before the Qt layer is deleted.
 
 ## Deferred
 
-All of the following are explicitly **not yet decided**:
+Most of the items below are now settled in
+`2026-06-21-aggregate-quantification-artifact-contract-design.md` (the
+three-artifact contract, identity model, curated/derived split, and the
+registry-driven orchestration). Updated status:
 
-- **CLI subcommand surface** — exact commands/flags (`discover` / `build` /
-  `export`, config options, progress reporting).
-- **Tidy-table artifact formats & layout** — Parquet vs CSV vs Excel specifics,
-  output directory structure, naming.
-- **Notebook surface** — analyst notebook(s) content, plotting library, headless
-  HTML report generation.
-- **napari teardown sequencing** — which files get deleted in what order once the
-  cut gate is met.
-- **Unique-`id` rule for discovery** — folder-name collisions once paths are
-  semantically meaningless (carried over from the direction note;
-  `catalog.py:215`).
-- **Config-driven runner (Approach B)** — possible later thin layer over the
-  orchestrator for one-file reproducibility; not in scope now.
+- **Tidy-table artifact formats** — **resolved:** Parquet + CSV default, Excel on
+  demand. (Output directory *layout* still open.)
+- **Unique-`id` rule for discovery** — **resolved:** compositional identity
+  `(experiment_id, condition, position_id)` validated unique at load, plus a
+  deterministic row `id`. Replaces the folder-name default (`catalog.py:215`).
+- **CLI subcommand surface** — **resolved in shape:** config-in / table-out
+  (`discover` / `build` / `aggregate` / `export`). Exact flags / progress
+  reporting still open.
+- **Notebook surface** — **partly resolved:** split into an interactive
+  QC/curation notebook (writes the curation artifact) and a headless report
+  notebook (papermill → HTML). Plotting library / content still open.
+- **napari teardown sequencing** — still deferred; gated on the cut gate.
+- **Config-driven runner (Approach B)** — out of scope.
+
+New first-class implementation task identified during design: the build loop needs
+a **dependency scheduler**. `build_quantities` plans all jobs up front, so on a
+cold run the contacts-*derived* quantifiers are silently skipped (their producer
+`contact_analysis.h5` does not exist yet). The command must topologically order by
+`requires`/`produces` and re-derive inputs between waves. See the artifact-contract
+spec, §6.
