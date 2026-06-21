@@ -57,10 +57,37 @@ def export_table(csv_path: Path | str, out_dir: Path | str,
             f"no object-key mapping for table {stem!r}; pass object_key explicitly"
         )
 
-    df = _with_meta_columns(pd.read_csv(csv_path))
+    return export_table_frame(
+        pd.read_csv(csv_path), stem, out_dir,
+        object_key=object_key, source={"source_csv": str(csv_path.resolve())},
+    )
+
+
+def export_table_frame(
+    df: pd.DataFrame,
+    stem: str,
+    out_dir: Path | str,
+    *,
+    object_key: str | None = None,
+    source: dict | None = None,
+) -> Path:
+    """Export an in-memory tidy *frame* to ``<out_dir>/<stem>.iris``.
+
+    The frame-based core of :func:`export_table`: lets a caller (the pipeline) hand
+    over an already-built **export frame** — e.g. one the curation join has stamped
+    ``excluded`` / ``qc_reason`` onto — so the ``.iris`` carries the same curated
+    rows as the tidy artifacts, with no detour through disk.
+    """
+    object_key = object_key or _object_key_for(stem)
+    if object_key is None:
+        raise ValueError(
+            f"no object-key mapping for table {stem!r}; pass object_key explicitly"
+        )
+
+    df = _with_meta_columns(df)
     schema = infer_schema(df)
     analyses = build_analyses(df, schema, object_key)
-    provenance = {"source_csv": str(csv_path.resolve()), "exporter": _EXPORTER}
+    provenance = {"exporter": _EXPORTER, **(source or {})}
     data = write_iris(df, schema, analyses, provenance,
                       engine_snapshot={"producer": f"cellflow {_cellflow_version()}"})
 

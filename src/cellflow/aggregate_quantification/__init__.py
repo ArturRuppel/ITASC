@@ -11,7 +11,15 @@ also re-exported for stability; see :mod:`cellflow.aggregate_quantification.cont
 """
 
 from .catalog import load_catalog, save_catalog
-from .pipeline import aggregate, build_catalog, build_quantities, export
+from .config import RunConfig, load_config
+from .pipeline import (
+    aggregate,
+    build_catalog,
+    build_quantities,
+    export,
+    run,
+    select_quantifiers,
+)
 from .quantifier import available_quantifiers
 
 from .contacts.batch import (
@@ -42,10 +50,14 @@ __all__ = [
     # Pipeline: the stable CLI / notebook surface.
     "build_catalog",
     "build_quantities",
+    "select_quantifiers",
     "aggregate",
     "export",
+    "run",
     "load_catalog",
     "save_catalog",
+    "RunConfig",
+    "load_config",
     "available_quantifiers",
     # Contacts quantifier public API.
     "build_contact_analysis",

@@ -236,3 +236,117 @@ def test_export_rejects_unknown_format(tmp_path):
 
     with pytest.raises(ValueError, match="unknown export format"):
         pipeline.export(tmp_path, formats=("xlsx",))
+
+
+# --------------------------------------------------------- quantities selection
+
+
+def test_select_quantifiers_empty_is_every_registered():
+    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+
+    selected = {type(q).quantity_id for q in pipeline.select_quantifiers(())}
+    assert selected == {cls.quantity_id for cls in available_quantifiers()}
+
+
+def test_select_quantifiers_subset_pulls_in_producer():
+    """Selecting a contacts-derived metric brings the contacts producer along, even
+    though it was not named, so the derived metric is actually buildable."""
+    selected = {type(q).quantity_id for q in pipeline.select_quantifiers(["neighbor_count"])}
+    assert "neighbor_count" in selected
+    assert "contacts" in selected  # producer of contact_analysis_path, pulled in
+
+
+def test_select_quantifiers_unknown_raises():
+    import pytest
+
+    with pytest.raises(ValueError, match="bogus"):
+        pipeline.select_quantifiers(["bogus"])
+
+
+# ------------------------------------------------------------- curation join
+
+
+def _build_cell_shape_tables(tmp_path):
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    recs = []
+    for pid in ("a", "b"):
+        rec = _record(tmp_path, pid)
+        tifffile.imwrite(rec["cell_tracked_labels_path"], np.stack([frame, frame]))
+        recs.append(rec)
+    pipeline.build_quantities(
+        recs, quantifiers=[CellShapeQuantifier()], params={"pixel_size_um": 0.25}
+    )
+    tables = pipeline.aggregate(recs, tmp_path / "catalogue")
+    return tables["cell_shape"].parent
+
+
+def test_export_joins_curation_into_separate_dir(tmp_path):
+    tables_dir = _build_cell_shape_tables(tmp_path)
+    measured = pd.read_csv(tables_dir / "cell_shape.csv")
+    target_id = measured["id"].iloc[0]
+    curation = tmp_path / "curation.csv"
+    pd.DataFrame(
+        {"id": [target_id], "excluded": [True], "qc_reason": ["debris"]}
+    ).to_csv(curation, index=False)
+    out_dir = tmp_path / "export"
+
+    written = pipeline.export(tables_dir, out_dir, curation=curation)
+
+    exported = pd.read_csv(out_dir / "cell_shape.csv")
+    assert {"excluded", "qc_reason"} <= set(exported.columns)
+    assert bool(exported.loc[exported["id"] == target_id, "excluded"].iloc[0]) is True
+    assert (exported["excluded"].sum()) == 1  # only the curated row excluded
+    # The disposable measurement table is untouched (no curation columns leaked in).
+    assert "excluded" not in pd.read_csv(tables_dir / "cell_shape.csv").columns
+    # The .iris bundle carries the curated rows too.
+    assert any(p.suffix == ".iris" for p in written)
+
+
+# ----------------------------------------------------------- run (config-driven)
+
+
+def test_run_from_config_round_trip(tmp_path):
+    from cellflow.aggregate_quantification.catalog import save_catalog
+
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    study = tmp_path / "study"
+    recs = []
+    for pid in ("a", "b"):
+        pdir = study / pid
+        pdir.mkdir(parents=True)
+        cells = pdir / "cells.tif"
+        tifffile.imwrite(cells, np.stack([frame, frame]))
+        recs.append(
+            {
+                "id": pid,
+                "condition": "ctrl",
+                "date": "d1",
+                "experiment_id": f"EXP-{pid}",
+                "position_path": pdir,
+                "cell_tracked_labels_path": cells,
+            }
+        )
+    catalog_csv = tmp_path / "catalog.csv"
+    save_catalog(catalog_csv, recs)
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'catalog = "catalog.csv"\n'
+        'quantities = ["cell_shape"]\n'
+        "export_dir = \"export\"\n"
+        "[params]\npixel_size_um = 0.25\n"
+    )
+
+    written = pipeline.run(config)
+
+    out_dir = tmp_path / "export"
+    assert (out_dir / "cell_shape.csv").is_file()
+    assert any(p.suffix == ".iris" for p in written)
+    exported = pd.read_csv(out_dir / "cell_shape.csv")
+    assert set(exported["position_id"]) == {"a", "b"}
+    # The default curation.csv does not exist for this run → no QC columns added.
+    assert "excluded" not in exported.columns

@@ -250,27 +250,29 @@ not a footnote.
 | Unique-`id` rule for discovery | **Resolved** — compositional identity + load-time uniqueness validation; deterministic row `id` (§2). |
 | CLI subcommand **surface (center of gravity)** | **Resolved in shape** — config-in / table-out: `discover` / `build` / `aggregate` / `export` (§6). Exact flags & progress reporting still open. |
 | Notebook surface | **Partly resolved** — split into an interactive **QC/curation** notebook (writes artifact 3) and a headless **report** notebook (papermill/nbconvert → HTML, reads the final joined table). Plotting library & content still open. |
+| **Config format** | **Resolved** — a TOML **run-config** (`config.py:load_config` → `RunConfig`) is the "author once, then run" knob file: `catalog` (path to the CSV catalog), `quantities`, `[params]`, `curation`, `export_dir`. The per-position **catalog stays CSV** (tabular, many-row, own relative-path resolution). |
+| **Quantities selection source** | **Resolved** — config `quantities` list, consumed by `pipeline.select_quantifiers` (empty = all; a subset pulls in dependency producers transitively, so naming a contacts-derived metric brings `contacts` along). |
+| **Output dir layout** | **Resolved** — no historical trail (config-once-then-run): a single **flat `export/`** dir from `export_dir`. Measurement tables stay under the catalogue root; only the curation-joined export lands in `export/`. |
+| **Curation file location** | **Resolved** — defaults to `curation.csv` beside the config (`RunConfig.curation`); overridable. Left-joined by `id` at export, never over the measurement source. |
 | napari teardown sequencing | Still deferred — gated on the cut gate. |
-| Config-driven runner (Approach B) | Out of scope. |
+| Config-driven runner (Approach B) | **Resolved (in)** — `pipeline.run(config.toml)` threads load_catalog → build (selected quantities) → aggregate → curation-joined export. |
 
 ## 8. Open items
 
-- **Config format:** keep the flat **CSV** catalog (Excel-editable, matches the
-  discover→fill workflow) — recommended — or elevate to TOML/YAML. CSV unless
-  structure it cannot express is needed.
-- **`experiment_id` required vs optional:** recommend **optional** with a
+- **`experiment_id` required vs optional:** **resolved** — optional with a
   `date`-fallback default so existing hand-written catalogs still load; the column
   is authoritative when filled.
-- **Curation file** exact location/name within the series root, and `qc_reason`
-  vocabulary (free text vs controlled categories).
+- **Curation `qc_reason` vocabulary** (free text vs controlled categories) — still
+  open; today free text. (Location/name resolved: `RunConfig.curation`, default
+  `curation.csv` beside the config.)
 - **Flag-without-excluding:** whether QC needs a categorical "review / outlier,
   keep in data" status beyond the `excluded` boolean.
 - **CLI flags, progress reporting, notebook plotting library** — as above.
 - **Iris pre-plot selection** — which per-quantifier tables/metrics get premade
   SuperPlots in the `.iris` bundle. Separate, downstream concern (depends on the
-  table layout above); decide later. Today `export_dir` ships only `cells_by_frame`
-  (`iris_export/export.py:TABLES_TO_EXPORT`), which must be revisited once tables
-  are partitioned per quantifier.
+  table layout above); decide later. Today `export` ships only `cell_shape`
+  (`iris_export/export.py:TABLES_TO_EXPORT`); revisit which per-quantifier tables
+  earn premade SuperPlots.
 - **Export-time "view"** — whether/how to offer joined wide tables across selected
   per-quantifier files (storage stays per-domain regardless).
 - **ELN `stamp()` integration** (later): tidy table → `kind="derived"`, curation /
