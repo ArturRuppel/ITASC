@@ -18,12 +18,18 @@ from .analyses import build_analyses
 from .document import write_iris
 from .schema import infer_schema
 
-#: Tables :func:`export_dir` writes for now. One per-quantifier table
-#: (``cell_shape``) while the SuperPlot template is tuned; the other tables are
-#: exportable via :func:`export_table` directly and deferred until their
-#: object-grain plots are worth shipping (Iris pre-plot selection is its own
-#: decision — see the artifact-contract design doc, §8).
-TABLES_TO_EXPORT = ("cell_shape",)
+#: Tables :func:`export_dir` writes. The object-grain morphology + motility
+#: tables for both segmented objects (cell and nucleus), each carrying premade
+#: by-condition / by-class SuperPlots. Tables absent from a given run are skipped.
+#: Other built tables (density, contacts, neighbour counts, shape-relational) are
+#: still exportable via :func:`export_table` directly and deferred until their
+#: object-grain plots are worth shipping (see the artifact-contract design doc, §8).
+TABLES_TO_EXPORT = (
+    "cell_shape",
+    "nucleus_shape",
+    "cell_dynamics",
+    "nucleus_dynamics",
+)
 
 _EXPORTER = "cellflow.aggregate_quantification.iris_export"
 
