@@ -3,7 +3,8 @@
 **Status:** designed; pre-implementation. Settles most of the "Deferred" list in
 the migration plan.
 **Date:** 2026-06-21
-**Scope:** the three-artifact contract (config → tidy table → curation), the
+**Scope:** the artifact contract (config → tidy table → Iris-only export; curation
+removed — see the §1 banner), the
 identity model that anchors it, the curated/derived separation, and the
 registry-driven orchestration the `cellflow-aggregate` command runs.
 **Companions:** builds on
@@ -14,39 +15,47 @@ plan, Approach A) and `2026-06-19-aggregate-quantification-depart-napari-design.
 model in `~/Projects/electronic_labbook/README.md` ("the dividing line for derived
 data is *who made the decisions in it*").
 
-## 1. Three artifacts, three lifecycles
+## 1. Artifacts and lifecycles
 
-The pipeline produces and consumes exactly three artifacts. Each maps onto one of
-the ELN's content kinds, and the mapping dictates how it is stored and versioned.
+> **Amended 2026-06-21 (curation removed from the pipeline).** This section
+> originally described **three** artifacts, the third being a CellFlow *curation*
+> file (`excluded`, `qc_reason`) joined into the export. That is gone. The sibling
+> **Iris** project removed its dedicated row-exclusion mechanism entirely (see
+> `~/Projects/Iris/docs/superpowers/specs/2026-06-21-remove-exclusion-carve-out-design.md`):
+> a `.iris` is now a **pure function of (input table + analysis spec)**, and the
+> way to drop rows is an ordinary **boolean flag column set upstream + a `filter`
+> reduce step** — not a baked-in curated column. CellFlow therefore no longer
+> emits or joins a curation artifact, and the export bakes in **no human
+> judgement**. If row-level QC is reintroduced later it is the Iris-native way: a
+> flag column produced by the pipeline plus a premade filter step in the analysis
+> spec, whose own "why/who/when" provenance lives upstream where it belongs.
+
+The pipeline produces and consumes two artifacts. Each maps onto one of the ELN's
+content kinds, and the mapping dictates how it is stored and versioned.
 
 | # | Artifact | Holds | ELN kind | Treatment | Authored |
 |---|---|---|---|---|---|
-| 1 | **Config** (the catalog) | position paths, `experiment_id`, `condition`, `date`, position id | *code* | git-versioned | upfront, by hand |
+| 1 | **Config** (the catalog + TOML run-config) | position paths, `experiment_id`, `condition`, `date`, position id; run-level `quantities` / `params` / `export_dir` | *code* | git-versioned | upfront, by hand |
 | 2 | **Tidy table(s)** | identity columns (folded in from config) + measurement columns | *automatic derived* | **disposable**, regenerable, not committed | by the command |
-| 3 | **Curation** | `excluded`, `qc_reason` per row | *curated derived* | git-versioned, revisable | after, in the notebook |
 
 The flow:
 
 ```
-config (1) ──[command]──► tidy table (2) ──[inspect in notebook]──► curation (3)
-                              └────────── exported table = (2) ⨝ (3) ──────────┘
+config (1) ──[command]──► tidy table (2) ──[export, Iris-only]──► .iris bundle
 ```
 
-Two consequences are load-bearing:
+One consequence is load-bearing:
 
 - **Config folds into the table at build time and the table stays disposable.**
   Because `experiment_id` / `condition` are deterministic *parameters*, the tidy
   table can carry them and still be a pure function of config + raw data + code —
   re-running reproduces it byte-for-row. This is why the IDs may live "in the same
-  file" as the measurements: they are not curation.
-- **Only post-hoc human judgement is held out.** `excluded` / `qc_reason` are not a
-  function of code (a human looked at the data and decided), so they live in the
-  separate, git-versioned curation artifact and are *joined back*, never written
-  into the disposable table as a system of record.
+  file" as the measurements.
 
-The exported tidy table (the file Iris / Prism / R read) is itself a disposable
-join result — `excluded` appears there as a derived column, authoritative only in
-artifact 3.
+The export is **Iris-only**: the canonical tidy CSVs stay under the catalogue root
+(`aggregate_quantification/`) for programmatic use; `export` writes one `.iris`
+bundle per Iris-selected table into `<export_dir>/iris/` and re-emits nothing in
+other formats (no CSV/parquet mirror).
 
 ## 2. Identity model
 
@@ -82,7 +91,8 @@ catalog will silently feed `date` into the paired key.
 Every tidy row carries a stable `id` (Iris already keys on it — `iris_export/
 export.py:87`, `_with_meta_columns`). It **must be a deterministic function of the
 identity tuple** `(experiment_id, position_id, cell_id, frame)`, not a row counter,
-so that curation references (artifact 3) survive a regeneration of the table.
+so a row keeps the same identity across regenerations of the table — which Iris
+keys on, and which any upstream flag/annotation joined by `id` relies on.
 
 ### Schema changes
 
@@ -169,30 +179,34 @@ Each per-quantifier table is one row per object-per-frame, with this column shap
 |---|---|---|---|
 | Identity | `experiment_id`, `condition`, `position_id`, `cell_id` (or the table's object key), `frame` | config + data | config (params) |
 | Row key | `id` (deterministic, stable) | derived | derived |
-| QC | `excluded` (bool), `qc_reason`, `class_label` | curation + NLS sidecar | **curation (artifact 3)** |
+| Subpopulation | `class_label` | NLS sidecar | derived (left-joined in `build_table`) |
 | Descriptor | `date` (free text, not an axis) | config | config |
 | Measurements | the quantifier's own columns, tidy & typed | the quantifier | derived |
 
-Default export formats: **Parquet + CSV** (per the migration plan default;
-Parquet for typing/size, CSV for the Prism / Excel / Tableau path). Excel only on
-demand.
+Export is **Iris-only** (`.iris` bundles); the canonical tidy tables stay as CSV
+under the catalogue root for programmatic use. No Parquet/CSV mirror is emitted.
 
 ## 4. Curated / derived separation
 
-- **Curation is one file per experiment series**, living at the series /
-  aggregate root (matching the ELN's `CODE`-without-`-NN` aggregate-folder
-  concept). Columns: `(id, excluded, qc_reason)`. Git-versioned.
-- It is **left-joined into the exported table by `id`** — the same mechanism by
-  which the NLS `class_label` sidecar already joins in `shape_tables.build_table`
-  (`class_label` left-joined by `cell_id`, absent → `unclassified`). The NLS
-  sidecar is the *pattern*; the new curation artifact is a single series-level file
-  rather than per-position.
-- **Filter, don't delete.** Excluded rows stay in the table with the flag set;
-  downstream filtering (`reduce.Filter`, which is a no-op on a missing column —
-  `reduce.py:101`) and Iris (`excluded`) honour it. The raw measurement table stays
-  complete and auditable.
-- **The curation notebook writes the curation file, never the measurement table.**
-  Notebook/kernel state is never authoritative; the artifact is.
+> **Amended 2026-06-21 — curation removed (see §1 banner).** CellFlow no longer
+> emits a curation artifact and the export bakes in no human judgement. The
+> paragraphs below are retained as the *rationale* that still holds, but the
+> concrete `(id, excluded, qc_reason)` left-join is gone: it was built against
+> Iris's old exclusion mechanism, which Iris has since removed.
+
+- The principle stands: the dividing line for derived data is *who made the
+  decisions in it*. Human QC judgement must not be silently fused into the
+  disposable, regenerable measurement table.
+- **Iris-native realisation.** With Iris's exclusion mechanism gone, the correct
+  way to express "drop these rows" is a **boolean flag column carried on the table
+  + a `filter` reduce step** in the analysis spec. Iris just declares "I filtered
+  on `<flag> == false`" — honest and fully reproducible — and the flag's own
+  provenance lives upstream in whatever sets it.
+- **Filter, don't delete** still holds: flagged rows stay in the table; the figure
+  reflects the filtered `n`. The raw measurement table stays complete and auditable.
+- The **NLS `class_label`** left-join in `shape_tables.build_table` (by `cell_id`,
+  absent → `unclassified`) remains — it is *automatic derived* (the classifier is
+  code), not human curation, so it is not affected by this change.
 
 ## 5. Modular architecture (already in place)
 
@@ -203,7 +217,7 @@ worst case (contacts). Three layers:
 |---|---|---|---|
 | **Engines** | `contacts/`, `dynamics/`, `shape/` | ~3,640 lines | Heavy domain transforms; own their persistence (`contact_analysis.h5`, etc.); know nothing about catalogs / tables / Iris. |
 | **Quantifier adapters** | `quantifiers/*.py` | ~820 lines, 45–87 each | Thin; auto-register via `quantity_id` (`quantifier.py:111` `__init_subclass__`); declare `requires`/`produces` (DAG edges) and `shape_table`/`table_keys` (where their `object_table()` lands). |
-| **Registry aggregation** | `shape_tables.py` | — | Pools every built adapter's `object_table()` into index-keyed tidy tables by `shape_table` membership; outer-joins on keys; stamps config metadata; left-joins curated columns. |
+| **Registry aggregation** | `shape_tables.py` | — | Pools every built adapter's `object_table()` into index-keyed tidy tables by `shape_table` membership; outer-joins on keys; stamps config metadata; left-joins the NLS `class_label`. |
 
 **The modularity invariant:** the command is registry-driven and
 transformation-agnostic (`build_quantities` defaults to every registered
@@ -246,27 +260,22 @@ not a footnote.
 
 | Deferred item | Status |
 |---|---|
-| Tidy-table artifact **formats** | **Resolved** — Parquet + CSV default; Excel on demand (§3). |
+| Tidy-table artifact **formats** | **Superseded** — export is now **Iris-only** (§1 banner, §4). Canonical tidy tables stay CSV under the catalogue root; no Parquet/CSV mirror. |
 | Unique-`id` rule for discovery | **Resolved** — compositional identity + load-time uniqueness validation; deterministic row `id` (§2). |
 | CLI subcommand **surface (center of gravity)** | **Resolved in shape** — config-in / table-out: `discover` / `build` / `aggregate` / `export` (§6). Exact flags & progress reporting still open. |
-| Notebook surface | **Partly resolved** — split into an interactive **QC/curation** notebook (writes artifact 3) and a headless **report** notebook (papermill/nbconvert → HTML, reads the final joined table). Plotting library & content still open. |
-| **Config format** | **Resolved** — a TOML **run-config** (`config.py:load_config` → `RunConfig`) is the "author once, then run" knob file: `catalog` (path to the CSV catalog), `quantities`, `[params]`, `curation`, `export_dir`. The per-position **catalog stays CSV** (tabular, many-row, own relative-path resolution). |
+| Notebook surface | **Partly resolved** — a headless **report** notebook (papermill/nbconvert → HTML, reads the tidy table). The QC/curation notebook is **dropped** with curation (§1 banner). Plotting library & content still open. |
+| **Config format** | **Resolved** — a TOML **run-config** (`config.py:load_config` → `RunConfig`) is the "author once, then run" knob file: `catalog` (path to the CSV catalog), `quantities`, `[params]`, `export_dir`. The per-position **catalog stays CSV** (tabular, many-row, own relative-path resolution). |
 | **Quantities selection source** | **Resolved** — config `quantities` list, consumed by `pipeline.select_quantifiers` (empty = all; a subset pulls in dependency producers transitively, so naming a contacts-derived metric brings `contacts` along). |
-| **Output dir layout** | **Resolved** — no historical trail (config-once-then-run): a single **flat `export/`** dir from `export_dir`. Measurement tables stay under the catalogue root; only the curation-joined export lands in `export/`. |
-| **Curation file location** | **Resolved** — defaults to `curation.csv` beside the config (`RunConfig.curation`); overridable. Left-joined by `id` at export, never over the measurement source. |
+| **Output dir layout** | **Resolved** — no historical trail (config-once-then-run): a single **flat `export/`** dir from `export_dir`, holding `iris/`. Measurement tables stay under the catalogue root. |
+| **Curation** | **Removed** — see the §1 banner. CellFlow emits no curation artifact; row QC, if reintroduced, is an upstream flag column + a filter reduce step (Iris-native). |
 | napari teardown sequencing | Still deferred — gated on the cut gate. |
-| Config-driven runner (Approach B) | **Resolved (in)** — `pipeline.run(config.toml)` threads load_catalog → build (selected quantities) → aggregate → curation-joined export. |
+| Config-driven runner (Approach B) | **Resolved (in)** — `pipeline.run(config.toml)` threads load_catalog → build (selected quantities) → aggregate → Iris-only export. |
 
 ## 8. Open items
 
 - **`experiment_id` required vs optional:** **resolved** — optional with a
   `date`-fallback default so existing hand-written catalogs still load; the column
   is authoritative when filled.
-- **Curation `qc_reason` vocabulary** (free text vs controlled categories) — still
-  open; today free text. (Location/name resolved: `RunConfig.curation`, default
-  `curation.csv` beside the config.)
-- **Flag-without-excluding:** whether QC needs a categorical "review / outlier,
-  keep in data" status beyond the `excluded` boolean.
 - **CLI flags, progress reporting, notebook plotting library** — as above.
 - **Iris pre-plot selection** — which per-quantifier tables/metrics get premade
   SuperPlots in the `.iris` bundle. Separate, downstream concern (depends on the

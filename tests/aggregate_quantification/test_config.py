@@ -16,7 +16,7 @@ def _write(tmp: Path, text: str, name: str = "config.toml") -> Path:
 
 def test_load_minimal_config_defaults(tmp_path):
     """A bare config naming only the catalog gets sensible defaults: every
-    quantity, flat ``export`` dir, ``curation.csv`` — all beside the config."""
+    quantity and a flat ``export`` dir beside the config."""
     cfg_path = _write(tmp_path, 'catalog = "catalog.csv"\n')
 
     cfg = load_config(cfg_path)
@@ -24,7 +24,6 @@ def test_load_minimal_config_defaults(tmp_path):
     assert isinstance(cfg, RunConfig)
     assert cfg.catalog == (tmp_path / "catalog.csv").resolve()
     assert cfg.export_dir == (tmp_path / "export").resolve()
-    assert cfg.curation == (tmp_path / "curation.csv").resolve()
     assert cfg.quantities == ()  # empty = run every available quantifier
     assert cfg.params == {}
 
@@ -55,7 +54,6 @@ def test_relative_paths_resolve_against_config_dir(tmp_path):
         sub,
         """
         catalog = "data/catalog.csv"
-        curation = "curation/qc.csv"
         export_dir = "out"
         """,
     )
@@ -63,7 +61,6 @@ def test_relative_paths_resolve_against_config_dir(tmp_path):
     cfg = load_config(cfg_path)
 
     assert cfg.catalog == (sub / "data/catalog.csv").resolve()
-    assert cfg.curation == (sub / "curation/qc.csv").resolve()
     assert cfg.export_dir == (sub / "out").resolve()
 
 

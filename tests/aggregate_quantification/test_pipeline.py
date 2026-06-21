@@ -224,18 +224,21 @@ def test_pipeline_build_aggregate_export_round_trip(tmp_path):
     tables_dir = tables["cell_shape"].parent
     written = pipeline.export(tables_dir)
 
-    suffixes = {p.suffix for p in written}
-    assert ".parquet" in suffixes and ".iris" in suffixes
-    parquet = next(p for p in written if p.suffix == ".parquet")
-    assert "cell_shape.area_um2" in pd.read_parquet(parquet).columns
+    # Iris-only export: one .iris bundle, no csv/parquet mirror.
+    assert {p.suffix for p in written} == {".iris"}
+    assert any(p.name == "cell_shape.iris" for p in written)
 
 
-def test_export_rejects_unknown_format(tmp_path):
-    tmp_path.joinpath("cells_by_frame.csv").write_text("frame,cell_id\n0,1\n")
-    import pytest
+def test_export_writes_iris_into_out_dir(tmp_path):
+    tables_dir = _build_cell_shape_tables(tmp_path)
+    out_dir = tmp_path / "export"
 
-    with pytest.raises(ValueError, match="unknown export format"):
-        pipeline.export(tmp_path, formats=("xlsx",))
+    written = pipeline.export(tables_dir, out_dir)
+
+    assert written == [out_dir / "iris" / "cell_shape.iris"]
+    assert written[0].is_file()
+    # The canonical measurement CSV is left in place, not duplicated into export/.
+    assert not (out_dir / "cell_shape.csv").exists()
 
 
 # --------------------------------------------------------- quantities selection
@@ -263,7 +266,7 @@ def test_select_quantifiers_unknown_raises():
         pipeline.select_quantifiers(["bogus"])
 
 
-# ------------------------------------------------------------- curation join
+# ------------------------------------------------------------- export helpers
 
 
 def _build_cell_shape_tables(tmp_path):
@@ -280,28 +283,6 @@ def _build_cell_shape_tables(tmp_path):
     )
     tables = pipeline.aggregate(recs, tmp_path / "catalogue")
     return tables["cell_shape"].parent
-
-
-def test_export_joins_curation_into_separate_dir(tmp_path):
-    tables_dir = _build_cell_shape_tables(tmp_path)
-    measured = pd.read_csv(tables_dir / "cell_shape.csv")
-    target_id = measured["id"].iloc[0]
-    curation = tmp_path / "curation.csv"
-    pd.DataFrame(
-        {"id": [target_id], "excluded": [True], "qc_reason": ["debris"]}
-    ).to_csv(curation, index=False)
-    out_dir = tmp_path / "export"
-
-    written = pipeline.export(tables_dir, out_dir, curation=curation)
-
-    exported = pd.read_csv(out_dir / "cell_shape.csv")
-    assert {"excluded", "qc_reason"} <= set(exported.columns)
-    assert bool(exported.loc[exported["id"] == target_id, "excluded"].iloc[0]) is True
-    assert (exported["excluded"].sum()) == 1  # only the curated row excluded
-    # The disposable measurement table is untouched (no curation columns leaked in).
-    assert "excluded" not in pd.read_csv(tables_dir / "cell_shape.csv").columns
-    # The .iris bundle carries the curated rows too.
-    assert any(p.suffix == ".iris" for p in written)
 
 
 # ----------------------------------------------------------- run (config-driven)
@@ -344,9 +325,12 @@ def test_run_from_config_round_trip(tmp_path):
     written = pipeline.run(config)
 
     out_dir = tmp_path / "export"
-    assert (out_dir / "cell_shape.csv").is_file()
-    assert any(p.suffix == ".iris" for p in written)
-    exported = pd.read_csv(out_dir / "cell_shape.csv")
-    assert set(exported["position_id"]) == {"a", "b"}
-    # The default curation.csv does not exist for this run → no QC columns added.
-    assert "excluded" not in exported.columns
+    # Iris-only export: the .iris bundle lands under export/iris/.
+    assert written == [out_dir / "iris" / "cell_shape.iris"]
+    assert written[0].is_file()
+    # The measurement table stays under the catalogue root (study/), not export/.
+    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
+    measured = study / OUTPUT_SUBDIR / "cell_shape.csv"
+    assert measured.is_file()
+    assert set(pd.read_csv(measured)["position_id"]) == {"a", "b"}

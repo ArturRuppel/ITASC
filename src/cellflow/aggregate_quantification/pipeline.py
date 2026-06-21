@@ -7,7 +7,9 @@ per-position build, aggregate, export — into one pipeline the CLI, notebooks, 
     catalog = build_catalog(root, cell_name=..., nucleus_name=..., out_csv=...)
     build_quantities(catalog)                 # one .build() per (quantifier, position)
     tables = aggregate(catalog)               # pooled, index-keyed CSVs
-    export(tables["cell_shape"].parent)       # tidy artifacts + .iris bundles
+    export(tables["cell_shape"].parent)       # .iris bundles (Iris-only)
+
+Or, end to end from a TOML run-config: ``run("config.toml")``.
 
 This module *composes* — it owns no compute. Discovery lives in :mod:`.catalog`,
 the per-position units in :mod:`.quantifier`, the record→inputs bridge in
@@ -24,14 +26,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
-import pandas as pd
-
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
 from .config import RunConfig, load_config
-from .curation import apply_curation, read_curation
-from .iris_export.export import TABLES_TO_EXPORT as _IRIS_TABLES
-from .iris_export.export import export_table_frame as _export_iris_frame
+from .iris_export.export import export_dir as _export_iris
 from .quantifier import PositionInputs, Quantifier, available_quantifiers
 from .records import output_for_record, position_inputs_from_record
 
@@ -43,10 +41,6 @@ __all__ = [
     "export",
     "run",
 ]
-
-#: Tidy-table artifact formats :func:`export` knows how to write. ``csv`` copies
-#: the aggregated table through unchanged; ``parquet`` re-encodes it.
-_KNOWN_FORMATS = ("parquet", "csv")
 
 
 def build_catalog(
@@ -250,74 +244,26 @@ def aggregate(
 
 
 def export(
-    tables_dir: Path | str,
-    out_dir: Path | str | None = None,
-    *,
-    formats: Sequence[str] = _KNOWN_FORMATS,
-    curation: Path | str | None = None,
+    tables_dir: Path | str, out_dir: Path | str | None = None
 ) -> list[Path]:
-    """Write tidy artifacts + ``.iris`` bundles from the aggregated tables.
+    """Write ``.iris`` bundles from the aggregated tables.
 
     *tables_dir* is the directory holding the aggregated tidy CSVs (what
-    :func:`aggregate` wrote into — the ``aggregate_quantification`` folder). For
-    each table CSV found there an **export frame** is built — the measurement table
-    with the *curation* artifact (``id, excluded, qc_reason``) left-joined by ``id``
-    when given (:func:`cellflow.aggregate_quantification.curation.apply_curation`) —
-    and emitted in every requested *formats* entry (``csv`` / ``parquet``). The
-    curated frame also feeds the ``.iris`` writer directly, so the bundle carries
-    the same curated rows. *out_dir* defaults to *tables_dir*; the ``.iris`` bundles
-    land in ``<out_dir>/iris/``.
+    :func:`aggregate` wrote into — the ``aggregate_quantification`` folder). The
+    export is **Iris-only**: for each table selected for premade SuperPlots
+    (``iris_export.TABLES_TO_EXPORT``) found there, one ``.iris`` document is
+    written under ``<out_dir>/iris/``. *out_dir* defaults to *tables_dir*.
 
-    The curation join writes only into *out_dir* — never back over the disposable
-    measurement CSVs in *tables_dir* (the curated/derived separation, spec §4). Pass
-    a distinct *out_dir* (the run's ``export/`` dir) when curating.
+    Each bundle is a pure function of (table + analysis spec) — no curation or
+    other human judgment is baked in (Iris removed its exclusion mechanism). The
+    canonical tidy CSVs remain in *tables_dir* for programmatic use; the export
+    deliberately does not re-emit them in other formats.
 
-    Returns every written path (tidy artifacts then ``.iris`` bundles).
+    Returns the written ``.iris`` paths.
     """
     tables_dir = Path(tables_dir)
     out_dir = Path(out_dir) if out_dir is not None else tables_dir
-    unknown = [fmt for fmt in formats if fmt not in _KNOWN_FORMATS]
-    if unknown:
-        raise ValueError(
-            f"unknown export format(s) {unknown}; known: {list(_KNOWN_FORMATS)}"
-        )
-    curation_df = read_curation(curation)
-
-    written: list[Path] = []
-    for csv_path in sorted(tables_dir.glob("*.csv")):
-        stem = csv_path.stem
-        # The export frame: measurement table + (optional) curation join. Built
-        # once, reused for every tidy format and the .iris bundle.
-        curated = curation_df is not None
-        frame = apply_curation(pd.read_csv(csv_path), curation_df) if curated else None
-        for fmt in formats:
-            if fmt == "csv":
-                target = out_dir / csv_path.name
-                if not curated and target.resolve() == csv_path.resolve():
-                    continue  # source already in place; no self-copy
-                out_dir.mkdir(parents=True, exist_ok=True)
-                if curated:
-                    frame.to_csv(target, index=False)
-                else:
-                    target.write_bytes(csv_path.read_bytes())
-                written.append(target)
-            elif fmt == "parquet":
-                if frame is None:
-                    frame = pd.read_csv(csv_path)
-                out_dir.mkdir(parents=True, exist_ok=True)
-                target = out_dir / f"{stem}.parquet"
-                frame.to_parquet(target, index=False)
-                written.append(target)
-
-        if stem in _IRIS_TABLES:
-            iris_frame = frame if frame is not None else pd.read_csv(csv_path)
-            written.append(
-                _export_iris_frame(
-                    iris_frame, stem, out_dir / "iris",
-                    source={"source_csv": str(csv_path.resolve())},
-                )
-            )
-    return written
+    return _export_iris(tables_dir, out_dir=out_dir / "iris")
 
 
 def run(config_path: Path | str) -> list[Path]:
@@ -326,11 +272,10 @@ def run(config_path: Path | str) -> list[Path]:
     Loads the :class:`~cellflow.aggregate_quantification.config.RunConfig`, then
     threads its choices through the four stages: load the catalog CSV, build the
     selected *quantities* (dependency producers pulled in automatically), aggregate
-    the per-position products into the measurement tables, and export tidy artifacts
-    + ``.iris`` bundles with the *curation* artifact left-joined — into the config's
-    flat ``export_dir``. The measurement tables are written under the catalogue
-    root; only the curated export lands in ``export_dir``. Returns the exported
-    paths.
+    the per-position products into the measurement tables, and export the ``.iris``
+    bundles into the config's ``export_dir``. The measurement tables are written
+    under the catalogue root; the ``.iris`` deliverables land in ``export_dir/iris``.
+    Returns the exported paths.
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -351,4 +296,4 @@ def run(config_path: Path | str) -> list[Path]:
     if not tables:
         return []
     tables_dir = next(iter(tables.values())).parent
-    return export(tables_dir, cfg.export_dir, curation=cfg.curation)
+    return export(tables_dir, cfg.export_dir)

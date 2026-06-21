@@ -74,9 +74,10 @@ def export_table_frame(
     """Export an in-memory tidy *frame* to ``<out_dir>/<stem>.iris``.
 
     The frame-based core of :func:`export_table`: lets a caller (the pipeline) hand
-    over an already-built **export frame** — e.g. one the curation join has stamped
-    ``excluded`` / ``qc_reason`` onto — so the ``.iris`` carries the same curated
-    rows as the tidy artifacts, with no detour through disk.
+    over an already-built frame so the ``.iris`` is written with no detour through
+    disk. The bundle is a pure function of (frame + analysis spec) — no curation or
+    other human judgment is baked in (Iris removed its exclusion mechanism; to drop
+    rows, carry a boolean flag column upstream and filter on it in a reduce step).
     """
     object_key = object_key or _object_key_for(stem)
     if object_key is None:
@@ -115,14 +116,12 @@ def export_dir(data_dir: Path | str, out_dir: Path | str | None = None) -> list[
 
 
 def _with_meta_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure the stable ``id`` and ``excluded`` columns Iris keys rows on. Iris
-    injects these on load when absent, but writing them gives stable row identity
-    for click-to-exclude across reopen."""
+    """Ensure the stable ``id`` column Iris keys rows on. Iris injects it on load
+    when absent, but writing it gives stable row identity across reopen. (No
+    ``excluded`` column: Iris no longer has a dedicated exclusion mechanism.)"""
     df = df.copy()
     if "id" not in df.columns:
         df.insert(0, "id", [str(i + 1) for i in range(len(df))])
-    if "excluded" not in df.columns:
-        df["excluded"] = False
     return df
 
 

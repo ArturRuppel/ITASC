@@ -90,12 +90,16 @@ def test_schema_label_unit_and_levels():
     assert cols["class_label"]["levels"] == ["epithelial", "mesenchymal"]
 
 
-def test_schema_omits_bookkeeping_columns():
+def test_schema_omits_id_but_keeps_other_columns():
+    """Only the stable row ``id`` is bookkeeping. Iris removed its exclusion
+    mechanism, so a boolean ``excluded`` column (if present) is an ordinary factor
+    that must appear in the schema — not silently dropped."""
     df = _cells_table()
     df.insert(0, "id", [str(i) for i in range(len(df))])
     df["excluded"] = False
     names = {c["name"] for c in infer_schema(df)["columns"]}
-    assert "id" not in names and "excluded" not in names
+    assert "id" not in names
+    assert "excluded" in names
 
 
 # --------------------------------------------------------------------------- #

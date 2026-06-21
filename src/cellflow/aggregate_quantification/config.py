@@ -3,14 +3,14 @@
 One small file, authored once and git-versioned (it carries *code status*, per the
 artifact-contract spec §1): it names the per-position **catalog** CSV, selects
 which **quantities** to compute, supplies the shared build **params**, and points
-at the **curation** file and **export** directory. Everything in it is a run-level
-choice — the per-position table itself stays a CSV (tabular, many-row, with its own
+at the **export** directory. Everything in it is a run-level choice — the
+per-position table itself stays a CSV (tabular, many-row, with its own
 relative-path resolution); this file is the "author once, then run" surface a
 single ``run(config)`` entry point consumes.
 
 Paths resolve relative to the config file's own directory, so a project folder is
-relocatable: keep ``config.toml`` next to ``catalog.csv`` / ``curation.csv`` /
-``export/`` and the whole thing moves together.
+relocatable: keep ``config.toml`` next to ``catalog.csv`` / ``export/`` and the
+whole thing moves together.
 """
 from __future__ import annotations
 
@@ -26,9 +26,8 @@ from .quantifier import available_quantifiers
 
 __all__ = ["RunConfig", "load_config"]
 
-#: Defaults for the optional path keys, relative to the config file's directory.
+#: Default for the optional export-dir key, relative to the config file's directory.
 _DEFAULT_EXPORT_DIR = "export"
-_DEFAULT_CURATION = "curation.csv"
 
 
 @dataclass(frozen=True)
@@ -43,7 +42,6 @@ class RunConfig:
 
     catalog: Path
     export_dir: Path
-    curation: Path
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
 
@@ -51,11 +49,10 @@ class RunConfig:
 def load_config(config_path: Path | str) -> RunConfig:
     """Parse the TOML run-config at *config_path* into a :class:`RunConfig`.
 
-    ``catalog`` is required; ``export_dir`` / ``curation`` default to ``export/``
-    and ``curation.csv`` beside the config. Relative paths resolve against the
-    config file's directory. Selected ``quantities`` are validated against the
-    registered quantifiers so a typo fails loudly rather than silently computing
-    nothing.
+    ``catalog`` is required; ``export_dir`` defaults to ``export/`` beside the
+    config. Relative paths resolve against the config file's directory. Selected
+    ``quantities`` are validated against the registered quantifiers so a typo fails
+    loudly rather than silently computing nothing.
     """
     path = Path(config_path)
     base = path.parent
@@ -74,7 +71,6 @@ def load_config(config_path: Path | str) -> RunConfig:
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
         export_dir=_resolve(base, data.get("export_dir", _DEFAULT_EXPORT_DIR)),
-        curation=_resolve(base, data.get("curation", _DEFAULT_CURATION)),
         quantities=quantities,
         params=dict(data.get("params", {})),
     )

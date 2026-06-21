@@ -161,7 +161,8 @@ _ROW_ID_SEP = "|"
 def _assign_row_id(df: pd.DataFrame, keys: tuple[str, ...]) -> None:
     """Insert a deterministic ``id`` first column: the row's identity axes plus the
     table's grain keys, joined as a string. Stable across regeneration (a function
-    of identity, not row order) so the curation artifact can reference rows by it."""
+    of identity, not row order) so a row keeps the same identity across rebuilds —
+    what Iris keys on, and what any upstream annotation joined by ``id`` relies on."""
     components = [*_ROW_ID_IDENTITY, *(k for k in keys if k not in _ROW_ID_IDENTITY)]
     present = [c for c in components if c in df.columns]
     df.insert(0, "id", df[present].astype(str).agg(_ROW_ID_SEP.join, axis=1))

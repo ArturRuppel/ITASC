@@ -25,8 +25,11 @@ IDENTIFIER_COLUMNS = frozenset({
 })
 #: Comparison / grouping axes and other genuine categorical factors.
 CATEGORICAL_COLUMNS = frozenset({"condition", "class_label", "contact_type", "role"})
-#: Iris bookkeeping columns — never emitted to the schema.
-META_COLUMNS = frozenset({"id", "excluded"})
+#: Iris bookkeeping columns — never emitted to the schema. Only the stable row
+#: ``id`` remains: Iris removed its dedicated exclusion mechanism, so a column like
+#: ``excluded`` is now just an ordinary boolean factor (filter on it with a reduce
+#: step) and must appear in the schema like any other column.
+META_COLUMNS = frozenset({"id"})
 
 #: An unrecognized string column is categorical below this cardinality, else an
 #: identifier (free text / high-cardinality keys).
@@ -40,7 +43,7 @@ _UNIT_SUFFIXES = (("_um2", "µm²"), ("_um", "µm"))
 def infer_schema(df: pd.DataFrame) -> dict:
     """Build the ``{schema_version, columns:[...]}`` schema for *df*.
 
-    ``id`` / ``excluded`` are skipped (Iris bookkeeping). Every other column gets
+    ``id`` is skipped (Iris bookkeeping). Every other column gets
     a ``type`` (``identifier`` | ``categorical`` | ``numeric``), a human ``label``
     (the leaf after the last ``.``), an optional ``unit``, and — for categorical
     columns — the sorted ``levels``.
