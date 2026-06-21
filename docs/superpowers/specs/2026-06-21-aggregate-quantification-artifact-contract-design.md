@@ -100,17 +100,78 @@ so that curation references (artifact 3) survive a regeneration of the table.
   defaults to the folder name (`catalog.py:215`) and collides; the human resolves a
   collision by editing `position_id` in the config.
 
-## 3. Tidy-table column contract
+## 3. Tidy-table contract: partitioning & columns
 
-One row per object-per-frame (for `cells_by_frame`, one row per cell-per-frame):
+### Partition by quantifier, not by grain — no god tables
+
+The current aggregation rule is **table = grain**: quantifiers sharing
+`table_keys` are outer-joined into one file (`shape_tables.build_table`). That
+collapses six unrelated *measurement domains* — `cell_shape`, `nucleus_shape`,
+`cell_dynamics`, `nucleus_dynamics`, `shape_relational`, `neighbor_count`, all at
+`(frame, cell_id)` — into `cells_by_frame`, a **~50–60 column god table** (shape
+alone is ~12 columns via `shape/core.py`, emitted twice for cell and nucleus).
+That is wide-format sprawl, not tidy: tidy means one observational unit per table,
+not one unit × every domain measured on it.
+
+**Decision: the table is the quantifier (one measurement domain), at its grain.**
+Output files become one-per-quantifier:
+
+```
+cell_shape          (frame, cell_id)        nucleus_shape       (frame, cell_id)
+cell_dynamics       (frame, cell_id)        nucleus_dynamics    (frame, cell_id)
+nucleus_cell_shape  (frame, cell_id)        neighbor_count      (frame, cell_id)
+cell_density        (frame, label)          contact_type_zscore (frame, contact_type)
+neighbor_enrichment (frame, cell_id, focal_label, neighbor_label)   ← large by ROW count
+signed_contact_length (frame, t1_event_id, role, contact_type)
+```
+
+This makes **the quantifier the single unit of compute *and* output**, with
+several consequences:
+
+- **No god table** — adding a quantifier adds a *file*, never widens a shared one
+  (the modularity invariant of §5, extended to outputs).
+- **Re-join stays trivial** — the deterministic `id` (and shared `frame`/`cell_id`)
+  let a consumer join `cell_shape` + `cell_dynamics` for a combined view; curation
+  (§4) joins onto every table uniformly by `id`.
+- **`build_table` simplifies** — pool-per-quantifier-across-positions, no
+  cross-quantifier outer join; the "quantifiers sharing a `shape_table` must
+  declare matching `table_keys`" coupling constraint is dropped.
+
+**Cost & mitigation:** cross-domain analysis needs a join, and there are more
+files. An optional **export-time "view"** may join a *selected* set of per-domain
+tables into one wide file on request — storage stays per-domain, a combined table
+is a delivery option, not the default. For the SuperPlot use case (one metric at a
+time) per-domain files are already the more convenient shape.
+
+### Compute selectivity
+
+`build_quantities` currently runs **every** registered quantifier that `can_build`.
+That changes to **config-driven selection**:
+
+- **Quantifier-level** (the lever): the config (artifact 1) carries a `quantities`
+  list; only listed quantifiers run, so only their files appear — "compute less" and
+  "fewer files" become the same control. Default is a **small sensible set, not
+  "all"**.
+- **Metric-level** (within a quantifier, e.g. only `area_um2` + `eccentricity` of
+  shape's ~12) is **deferred** — splitting files largely defuses it: an unwanted
+  metric is one column in a narrow domain file, not bloat in a god table.
+  `shape/core.py:SHAPE_COLUMNS` makes an allowlist feasible later if a specific
+  quantifier proves expensive per-metric (check the dynamics/MSD ones first).
+- `neighbor_enrichment` / `cell_neighbors_by_frame` is the *row-count* god table
+  (frame × cell × neighbor), orthogonal to width; the control there is simply not
+  computing it unless asked.
+
+### Per-table column contract
+
+Each per-quantifier table is one row per object-per-frame, with this column shape:
 
 | Group | Columns | Source | Authority |
 |---|---|---|---|
-| Identity | `experiment_id`, `condition`, `position_id`, `cell_id`, `frame` | config + data | config (params) |
+| Identity | `experiment_id`, `condition`, `position_id`, `cell_id` (or the table's object key), `frame` | config + data | config (params) |
 | Row key | `id` (deterministic, stable) | derived | derived |
 | QC | `excluded` (bool), `qc_reason`, `class_label` | curation + NLS sidecar | **curation (artifact 3)** |
 | Descriptor | `date` (free text, not an axis) | config | config |
-| Measurements | one column per quantity, tidy & typed | quantifiers | derived |
+| Measurements | the quantifier's own columns, tidy & typed | the quantifier | derived |
 
 Default export formats: **Parquet + CSV** (per the migration plan default;
 Parquet for typing/size, CSV for the Prism / Excel / Tableau path). Excel only on
@@ -205,5 +266,12 @@ not a footnote.
 - **Flag-without-excluding:** whether QC needs a categorical "review / outlier,
   keep in data" status beyond the `excluded` boolean.
 - **CLI flags, progress reporting, notebook plotting library** — as above.
+- **Iris pre-plot selection** — which per-quantifier tables/metrics get premade
+  SuperPlots in the `.iris` bundle. Separate, downstream concern (depends on the
+  table layout above); decide later. Today `export_dir` ships only `cells_by_frame`
+  (`iris_export/export.py:TABLES_TO_EXPORT`), which must be revisited once tables
+  are partitioned per quantifier.
+- **Export-time "view"** — whether/how to offer joined wide tables across selected
+  per-quantifier files (storage stays per-domain regardless).
 - **ELN `stamp()` integration** (later): tidy table → `kind="derived"`, curation /
   config → `kind="curated"` / code. Downstream, not now.
