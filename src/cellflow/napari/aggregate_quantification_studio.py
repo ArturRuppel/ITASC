@@ -39,7 +39,6 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.aggregate_quantification.quantifier import (
-    PositionInputs,
     Quantifier,
     available_quantifiers,
 )
@@ -49,6 +48,7 @@ from cellflow.aggregate_quantification.catalog import (
     merge_catalog_records,
     save_catalog,
 )
+from cellflow.aggregate_quantification.pipeline import build_quantities
 from cellflow.aggregate_quantification.shape_tables import aggregate as aggregate_tables
 from cellflow.aggregate_quantification.shape_tables import catalogue_root
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
@@ -60,31 +60,10 @@ from cellflow.napari.studio_plugins import (
     BuildArea,
     PluginEntry,
     available_tool_plugins,
-    output_for_record,
-    position_inputs_from_record,
     records_satisfying,
 )
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import CollapsibleSection
-
-
-class _BuildPlan(NamedTuple):
-    """One (quantifier, position) queued for a build.
-
-    A single Run can mix metrics, so each job carries its own quantifier and the
-    resolved build params (only quantifiers that opt in get the shared bar's
-    knobs).
-    """
-
-    quantifier: Quantifier
-    inputs: PositionInputs
-    output: Path
-    params: dict | None
-
-
-class _BuildResult(NamedTuple):
-    position: str
-    status: str  # "built" | "failed"
 
 
 class _PluginSection(NamedTuple):
@@ -476,77 +455,60 @@ class AggregateQuantificationStudioWidget(QWidget):
     ) -> None:
         """Build every *quantifier* for the in-scope *records* (Build area Run).
 
-        Queues one job per (quantifier, position): skip positions lacking the
-        inputs, and — unless *overwrite* — positions already built. A single
-        worker runs the mixed queue so several metrics build in one pass.
+        Delegates the per-position build loop to
+        :func:`cellflow.aggregate_quantification.pipeline.build_quantities` (the
+        Run always overwrites, so *overwrite* is implied); the studio only owns the
+        threading, progress, and post-build aggregation. One worker runs the mixed
+        metric set so several quantities build in one pass.
         """
         if self._build_worker is not None:
             self._set_build_status("A build is already running.")
             return
-        # Only quantifiers that opt in get the shared bar's build knobs (z-score
-        # shuffles, density FOV); the rest keep their own ``params`` schema clean.
-        shared = getattr(self, "_shared_params", None)
-        jobs: list[_BuildPlan] = []
-        for quantifier in quantifiers:
-            params = (
-                shared.build_params()
-                if shared is not None and quantifier.wants_build_params
-                else None
-            )
-            for record in records:
-                inputs = position_inputs_from_record(record)
-                if not quantifier.can_build(inputs):
-                    continue
-                out = output_for_record(quantifier, record)
-                if not overwrite and quantifier.is_built(out):
-                    continue
-                jobs.append(
-                    _BuildPlan(
-                        quantifier=quantifier, inputs=inputs, output=out, params=params
-                    )
-                )
-        if not jobs:
-            self._set_build_status(
-                "Nothing to build — inputs missing or already built."
-            )
+        if not quantifiers or not records:
+            self._set_build_status("Nothing to build — pick a metric and a position.")
             return
-        self._begin_build(jobs)
+        # The shared bar's build knobs (z-score shuffles, density FOV, px / Δt);
+        # build_quantities threads them only into quantifiers that opt in.
+        shared = getattr(self, "_shared_params", None)
+        params = shared.build_params() if shared is not None else None
+        self._begin_build(quantifiers, records, params)
 
-    def _begin_build(self, jobs: list[_BuildPlan]) -> None:
-        self._set_build_status(f"Computing {len(jobs)} build job(s)…")
+    def _begin_build(
+        self,
+        quantifiers: list[Quantifier],
+        records: list[dict],
+        params: dict | None,
+    ) -> None:
+        self._set_build_status("Computing builds…")
+        self._build_total = 0
         emit = self._build_emitter.progress.emit
 
         @thread_worker(
             connect={"returned": self._on_build_done, "errored": self._on_build_error}
         )
         def _worker():
-            results: list[_BuildResult] = []
-            total = len(jobs)
-            for index, plan in enumerate(jobs, start=1):
-                name = plan.inputs.position_dir.name
-                emit(index, total, name)
-                try:
-                    plan.quantifier.build(plan.inputs, plan.output, params=plan.params)
-                    results.append(_BuildResult(name, "built"))
-                except Exception:  # noqa: BLE001 - reported per-position, not fatal
-                    results.append(_BuildResult(name, "failed"))
-            return results
+            build_quantities(
+                records,
+                quantifiers=quantifiers,
+                params=params,
+                progress_cb=emit,
+            )
 
         self._build_worker = _worker()
 
     def _on_build_progress(self, done: int, total: int, label: str) -> None:
+        # The final callback (done == total) records how many builds ran; a
+        # fail-fast abort surfaces via ``_on_build_error`` instead.
+        self._build_total = total
         self._set_build_status(f"Computing: {done}/{total} {label}")
 
-    def _on_build_done(self, results: list) -> None:
+    def _on_build_done(self, _result: object) -> None:
         self._build_worker = None
-        built = sum(1 for r in results if r.status == "built")
-        failed = sum(1 for r in results if r.status == "failed")
+        built = getattr(self, "_build_total", 0)
         # Re-normalize so each position's status reflects freshly built files.
         self._records = merge_catalog_records(self._records, [])
         self._refresh_table()
-        self._set_build_status(
-            f"Built {built}" + (f", {failed} failed" if failed else "") + "."
-        )
+        self._set_build_status(f"Built {built}." if built else "Nothing to build.")
         # Auto-aggregate the affected tables so the Plot area never reads a stale
         # snapshot after a build (the common path); the button re-aggregates
         # without rebuilding.

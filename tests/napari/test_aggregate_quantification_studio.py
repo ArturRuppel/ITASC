@@ -302,44 +302,40 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     app.processEvents()
 
 
-def test_build_area_run_targets_only_buildable_missing_positions(tmp_path, monkeypatch):
-    """The Build area Run path builds missing positions that have inputs,
-    skips already-built ones, and (with overwrite) rebuilds everything."""
+def test_build_area_run_delegates_to_pipeline(tmp_path, monkeypatch):
+    """The Build area Run forwards the checked quantifiers + in-scope records (and
+    the shared build params) to the build loop. Which positions actually build —
+    skipping those lacking inputs — is now ``pipeline.build_quantities``' job (see
+    test_pipeline), not the studio's."""
     app = _app()
     monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
 
     widget = mod.AggregateQuantificationStudioWidget()
     quantifier = ContactsQuantifier()
 
-    p1, p2, p3 = tmp_path / "p1", tmp_path / "p2", tmp_path / "p3"
-    for p in (p1, p2, p3):
+    p1, p2 = tmp_path / "p1", tmp_path / "p2"
+    for p in (p1, p2):
         p.mkdir()
-    (p1 / "contact_analysis.h5").touch()  # already built
     records = [
-        # p1: built, has cell labels
         {"id": "p1", "position_path": p1, "contact_analysis_path": p1 / "contact_analysis.h5",
          "cell_tracked_labels_path": p1 / "cells.tif"},
-        # p2: missing, has cell labels -> buildable
         {"id": "p2", "position_path": p2, "contact_analysis_path": p2 / "contact_analysis.h5",
          "cell_tracked_labels_path": p2 / "cells.tif"},
-        # p3: missing, no cell labels -> not buildable
-        {"id": "p3", "position_path": p3, "contact_analysis_path": p3 / "contact_analysis.h5",
-         "cell_tracked_labels_path": None},
     ]
 
     captured: list = []
-    monkeypatch.setattr(widget, "_begin_build", lambda jobs: captured.append(jobs))
+    monkeypatch.setattr(widget, "_begin_build", lambda *args: captured.append(args))
 
-    # Default: only p2 (missing + buildable).
-    widget._run_quantity_builds([quantifier], records, overwrite=False)
-    assert [j.inputs.position_dir.name for j in captured[-1]] == ["p2"]
-
-    # Overwrite: p1 and p2 (both have cell labels); p3 still skipped (no inputs).
-    captured.clear()
     widget._run_quantity_builds([quantifier], records, overwrite=True)
-    assert sorted(j.inputs.position_dir.name for j in captured[-1]) == ["p1", "p2"]
-    # Every queued job carries its quantifier so a mixed Run builds correctly.
-    assert {j.quantifier.quantity_id for j in captured[-1]} == {"contacts"}
+    quants, recs, _params = captured[-1]
+    assert [q.quantity_id for q in quants] == ["contacts"]
+    assert [r["id"] for r in recs] == ["p1", "p2"]
+
+    # Empty scope or no metric checked is a no-op (no worker queued).
+    captured.clear()
+    widget._run_quantity_builds([quantifier], [], overwrite=True)
+    widget._run_quantity_builds([], records, overwrite=True)
+    assert captured == []
 
     widget.deleteLater()
     app.processEvents()
