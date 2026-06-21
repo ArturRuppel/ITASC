@@ -33,8 +33,7 @@ class ShapeRelationalQuantifier(Quantifier):
     required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     default_output_name = "shape_relational.csv"
-    # Per-cell nucleus↔cell relational descriptors pool into the cells table.
-    shape_table = "cells_by_frame"
+    # Per-cell nucleus↔cell relational descriptors, keyed (frame, cell_id).
     table_keys = ("frame", "cell_id")
 
     def build(

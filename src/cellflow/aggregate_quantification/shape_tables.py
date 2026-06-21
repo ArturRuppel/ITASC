@@ -9,15 +9,15 @@ rewrites the file from scratch and CSV stays viable (no concurrent partial write
 into a shared file). The per-position artifacts remain the normalized source of
 truth; these tables are a reproducible projection of them.
 
-Grouping principle: **by the natural index a measurement is keyed on.** Each
-:class:`~cellflow.aggregate_quantification.quantifier.Quantifier` declares its
-target table (``shape_table``) and that table's index (``table_keys``); every
-quantity sharing a table is outer-joined, *within each position*, on those keys,
-so one row carries every co-targeting quantity's columns side by side. A value
-column is namespaced by its ``quantity_id`` (``cell_shape.area``,
-``nucleus_shape.area``) so same-named descriptors from different quantities never
-collide. The keys, the catalogue metadata (``condition`` / ``date`` /
-``position_id``), and the NLS ``class_label`` stay bare.
+Partitioning principle: **one table per quantifier.** Each
+:class:`~cellflow.aggregate_quantification.quantifier.Quantifier` that aggregates
+declares its natural index (``table_keys``); its tidy ``object_table`` is pooled
+across positions into a table named by the quantifier's ``quantity_id``. Value
+columns stay namespaced by ``quantity_id`` (``cell_shape.area_um2``) so a later
+joined *view* across tables never has colliding names. The keys, the catalogue
+metadata (``condition`` / ``experiment_id`` / ``date`` / ``position_id``), and the
+NLS ``class_label`` stay bare. (Previously several quantities sharing an index
+were outer-joined into one wide table — that produced god tables and is gone.)
 
 Generalizes the old one-quantity-at-a-time pooling
 (``napari…plots._pooling.pool_quantity``) to "all quantities of an index,
@@ -66,7 +66,9 @@ _UNCLASSIFIED = "unclassified"
 
 @dataclass(frozen=True)
 class ShapeTableSpec:
-    """One aggregated table: its name, index keys, and contributing quantities."""
+    """One aggregated table: a single quantifier's pooled ``object_table`` — the
+    table name (its ``quantity_id``), the index keys, and the contributing quantity
+    (``quantity_ids`` carries the one id, kept a tuple for the pooling machinery)."""
 
     name: str
     keys: tuple[str, ...]
@@ -79,35 +81,28 @@ class ShapeTableSpec:
 
 
 def shape_table_registry() -> dict[str, ShapeTableSpec]:
-    """Map table name → :class:`ShapeTableSpec`, built from the quantifier
-    declarations. Quantities sharing a ``shape_table`` must agree on ``table_keys``
-    (raises otherwise — a declaration bug, not a runtime condition)."""
-    keys_by_table: dict[str, tuple[str, ...]] = {}
-    members: dict[str, list[str]] = {}
-    for q_cls in available_quantifiers():
-        name = q_cls.shape_table
-        if not name:
-            continue
-        keys = tuple(q_cls.table_keys)
-        if name in keys_by_table and keys_by_table[name] != keys:
-            raise ValueError(
-                f"Quantifiers targeting table {name!r} disagree on keys: "
-                f"{keys_by_table[name]} vs {keys} ({q_cls.quantity_id})"
-            )
-        keys_by_table[name] = keys
-        members.setdefault(name, []).append(q_cls.quantity_id)
+    """Map table name → :class:`ShapeTableSpec`. Each aggregating quantifier — one
+    that declares a ``table_keys`` index — is its **own** table, named by its
+    ``quantity_id`` and keyed by its own grain. No quantifier shares a table with
+    another (no god tables)."""
     return {
-        name: ShapeTableSpec(name=name, keys=keys_by_table[name], quantity_ids=tuple(ids))
-        for name, ids in members.items()
+        q_cls.quantity_id: ShapeTableSpec(
+            name=q_cls.quantity_id,
+            keys=tuple(q_cls.table_keys),
+            quantity_ids=(q_cls.quantity_id,),
+        )
+        for q_cls in available_quantifiers()
+        if q_cls.table_keys
     }
 
 
 def table_for_quantity(quantity_id: str) -> str | None:
-    """The aggregated table *quantity_id* lands in, or ``None`` when it is not
-    aggregated (contacts, or a sub-table view)."""
+    """The aggregated table *quantity_id* lands in — its own ``quantity_id`` when it
+    aggregates (declares ``table_keys``), else ``None`` (contacts and other
+    non-aggregated quantities)."""
     for q_cls in available_quantifiers():
         if q_cls.quantity_id == quantity_id:
-            return q_cls.shape_table or None
+            return q_cls.quantity_id if q_cls.table_keys else None
     return None
 
 
@@ -117,12 +112,11 @@ def _quantifiers_for(spec: ShapeTableSpec) -> list[Quantifier]:
 
 
 def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
-    """Pool the built products of table *name* across *records* into one frame.
+    """Pool the quantifier *name*'s built product across *records* into one frame.
 
-    For each in-scope record, every co-targeting quantity that is built is read
-    and outer-joined within that position on the table's keys (value columns
-    namespaced by ``quantity_id``); the catalogue metadata is stamped, and — for a
-    table keyed on ``cell_id`` — the NLS ``class_label`` is left-joined by
+    For each in-scope record the quantifier's tidy ``object_table`` is read (value
+    columns namespaced by ``quantity_id``); the catalogue metadata is stamped, and
+    — for a table keyed on ``cell_id`` — the NLS ``class_label`` is left-joined by
     ``cell_id`` (absent → ``unclassified``). The per-position frames are then
     concatenated. Empty when nothing is built. In-memory only — see
     :func:`aggregate` to persist.

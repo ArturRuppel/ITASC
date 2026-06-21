@@ -219,9 +219,9 @@ def test_pipeline_build_aggregate_export_round_trip(tmp_path):
         recs, quantifiers=[CellShapeQuantifier()], params={"pixel_size_um": 0.25}
     )
     tables = pipeline.aggregate(recs, tmp_path / "catalogue")
-    assert "cells_by_frame" in tables
+    assert "cell_shape" in tables
 
-    tables_dir = tables["cells_by_frame"].parent
+    tables_dir = tables["cell_shape"].parent
     written = pipeline.export(tables_dir)
 
     suffixes = {p.suffix for p in written}

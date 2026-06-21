@@ -218,11 +218,11 @@ def test_write_iris_zip_structure_and_roundtrip():
 
 
 def test_export_table_writes_reopenable_bundle(tmp_path):
-    csv = tmp_path / "cells_by_frame.csv"
+    csv = tmp_path / "cell_shape.csv"
     _cells_table().to_csv(csv, index=False)
 
     out = export_table(csv, tmp_path / "iris")
-    assert out.name == "cells_by_frame.iris"
+    assert out.name == "cell_shape.iris"
     assert out.is_file()
     with zipfile.ZipFile(out) as zf:
         assert any(n.startswith("analyses/") for n in zf.namelist())
@@ -236,12 +236,13 @@ def test_export_table_unknown_stem_requires_object_key(tmp_path):
 
 
 def test_export_dir_discovers_known_tables(tmp_path):
-    _cells_table().to_csv(tmp_path / "cells_by_frame.csv", index=False)
-    # an unknown CSV is ignored
+    _cells_table().to_csv(tmp_path / "cell_shape.csv", index=False)
+    # a known-but-not-exported table (deferred) and an unknown CSV are both skipped
+    _cells_table().to_csv(tmp_path / "cell_density.csv", index=False)
     _cells_table().to_csv(tmp_path / "unrelated.csv", index=False)
 
     written = export_dir(tmp_path)
-    assert [p.name for p in written] == ["cells_by_frame.iris"]
+    assert [p.name for p in written] == ["cell_shape.iris"]
     assert written[0].parent == tmp_path / "iris"
 
 
@@ -266,7 +267,7 @@ def _load_iris_engine():
 
 def test_bundle_loads_and_renders_in_iris(tmp_path):
     iris_doc, iris_main = _load_iris_engine()
-    csv = tmp_path / "cells_by_frame.csv"
+    csv = tmp_path / "cell_shape.csv"
     _cells_table().to_csv(csv, index=False)
     bundle = export_table(csv, tmp_path / "iris")
 

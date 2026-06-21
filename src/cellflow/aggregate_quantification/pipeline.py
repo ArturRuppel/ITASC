@@ -7,7 +7,7 @@ per-position build, aggregate, export — into one pipeline the CLI, notebooks, 
     catalog = build_catalog(root, cell_name=..., nucleus_name=..., out_csv=...)
     build_quantities(catalog)                 # one .build() per (quantifier, position)
     tables = aggregate(catalog)               # pooled, index-keyed CSVs
-    export(tables["cells_by_frame"].parent)   # tidy artifacts + .iris bundles
+    export(tables["cell_shape"].parent)       # tidy artifacts + .iris bundles
 
 This module *composes* — it owns no compute. Discovery lives in :mod:`.catalog`,
 the per-position units in :mod:`.quantifier`, the record→inputs bridge in

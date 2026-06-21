@@ -83,18 +83,13 @@ class Quantifier:
     #: Default artifact file name (relative to a position); empty for an
     #: intermediate base that does not persist.
     default_output_name: ClassVar[str] = ""
-    #: The aggregated *shape table* this quantifier's :meth:`object_table` lands
-    #: in (e.g. ``"cells_by_frame"``), or empty when the quantity is not
-    #: aggregated into an index-keyed table (contacts, or a sub-table view that
-    #: is not the quantifier's own ``object_table``). Quantities that share a
-    #: ``shape_table`` must declare the same :attr:`table_keys`; their value
-    #: columns are pooled side by side, namespaced by ``quantity_id`` so same-named
-    #: descriptors (cell vs nucleus ``area``) never collide. See
-    #: :mod:`cellflow.aggregate_quantification.shape_tables`.
-    shape_table: ClassVar[str] = ""
-    #: The index columns (in the ``object_table``) the :attr:`shape_table` is
-    #: keyed on — the natural index of the measurement (e.g. ``("frame",
-    #: "cell_id")``). Pooling outer-joins co-targeting quantities on these.
+    #: The index columns of this quantifier's ``object_table`` — its natural grain
+    #: (e.g. ``("frame", "cell_id")``). A non-empty value marks the quantity as
+    #: **aggregated**: :mod:`cellflow.aggregate_quantification.shape_tables` pools it
+    #: across positions into a table named by :attr:`quantity_id`, keyed on these
+    #: columns. Empty ⇒ not aggregated into an index-keyed table (e.g. contacts).
+    #: Value columns are namespaced by ``quantity_id`` so a later joined view across
+    #: tables never has colliding names.
     table_keys: ClassVar[tuple[str, ...]] = ()
     #: Whether the studio threads the shared plot/build params (z-score shuffle
     #: count, density field-of-view) into :meth:`build` via ``params``. Off by

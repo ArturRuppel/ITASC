@@ -33,8 +33,7 @@ class CellShapeQuantifier(Quantifier):
     #: Default artifact name; ``default_output`` nests it under the shared
     #: ``aggregate_quantification/`` folder. The builder mkdirs the parent.
     default_output_name = "cell_shape.csv"
-    #: Per-cell, per-frame shape descriptors pool into the cells table.
-    shape_table = "cells_by_frame"
+    #: Per-cell, per-frame shape descriptors, keyed (frame, cell_id).
     table_keys = ("frame", "cell_id")
 
     def build(

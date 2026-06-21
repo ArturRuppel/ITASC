@@ -24,8 +24,7 @@ class NeighborCountQuantifier(Quantifier):
     display_name = "Neighbor count"
     requires = ("contact_analysis_path",)
     default_output_name = "neighbor_count.csv"
-    # Per-cell adjacency degree pools into the cells table.
-    shape_table = "cells_by_frame"
+    # Per-cell adjacency degree, keyed (frame, cell_id).
     table_keys = ("frame", "cell_id")
 
     def build(

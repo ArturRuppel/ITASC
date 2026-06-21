@@ -28,10 +28,9 @@ class SignedContactLengthQuantifier(Quantifier):
     display_name = "Signed contact length"
     requires = ("contact_analysis_path",)
     default_output_name = "signed_contact_length.csv"
-    # One row per T1 event; ``contact_type`` / ``role`` are categorical axes, so
-    # they key the edges table alongside the event id (only ``signed_length`` is a
-    # value column).
-    shape_table = "edges_by_frame"
+    # One row per T1 event; ``contact_type`` / ``role`` are categorical axes that
+    # key the table alongside the event id (only ``signed_length`` is a value
+    # column).
     table_keys = ("frame", "t1_event_id", "role", "contact_type")
 
     def build(

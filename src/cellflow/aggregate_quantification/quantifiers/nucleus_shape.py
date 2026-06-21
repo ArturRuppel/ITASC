@@ -31,10 +31,9 @@ class NucleusShapeQuantifier(Quantifier):
     required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     default_output_name = "nucleus_shape.csv"
-    # Nucleus shape is keyed on its cell's shared track id, so it pools into the
-    # cells table; its descriptors are namespaced by quantity_id (so the nucleus
-    # ``area`` never collides with the cell ``area``).
-    shape_table = "cells_by_frame"
+    # Nucleus shape is keyed on its cell's shared track id (frame, cell_id); its
+    # descriptors are namespaced by quantity_id (so the nucleus ``area`` never
+    # collides with the cell ``area`` in a joined view).
     table_keys = ("frame", "cell_id")
 
     def build(

@@ -40,11 +40,9 @@ class CellDynamicsQuantifier(Quantifier):
     }
 
     default_output_name = "cell_dynamics.h5"
-    # The object_table is the per-(frame, cell_id) instantaneous motion table, so
-    # it pools into the cells table. The per-track / per-tissue / curve sub-tables
-    # are separate views (the tracks / frames / dac_curves tables) and are not
-    # this quantifier's object_table.
-    shape_table = "cells_by_frame"
+    # The object_table is the per-(frame, cell_id) instantaneous motion table. The
+    # per-track / per-tissue / curve sub-tables are separate views (tracks / frames
+    # / dac_curves) and are not this quantifier's object_table.
     table_keys = ("frame", "cell_id")
 
     def build(

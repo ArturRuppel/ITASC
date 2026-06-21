@@ -36,9 +36,7 @@ class CellDensityQuantifier(Quantifier):
     # a PositionInputs field, so it is enforced there rather than gated here.
     requires = ("cell_labels_path",)
     default_output_name = "cell_density.csv"
-    # Density is keyed per (frame, class label) — not per cell — so it gets its
-    # own index-keyed table rather than joining the per-cell table.
-    shape_table = "density_by_frame"
+    # Density is keyed per (frame, class label), not per cell.
     table_keys = ("frame", "label")
     wants_build_params = True
     # The field-of-view area has no image-area fallback, so it is a hard build

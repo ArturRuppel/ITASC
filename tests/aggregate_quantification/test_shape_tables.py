@@ -1,4 +1,4 @@
-"""Aggregated shape tables: pooling, outer-join, NLS join, materialized views."""
+"""Aggregated shape tables: per-quantity pooling, NLS join, materialized views."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -79,7 +79,7 @@ def test_experiment_id_broadcast_onto_pooled_rows(tmp_path):
     rec = _record(tmp_path, "a", date="2026-05-09", experiment_id="EXP-01")
     _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
 
-    df = build_table("cells_by_frame", [rec])
+    df = build_table("cell_shape", [rec])
 
     assert "experiment_id" in df.columns
     assert (df["experiment_id"] == "EXP-01").all()
@@ -93,7 +93,7 @@ def test_two_positions_pool_into_one_table(tmp_path):
     _write_object_table(cs, rec_a, _cell_shape_table([1, 2], [0, 1]))
     _write_object_table(cs, rec_b, _cell_shape_table([1], [0]))
 
-    df = build_table("cells_by_frame", [rec_a, rec_b])
+    df = build_table("cell_shape", [rec_a, rec_b])
 
     assert set(df["position_id"]) == {"a", "b"}
     assert {"condition", "date", "position_id", "frame", "cell_id"} <= set(df.columns)
@@ -102,33 +102,35 @@ def test_two_positions_pool_into_one_table(tmp_path):
     assert len(df) == 4 + 1  # a: 2 cells × 2 frames, b: 1 cell × 1 frame
 
 
-def test_multiple_quantities_outer_join_on_keys(tmp_path):
+def test_each_quantity_is_its_own_table(tmp_path):
+    """Two quantities at the same grain land in separate per-quantifier tables,
+    not one shared (god) table."""
     cs, nc = CellShapeQuantifier(), NeighborCountQuantifier()
     rec = _record(tmp_path, "a")
     _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
     _write_object_table(nc, rec, _neighbor_count_table([1, 2], [0]))
 
-    df = build_table("cells_by_frame", [rec])
+    shape = build_table("cell_shape", [rec])
+    neighbors = build_table("neighbor_count", [rec])
 
-    assert "cell_shape.area_um2" in df.columns
-    assert "neighbor_count.n_neighbors" in df.columns
-    assert len(df) == 2  # joined on (frame, cell_id), not stacked
-    assert df["neighbor_count.n_neighbors"].notna().all()
+    assert "cell_shape.area_um2" in shape.columns
+    assert "neighbor_count.n_neighbors" not in shape.columns
+    assert "neighbor_count.n_neighbors" in neighbors.columns
+    assert "cell_shape.area_um2" not in neighbors.columns
 
 
-def test_position_missing_a_quantity_yields_nan_not_error(tmp_path):
-    cs, nc = CellShapeQuantifier(), NeighborCountQuantifier()
+def test_quantity_built_for_only_some_positions(tmp_path):
+    """A quantity's table carries only the positions that built it; an unbuilt
+    position simply contributes no rows (no cross-quantity NaN padding)."""
+    nc = NeighborCountQuantifier()
     rec_a = _record(tmp_path, "a")
     rec_b = _record(tmp_path, "b")
-    _write_object_table(cs, rec_a, _cell_shape_table([1], [0]))
-    _write_object_table(nc, rec_a, _neighbor_count_table([1], [0]))
-    _write_object_table(cs, rec_b, _cell_shape_table([1], [0]))  # b has no neighbor_count
+    _write_object_table(nc, rec_a, _neighbor_count_table([1], [0]))  # b never built
 
-    df = build_table("cells_by_frame", [rec_a, rec_b])
+    df = build_table("neighbor_count", [rec_a, rec_b])
 
-    b_rows = df[df["position_id"] == "b"]
-    assert b_rows["neighbor_count.n_neighbors"].isna().all()
-    assert b_rows["cell_shape.area_um2"].notna().all()
+    assert set(df["position_id"]) == {"a"}
+    assert "neighbor_count.n_neighbors" in df.columns
 
 
 def test_ids_do_not_collide_across_positions(tmp_path):
@@ -138,7 +140,7 @@ def test_ids_do_not_collide_across_positions(tmp_path):
     _write_object_table(cs, rec_a, _cell_shape_table([1], [0], area0=100))
     _write_object_table(cs, rec_b, _cell_shape_table([1], [0], area0=200))
 
-    df = build_table("cells_by_frame", [rec_a, rec_b])
+    df = build_table("cell_shape", [rec_a, rec_b])
     # Same cell_id=1 in both positions stays two distinct rows (metadata differs).
     rows = df[df["cell_id"] == 1]
     assert len(rows) == 2
@@ -156,7 +158,7 @@ def test_nls_class_label_joined_by_cell_id(tmp_path):
     _write_object_table(cs, rec_b, _cell_shape_table([1], [0]))
     _write_nls(rec_a, {1: "epithelial", 2: "mesenchymal"})  # b left unclassified
 
-    df = build_table("cells_by_frame", [rec_a, rec_b])
+    df = build_table("cell_shape", [rec_a, rec_b])
 
     a = df[df["position_id"] == "a"].set_index("cell_id")["class_label"]
     assert a.loc[1] == "epithelial" and a.loc[2] == "mesenchymal"
@@ -175,8 +177,8 @@ def test_aggregate_writes_csv_and_rewrites_whole(tmp_path):
     out_dir = tmp_path / "catalogue"
 
     written = aggregate([rec_a, rec_b], out_dir)
-    path = written["cells_by_frame"]
-    assert path == table_path(out_dir, "cells_by_frame")
+    path = written["cell_shape"]
+    assert path == table_path(out_dir, "cell_shape")
     assert set(read_table(path)["position_id"]) == {"a", "b"}
 
     # Re-aggregating a narrower scope rewrites the file whole (b's rows are gone).
@@ -195,7 +197,7 @@ def test_read_table_restores_integer_keys(tmp_path):
     rec = _record(tmp_path, "a")
     _write_object_table(cs, rec, _cell_shape_table([1, 2], [0, 1]))
     written = aggregate([rec], tmp_path / "catalogue")
-    df = read_table(written["cells_by_frame"])
+    df = read_table(written["cell_shape"])
     assert df["frame"].dtype == np.int64
     assert df["cell_id"].dtype == np.int64
 
@@ -203,11 +205,15 @@ def test_read_table_restores_integer_keys(tmp_path):
 # ------------------------------------------------------------------- registry
 
 
-def test_registry_and_table_for_quantity():
+def test_registry_is_one_table_per_quantity():
     reg = shape_table_registry()
-    assert reg["cells_by_frame"].keys == ("frame", "cell_id")
-    assert "cell_shape" in reg["cells_by_frame"].quantity_ids
-    assert table_for_quantity("cell_shape") == "cells_by_frame"
+    # Each aggregating quantity is its own table, keyed by its own grain.
+    assert reg["cell_shape"].keys == ("frame", "cell_id")
+    assert reg["cell_shape"].quantity_ids == ("cell_shape",)
+    assert reg["neighbor_count"].keys == ("frame", "cell_id")
+    # No god table pooling several quantities under one name.
+    assert "cells_by_frame" not in reg
+    assert table_for_quantity("cell_shape") == "cell_shape"
     assert table_for_quantity("contacts") is None  # not aggregated
 
 

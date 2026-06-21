@@ -18,37 +18,40 @@ from .analyses import build_analyses
 from .document import write_iris
 from .schema import infer_schema
 
-#: Table file stem → its finest object key (the swarm/box level). The spine is
-#: ``date → position_id → <object_key> → frame``; for the non-cell tables the key
-#: is category-/event-like, so the condition SuperPlot is a reasonable default the
-#: user may re-pivot in Iris (see the design doc's caveat).
-TABLE_OBJECT_KEYS = {
-    "cells_by_frame": "cell_id",
-    "cell_neighbors_by_frame": "cell_id",
-    "contact_types_by_frame": "contact_type",
-    "density_by_frame": "label",
-    "edges_by_frame": "t1_event_id",
-}
-
-#: Tables :func:`export_dir` writes for now. Focused on ``cells_by_frame`` while
-#: the SuperPlot template is tuned; the other tables stay in
-#: :data:`TABLE_OBJECT_KEYS` (exportable via :func:`export_table` directly) and are
-#: deferred until their object-grain plots are worth shipping.
-TABLES_TO_EXPORT = ("cells_by_frame",)
+#: Tables :func:`export_dir` writes for now. One per-quantifier table
+#: (``cell_shape``) while the SuperPlot template is tuned; the other tables are
+#: exportable via :func:`export_table` directly and deferred until their
+#: object-grain plots are worth shipping (Iris pre-plot selection is its own
+#: decision — see the artifact-contract design doc, §8).
+TABLES_TO_EXPORT = ("cell_shape",)
 
 _EXPORTER = "cellflow.aggregate_quantification.iris_export"
+
+
+def _object_key_for(stem: str) -> str | None:
+    """The finest object key (swarm/box level) for the table named *stem* — the
+    first non-``frame`` key of the quantifier whose ``quantity_id`` is *stem* — or
+    ``None`` when *stem* names no aggregated quantity. The SuperPlot spine is
+    ``experiment_id → position_id → <object_key> → frame``."""
+    from ..shape_tables import shape_table_registry
+
+    spec = shape_table_registry().get(stem)
+    if spec is None:
+        return None
+    non_frame = [key for key in spec.keys if key != "frame"]
+    return non_frame[0] if non_frame else None
 
 
 def export_table(csv_path: Path | str, out_dir: Path | str,
                  object_key: str | None = None) -> Path:
     """Export one tidy CSV to ``<out_dir>/<stem>.iris``; return the written path.
 
-    *object_key* defaults to the :data:`TABLE_OBJECT_KEYS` mapping for the file's
-    stem; pass it explicitly for a table outside that mapping.
+    *object_key* defaults to the finest key of the quantifier the file's stem names
+    (:func:`_object_key_for`); pass it explicitly for a table outside the registry.
     """
     csv_path = Path(csv_path)
     stem = csv_path.stem
-    object_key = object_key or TABLE_OBJECT_KEYS.get(stem)
+    object_key = object_key or _object_key_for(stem)
     if object_key is None:
         raise ValueError(
             f"no object-key mapping for table {stem!r}; pass object_key explicitly"

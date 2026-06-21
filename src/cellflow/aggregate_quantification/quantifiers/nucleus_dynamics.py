@@ -37,9 +37,8 @@ class NucleusDynamicsQuantifier(Quantifier):
     }
 
     default_output_name = "nucleus_dynamics.h5"
-    # Instantaneous nucleus motion is keyed on the shared cell track id, so it
-    # pools into the cells table (namespaced by quantity_id).
-    shape_table = "cells_by_frame"
+    # Instantaneous nucleus motion is keyed on the shared cell track id
+    # (frame, cell_id).
     table_keys = ("frame", "cell_id")
 
     def build(
