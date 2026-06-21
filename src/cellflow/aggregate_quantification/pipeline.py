@@ -275,7 +275,11 @@ def run(config_path: Path | str) -> list[Path]:
     the per-position products into the measurement tables, and export the ``.iris``
     bundles into the config's ``export_dir``. The measurement tables are written
     under the catalogue root; the ``.iris`` deliverables land in ``export_dir/iris``.
-    Returns the exported paths.
+
+    When the run-config turns on ``[plots].render``, the premade SuperPlots in each
+    ``.iris`` are additionally rendered to static figures (PNG/SVG, editable text)
+    under ``export_dir/figures`` via the Iris engine (the optional ``cellflow[plots]``
+    extra). Returns the exported ``.iris`` paths.
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -296,4 +300,16 @@ def run(config_path: Path | str) -> list[Path]:
     if not tables:
         return []
     tables_dir = next(iter(tables.values())).parent
-    return export(tables_dir, cfg.export_dir)
+    written = export(tables_dir, cfg.export_dir)
+    if cfg.render_plots and written:
+        # Opt-in extra step: turn the just-written .iris bundles into static
+        # figures. Imported here (not at module load) so the no-plots path keeps
+        # zero dependency on the Iris engine.
+        from .iris_export.figures import render_export_dir
+
+        render_export_dir(
+            Path(cfg.export_dir) / "iris",
+            Path(cfg.export_dir) / "figures",
+            formats=cfg.plot_formats,
+        )
+    return written

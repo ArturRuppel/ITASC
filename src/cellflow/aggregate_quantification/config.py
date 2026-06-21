@@ -38,12 +38,19 @@ class RunConfig:
     selects a subset by ``quantity_id`` (dependency producers are pulled in at run
     time even when omitted). *params* is the shared build-knob mapping threaded to
     quantifiers that opt in.
+
+    *render_plots* (the ``[plots]`` table's ``render``) turns on rendering the
+    premade SuperPlots to static figures via the Iris engine (the optional
+    ``cellflow[plots]`` extra); *plot_formats* (``[plots].formats``) picks the
+    output formats. When off, the run stays Iris-only with no engine dependency.
     """
 
     catalog: Path
     export_dir: Path
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
+    render_plots: bool = False
+    plot_formats: tuple[str, ...] = ("png", "svg")
 
 
 def load_config(config_path: Path | str) -> RunConfig:
@@ -68,11 +75,17 @@ def load_config(config_path: Path | str) -> RunConfig:
     quantities = tuple(data.get("quantities", ()))
     _check_known_quantities(quantities)
 
+    plots = data.get("plots", {})
+    render_plots = bool(plots.get("render", False))
+    plot_formats = tuple(plots.get("formats", ("png", "svg")))
+
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
         export_dir=_resolve(base, data.get("export_dir", _DEFAULT_EXPORT_DIR)),
         quantities=quantities,
         params=dict(data.get("params", {})),
+        render_plots=render_plots,
+        plot_formats=plot_formats,
     )
 
 

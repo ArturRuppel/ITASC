@@ -26,6 +26,27 @@ def test_load_minimal_config_defaults(tmp_path):
     assert cfg.export_dir == (tmp_path / "export").resolve()
     assert cfg.quantities == ()  # empty = run every available quantifier
     assert cfg.params == {}
+    # Plot rendering is off by default; the run stays Iris-only (no engine dep).
+    assert cfg.render_plots is False
+    assert cfg.plot_formats == ("png", "svg")
+
+
+def test_plots_table_parsed(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        """
+        catalog = "cat.csv"
+
+        [plots]
+        render = true
+        formats = ["pdf", "png"]
+        """,
+    )
+
+    cfg = load_config(cfg_path)
+
+    assert cfg.render_plots is True
+    assert cfg.plot_formats == ("pdf", "png")
 
 
 def test_quantities_and_params_parsed(tmp_path):

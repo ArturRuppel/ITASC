@@ -334,3 +334,64 @@ def test_run_from_config_round_trip(tmp_path):
     measured = study / OUTPUT_SUBDIR / "cell_shape.csv"
     assert measured.is_file()
     assert set(pd.read_csv(measured)["position_id"]) == {"a", "b"}
+
+
+def _run_config(tmp_path, *, plots: str = "") -> Path:
+    """A minimal one-position run-config + inputs; *plots* appends a TOML block."""
+    from cellflow.aggregate_quantification.catalog import save_catalog
+
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    pdir = tmp_path / "study" / "a"
+    pdir.mkdir(parents=True)
+    cells = pdir / "cells.tif"
+    tifffile.imwrite(cells, np.stack([frame, frame]))
+    save_catalog(tmp_path / "catalog.csv", [{
+        "id": "a", "condition": "ctrl", "date": "d1", "experiment_id": "EXP-a",
+        "position_path": pdir, "cell_tracked_labels_path": cells,
+    }])
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'catalog = "catalog.csv"\n'
+        'quantities = ["cell_shape"]\n'
+        'export_dir = "export"\n'
+        "[params]\npixel_size_um = 0.25\n" + plots
+    )
+    return config
+
+
+def test_run_renders_figures_when_plots_enabled(tmp_path, monkeypatch):
+    """``[plots].render`` makes run() drive figure rendering over the written
+    .iris, into export/figures, with the configured formats. The renderer is
+    stubbed (its own end-to-end behavior is covered in test_figures)."""
+    from cellflow.aggregate_quantification.iris_export import figures
+
+    calls = {}
+
+    def fake_render(iris_dir, out_dir, *, formats):
+        calls["args"] = (Path(iris_dir), Path(out_dir), tuple(formats))
+
+    monkeypatch.setattr(figures, "render_export_dir", fake_render)
+
+    config = _run_config(tmp_path, plots="[plots]\nrender = true\nformats = ['png']\n")
+    pipeline.run(config)
+
+    out = tmp_path / "export"
+    assert calls["args"] == (out / "iris", out / "figures", ("png",))
+
+
+def test_run_skips_figures_by_default(tmp_path, monkeypatch):
+    from cellflow.aggregate_quantification.iris_export import figures
+
+    called = False
+
+    def fake_render(*a, **k):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(figures, "render_export_dir", fake_render)
+
+    pipeline.run(_run_config(tmp_path))  # no [plots] block
+
+    assert called is False
