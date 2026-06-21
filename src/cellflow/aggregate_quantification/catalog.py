@@ -67,7 +67,35 @@ def load_catalog(csv_path: Path | str) -> list[dict]:
             for row in reader
         ]
 
+    _check_unique_identity(records)
     return sorted(records, key=_catalog_sort_key)
+
+
+def _identity_key(record: dict) -> tuple[str, str, str]:
+    """The axes that must jointly identify a position: a collision here would
+    silently pool two positions' cells under one group downstream."""
+    return (
+        str(record.get("experiment_id", "")),
+        str(record.get("condition", "")),
+        str(record.get("id", "")),
+    )
+
+
+def _check_unique_identity(records: Iterable[dict]) -> None:
+    counts: dict[tuple[str, str, str], int] = {}
+    for record in records:
+        key = _identity_key(record)
+        counts[key] = counts.get(key, 0) + 1
+    duplicates = [key for key, count in counts.items() if count > 1]
+    if duplicates:
+        listed = "; ".join(
+            f"(experiment_id={e!r}, condition={c!r}, position_id={p!r})"
+            for e, c, p in duplicates
+        )
+        raise ValueError(
+            "Catalog has duplicate position identities that would silently merge "
+            f"two positions' cells downstream: {listed}. Give each a distinct id."
+        )
 
 
 def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:

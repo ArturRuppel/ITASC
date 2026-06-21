@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 
 def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     """Saved catalogs should use relative paths and load them as resolved contact-analysis paths."""
@@ -152,6 +154,40 @@ def test_experiment_id_column_is_optional_for_legacy_catalogs(tmp_path):
 
     record = load_catalog(csv_path)[0]
     assert record["experiment_id"] == "day1"
+
+
+def test_load_catalog_rejects_duplicate_identity(tmp_path):
+    """Two rows sharing (experiment_id, condition, position_id) would silently
+    merge two positions' cells downstream; loading must error instead."""
+    from cellflow.aggregate_quantification.catalog import load_catalog
+
+    (tmp_path / "a.h5").touch()
+    (tmp_path / "b.h5").touch()
+    csv_path = tmp_path / "catalog.csv"
+    csv_path.write_text(
+        "path,date,condition,experiment_id,id\n"
+        "a.h5,d1,ctrl,EXP-01,Pos0\n"
+        "b.h5,d1,ctrl,EXP-01,Pos0\n"
+    )
+
+    with pytest.raises(ValueError, match="Pos0"):
+        load_catalog(csv_path)
+
+
+def test_load_catalog_allows_same_position_id_in_different_condition(tmp_path):
+    """The same position_id under a different condition is a distinct identity."""
+    from cellflow.aggregate_quantification.catalog import load_catalog
+
+    (tmp_path / "a.h5").touch()
+    (tmp_path / "b.h5").touch()
+    csv_path = tmp_path / "catalog.csv"
+    csv_path.write_text(
+        "path,date,condition,experiment_id,id\n"
+        "a.h5,d1,ctrl,EXP-01,Pos0\n"
+        "b.h5,d1,drug,EXP-01,Pos0\n"
+    )
+
+    assert len(load_catalog(csv_path)) == 2
 
 
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
