@@ -55,15 +55,14 @@ results.
 {
   "spec_version": "2.0",
   "id": "superplot__class_label__cell_shape.area_um2",
+  "title": "Cell shape · Area (µm²) — by class",
   "encodings": {"x": {"column": "class_label"}, "y": {"column": "cell_shape.area_um2"},
                 "color": {"column": "date"}, "shape": {"column": "date"}, "size": null},
   "facet": {"row": null, "col": null, "share_x": true, "share_y": true},
   "hierarchy": {"spine": ["date", "position_id", "cell_id", "frame"], "fn": {}},
-  "style": {"overrides": {"notch": true}},
   "layers": [
-    {"geom": "dot", "level": "cell_id", "params": {"layout": "swarm"}},
-    {"geom": "box", "level": "cell_id", "params": {}},
-    {"geom": "dot", "level": "date",    "params": {"jitter": 0.0}}
+    {"geom": "violin", "level": "cell_id", "params": {}},
+    {"geom": "dot",    "level": "date",    "params": {"layout": "swarm"}}
   ],
   "stats": {}
 }
@@ -89,41 +88,62 @@ test.
 
 ## The SuperPlot template
 
-Per **table** × per **numeric descriptor `D`** × per **axis `A`** present in the
-table (`A ∈ {condition, class_label}`), emit one analysis:
+Per **kept numeric descriptor `D`** × per **axis `A`** present in the table
+(`A ∈ {condition, class_label}`), emit one analysis:
 
 - `x = A`, `y = D`, `color = date`, `shape = date`
 - `hierarchy.spine` = the table's spine (see below)
-- `style.overrides.notch = true`
 - layers:
-  1. `dot` @ finest object level, `layout: swarm` — every object, color + shape by
-     date. **Emitted only when object count ≤ 3000** (Iris `POINT_CAP`).
-  2. `box` @ finest object level — notched, **one box per group** (not split by
-     date).
-  3. `dot` @ `date` level, `jitter: 0` — the per-date replicate means as
-     distinct-shaped markers, overlaid.
+  1. `violin` @ finest object level — the per-object distribution, one violin per
+     group (group colour).
+  2. `dot` @ `date` level, `layout: swarm` — the per-date replicate means as a
+     beeswarm of distinct-shaped markers (coloured + shaped by date).
+
+**No per-object swarm, no box, no notch.** With tens of thousands of cells a swarm
+is unreadable and a median-CI notch is wildly overconfident (the notch collapses
+to nothing at large n). The violin carries the distribution shape; the only points
+drawn are the few per-date means.
 
 ### Why this renders as intended (verified against Iris)
 
 - **`date` must be typed `identifier`, not `categorical`.** Iris
-  (`compiler.py:655-667`) dodges a categorical color into sub-columns, which would
-  split the box per date. An *identifier* color with a per-point layer present
-  colors each dot in place and leaves the box as one-per-group — the SuperPlot
-  idiom. The exporter's schema typing is what unlocks this.
-- **Notch** is a style flag (`style.overrides.notch`), gated on `len(ys) > 5`
-  (`compiler.py:775`). The box sits at the finest grain (hundreds+ objects), so it
-  renders.
-- **Swarm cap:** a per-row geom above 3000 points is blocked by Iris. For tables
-  whose finest grain exceeds the cap, layer 1 is dropped and the analysis is box +
-  date-overlay only. A 10k-point swarm would be unreadable regardless.
+  (`compiler.py:655-667`) dodges a categorical colour into sub-columns, which would
+  split the violin per date. An *identifier* colour with a per-point layer present
+  (the date dots) colours each dot in place and leaves the violin as one-per-group
+  — the SuperPlot idiom. The exporter's schema typing is what unlocks this.
+- The inferential test reads the coarsest layer level = `date`; verified
+  `inferential_level == "date"`, a recommended test runs for a ≥2-level axis, and
+  the figure serializes to valid gid-tagged SVG.
 
-### Graceful degradation for a 1-level axis
+### Pruning
 
-When an axis has a single level in the data (this dataset: `condition` = 1 level),
-the SuperPlot becomes a **single-column descriptive** plot — one swarm/box +
-per-date dots, no test. Still informative (distribution + replicate structure),
-and the *same template* becomes a real comparison on a multi-condition dataset.
-This means every table yields content even when only `condition` is present.
+Descriptors that are reference-frame coordinates, vector components, or raw angles
+get **no** premade analysis — a cross-condition comparison of them is not
+meaningful. Pruned: leaf names `x_um, y_um, centroid_x_um, centroid_y_um,
+vx_um_per_s, vy_um_per_s, orientation`; plus the redundant
+`shape_relational.{cell,nucleus}_area_um2` (re-exports of the shape-family areas).
+The columns stay in the table for manual use; only their premade analyses are
+dropped. (On `cells_by_frame` this takes 94 analyses → 62.)
+
+### Grouping & naming
+
+Iris's analysis sidebar is a **flat list with no section UI**. So analyses are
+**ordered by quantity family** (`cell_shape, cell_dynamics, nucleus_shape,
+nucleus_dynamics, shape_relational, neighbor_count`) and each carries a
+family-prefixed `title` (e.g. `"Cell shape · Area (µm²) — by condition"`, shown as
+the editable analysis name). They therefore cluster into readable family groups.
+True collapsible sections would need an Iris frontend change (separate repo) and
+are out of scope.
+
+### Single-level axis ⇒ describe-only
+
+An unpinned test on a one-group axis raises 422 in Iris ("needs at least 2
+groups"); it does **not** silently degrade. The exporter inspects each axis's level
+count and emits `stats: {"chosen_by": "describe_only"}` when an axis has `< 2`
+levels (this dataset's `condition`), and unpinned `stats: {}` only when it has
+`≥ 2`. Either way the bundle opens; describe-only renders the SuperPlot with
+descriptive stats and no test, and the same template becomes a real comparison on
+multi-condition data.
 
 ## Per-table configuration
 
@@ -132,31 +152,25 @@ fine), so picking the object level averages `frame` away, and every layer `level
 the template references (`<object_key>` and `date`) is a spine column — required
 by Iris's `hierarchy.materialize_levels`.
 
-| Table | Object key `<object_key>` | Axes (≥1 level) | Swarm? (objects vs 3000) |
+**Scope (now): `cells_by_frame` only.** `export_dir` writes just `cells_by_frame`
+while the template is tuned (`TABLES_TO_EXPORT`); the other tables keep their
+object-key mapping (`TABLE_OBJECT_KEYS`) and remain exportable via `export_table`
+directly, deferred until their object-grain plots are worth shipping.
+
+| Table | Object key `<object_key>` | Axes (≥1 level) | Status |
 |---|---|---|---|
-| `cells_by_frame` | cell_id | condition, class_label | yes (1726 cells) |
-| `cell_neighbors_by_frame` | cell_id | condition, class_label | yes (cells < cap) |
-| `contact_types_by_frame` | contact_type | condition | yes (81) |
-| `density_by_frame` | label | condition | yes (81) |
-| `edges_by_frame` | t1_event_id | condition | no (9610 events) |
+| `cells_by_frame` | cell_id | condition, class_label | **exported** |
+| `cell_neighbors_by_frame` | cell_id | condition, class_label | deferred |
+| `contact_types_by_frame` | contact_type | condition | deferred |
+| `density_by_frame` | label | condition | deferred |
+| `edges_by_frame` | t1_event_id | condition | deferred |
 
-The cap is measured at the swarm's own grain — distinct `(date, position, object)`
-— not the raw row count: `cell_neighbors` has many neighbor-pair rows but its
-*cell* count is under the cap, so its swarm is kept; only `edges` (per-event)
-exceeds it.
-
-**Caveat — non-cell tables.** For `contact_types`, `density`, and `edges` the
-object key is itself category-like (`contact_type`) or event-like
+**Caveat — non-cell tables (when re-enabled).** For `contact_types`, `density`,
+and `edges` the object key is itself category-like (`contact_type`) or event-like
 (`t1_event_id`), and the most natural comparison is often *across that key* rather
-than across `condition`. The premade `condition`/`class_label` SuperPlot is a
-reasonable, honest default (and a real comparison on multi-condition data), but
-the user may want to re-pivot these in Iris (e.g. `x = contact_type`). The
-exporter does not try to guess that; it emits the agreed axes only.
-
-Numeric descriptors = every column that is not a key/metadata column. Per the
-explicit decision, **all** numeric descriptors are included (including
-coordinate/reference columns like `centroid_x_um`, `orientation`); pruning is left
-to the user in Iris.
+than across `condition`. The premade `condition` SuperPlot is a reasonable default,
+but the user may want to re-pivot these in Iris (e.g. `x = contact_type`). The
+exporter does not guess that; it emits the agreed axes only.
 
 ## Components
 
@@ -165,19 +179,20 @@ All under `src/cellflow/aggregate_quantification/iris_export/` (backend-only):
 1. **`document.py`** — `write_iris(table_df, schema, analyses, provenance) -> bytes`.
    Builds the v1.0 ZIP. The single place that knows the byte format. Approach A
    (reimplement ~25 lines); the format contract above is the spec it implements.
-2. **`schema.py`** — `infer_schema(df, table_name) -> dict`. Column typing:
+2. **`schema.py`** — `infer_schema(df) -> dict`. Column typing:
    - `identifier`: `date, position_id, cell_id, frame, t1_event_id, label,
-     focal_label, neighbor_label`
+     focal_label, neighbor_label, focal_id, partner_id`
    - `categorical`: `condition, class_label, contact_type, role`
    - `numeric`: everything else
-   - `label` = leaf after last `.`; `unit` parsed from `_um2 → µm²`, `_um → µm`,
-     `_s → s` suffix; `levels` listed for categorical columns.
-3. **`analyses.py`** — `build_analyses(df, schema, table_name) -> list[dict]`.
-   Emits the SuperPlot template per descriptor × axis, applying the swarm-cap and
-   1-level-axis rules.
-4. **`export.py`** — `export_dir(data_dir, out_dir)` + a thin CLI. Discovers the
-   known CSVs in `data_dir`, builds schema/analyses/bundle per table, writes
-   `<table>.iris`.
+   - `label` = leaf after last `.`; `unit` parsed from `_um2 → µm²`, `_um → µm`;
+     `levels` listed for categorical columns. `numeric_descriptors(schema)` returns
+     the numeric value columns.
+3. **`analyses.py`** — `build_analyses(df, schema, object_key) -> list[dict]`.
+   Emits the violin + date-swarm SuperPlot per kept descriptor × axis, applying the
+   prune list, family ordering/titles, and the 1-level-axis (describe-only) rule.
+4. **`export.py`** — `export_table(csv, out_dir)` / `export_dir(data_dir, out_dir)`
+   + `__main__.py` CLI. `export_dir` writes the `TABLES_TO_EXPORT` set
+   (`cells_by_frame` for now), adding `id`/`excluded` columns, to `<table>.iris`.
 
 ### Defaults
 
@@ -189,8 +204,9 @@ All under `src/cellflow/aggregate_quantification/iris_export/` (backend-only):
 
 - **Structural contract test:** a written bundle is a valid ZIP with the five entry
   kinds; schema types `date`/`position_id`/`cell_id` as `identifier`; every
-  analysis has the 3-layer (or 2-layer, capped) shape, `notch` true, and
-  `color=date`/`shape=date` encodings; `analyses/NN-*.json` numbering is contiguous.
+  analysis has the violin@object + dot@date layers, a family-prefixed `title`, and
+  `color=date`/`shape=date` encodings; pruned columns are absent; `analyses/NN-*.json`
+  numbering is contiguous.
 - **Fixture round-trip:** a small synthetic tidy table → export → re-open the ZIP
   and assert table values + schema survive Parquet round-trip.
 - **Optional live integration:** when an Iris engine checkout is discoverable

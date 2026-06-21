@@ -20,7 +20,6 @@ from cellflow.aggregate_quantification.iris_export import (
     infer_schema,
     write_iris,
 )
-from cellflow.aggregate_quantification.iris_export.analyses import POINT_CAP
 from cellflow.aggregate_quantification.iris_export.document import FORMAT_VERSION
 
 
@@ -51,6 +50,9 @@ def _cells_table(n_cells: int = 6, n_frames: int = 3,
                             "cell_id": cell_id,
                             "cell_shape.area_um2": float(rng.uniform(100, 500)),
                             "cell_dynamics.speed_um_per_s": float(rng.uniform(0, 1)),
+                            # prunable: a coordinate and a velocity component
+                            "cell_shape.centroid_x_um": float(rng.uniform(0, 200)),
+                            "cell_dynamics.vx_um_per_s": float(rng.uniform(-1, 1)),
                             "class_label": label,
                         })
     return pd.DataFrame(rows)
@@ -121,12 +123,15 @@ def test_superplot_layers_levels_and_encodings():
         "x": {"column": "condition"}, "y": {"column": "cell_shape.area_um2"},
         "color": {"column": "date"}, "shape": {"column": "date"}, "size": None,
     }
-    assert spec["style"]["overrides"]["notch"] is True
+    assert spec["id"] == "superplot__condition__cell_shape.area_um2"
     assert spec["hierarchy"]["spine"] == ["date", "position_id", "cell_id", "frame"]
-    assert spec["stats"] == {}  # two conditions ⇒ unpinned test
+    assert spec["stats"] == {}  # two conditions ==> unpinned test
+    # violin for the per-cell distribution; swarm of per-date means on top. No
+    # per-cell swarm, no notched box.
     geoms = [(layer["geom"], layer["level"]) for layer in spec["layers"]]
-    assert geoms == [("dot", "cell_id"), ("box", "cell_id"), ("dot", "date")]
-    assert spec["layers"][-1]["params"]["jitter"] == 0.0
+    assert geoms == [("violin", "cell_id"), ("dot", "date")]
+    assert spec["layers"][1]["params"]["layout"] == "swarm"
+    assert "notch" not in json.dumps(spec)
 
 
 def test_single_level_axis_is_describe_only():
@@ -148,19 +153,31 @@ def test_axis_absent_from_table_is_skipped():
     assert all(a["encodings"]["x"] == {"column": "condition"} for a in analyses)
 
 
-def test_swarm_dropped_above_point_cap():
-    # > POINT_CAP distinct objects (date × position × cell_id) ⇒ no swarm layer.
-    big = _cells_table(n_cells=POINT_CAP + 5, n_frames=1)
-    analyses = build_analyses(big, infer_schema(big), object_key="cell_id")
-    layers = analyses[0]["layers"]
-    assert [l["geom"] for l in layers] == ["box", "dot"]  # swarm gone
-    assert layers[0]["level"] == "cell_id" and layers[1]["level"] == "date"
+def test_prune_drops_coordinate_and_velocity_columns():
+    df = _cells_table()  # includes centroid_x_um and vx_um_per_s
+    analyses = build_analyses(df, infer_schema(df), object_key="cell_id")
+    plotted = {a["encodings"]["y"]["column"] for a in analyses}
+    assert "cell_shape.centroid_x_um" not in plotted
+    assert "cell_dynamics.vx_um_per_s" not in plotted
+    assert "cell_shape.area_um2" in plotted
 
 
-def test_swarm_present_below_point_cap():
-    df = _cells_table()  # 6 cells × 2 dates = 12 objects, well under the cap
-    layers = build_analyses(df, infer_schema(df), object_key="cell_id")[0]["layers"]
-    assert layers[0] == {"geom": "dot", "level": "cell_id", "params": {"layout": "swarm"}}
+def test_title_carries_family_and_axis():
+    df = _cells_table()
+    titles = {a["id"]: a["title"]
+              for a in build_analyses(df, infer_schema(df), object_key="cell_id")}
+    assert titles["superplot__condition__cell_shape.area_um2"] == (
+        "Cell shape · Area (µm²) — by condition")
+    assert titles["superplot__class_label__cell_dynamics.speed_um_per_s"] == (
+        "Cell motion · Speed — by class")
+
+
+def test_analyses_grouped_by_family_order():
+    df = _cells_table()
+    families = [a["id"].split("__")[2].split(".")[0]
+                for a in build_analyses(df, infer_schema(df), object_key="cell_id")]
+    # the cell_shape block precedes the cell_dynamics block (family ordering)
+    assert families == ["cell_shape", "cell_shape", "cell_dynamics", "cell_dynamics"]
 
 
 # --------------------------------------------------------------------------- #

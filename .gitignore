@@ -25,3 +25,6 @@ docs/staging/segmentation_ui_redesign/all_source.py
 test_dupes.py
 AGENTS.md
 TODO.md
+
+# Serena tool workspace
+.serena/

@@ -30,6 +30,12 @@ TABLE_OBJECT_KEYS = {
     "edges_by_frame": "t1_event_id",
 }
 
+#: Tables :func:`export_dir` writes for now. Focused on ``cells_by_frame`` while
+#: the SuperPlot template is tuned; the other tables stay in
+#: :data:`TABLE_OBJECT_KEYS` (exportable via :func:`export_table` directly) and are
+#: deferred until their object-grain plots are worth shipping.
+TABLES_TO_EXPORT = ("cells_by_frame",)
+
 _EXPORTER = "cellflow.aggregate_quantification.iris_export"
 
 
@@ -71,7 +77,7 @@ def export_dir(data_dir: Path | str, out_dir: Path | str | None = None) -> list[
     data_dir = Path(data_dir)
     out_dir = Path(out_dir) if out_dir is not None else data_dir / "iris"
     written: list[Path] = []
-    for stem in TABLE_OBJECT_KEYS:
+    for stem in TABLES_TO_EXPORT:
         csv_path = data_dir / f"{stem}.csv"
         if csv_path.is_file():
             written.append(export_table(csv_path, out_dir))
