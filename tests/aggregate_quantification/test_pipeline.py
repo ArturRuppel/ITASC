@@ -395,3 +395,98 @@ def test_run_skips_figures_by_default(tmp_path, monkeypatch):
     pipeline.run(_run_config(tmp_path))  # no [plots] block
 
     assert called is False
+
+
+def test_run_applies_curation_filter(tmp_path):
+    import io
+    import json
+    import zipfile
+
+    from cellflow.aggregate_quantification.catalog import save_catalog
+
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    study = tmp_path / "study"
+    recs = []
+    for pid in ("a", "b"):
+        pdir = study / pid
+        pdir.mkdir(parents=True)
+        cells = pdir / "cells.tif"
+        # three frames so a frame-level exclusion is visible
+        tifffile.imwrite(cells, np.stack([frame, frame, frame]))
+        recs.append({
+            "id": pid,
+            "condition": "ctrl",
+            "date": "d1",
+            "experiment_id": f"EXP-{pid}",
+            "position_path": pdir,
+            "cell_tracked_labels_path": cells,
+        })
+    save_catalog(tmp_path / "catalog.csv", recs)
+
+    # Exclude position b entirely, and frame 0 of position a.
+    pd.DataFrame({
+        "experiment_id": ["EXP-b", "EXP-a"],
+        "position_id": ["b", "a"],
+        "frame": [pd.NA, 0],
+        "excluded": [True, True],
+        "exclusion_reason": ["debris", "blur"],
+    }).to_csv(tmp_path / "curation.csv", index=False)
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'catalog = "catalog.csv"\n'
+        'quantities = ["cell_shape"]\n'
+        'export_dir = "export"\n'
+        "[params]\npixel_size_um = 0.25\n"
+    )
+
+    written = pipeline.run(config)
+
+    # The on-disk measurement CSV stays pure: both positions, all frames.
+    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
+    measured = pd.read_csv(study / OUTPUT_SUBDIR / "cell_shape.csv")
+    assert set(measured["position_id"]) == {"a", "b"}
+
+    # The .iris bundle is filtered: no position b, and no frame 0 of a.
+    with zipfile.ZipFile(written[0]) as zf:
+        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
+        provenance = json.loads(zf.read("provenance.json"))
+    assert set(back["position_id"]) == {"a"}
+    assert 0 not in set(back["frame"])
+    assert provenance["curation"]["rows_dropped"] > 0
+
+
+def test_run_without_curation_file_exports_everything(tmp_path):
+    import io
+    import zipfile
+
+    from cellflow.aggregate_quantification.catalog import save_catalog
+
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    study = tmp_path / "study"
+    pdir = study / "a"
+    pdir.mkdir(parents=True)
+    cells = pdir / "cells.tif"
+    tifffile.imwrite(cells, np.stack([frame, frame]))
+    save_catalog(tmp_path / "catalog.csv", [{
+        "id": "a", "condition": "ctrl", "date": "d1", "experiment_id": "EXP-a",
+        "position_path": pdir, "cell_tracked_labels_path": cells,
+    }])
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'catalog = "catalog.csv"\nquantities = ["cell_shape"]\n'
+        'export_dir = "export"\n[params]\npixel_size_um = 0.25\n'
+    )
+
+    # No curation.csv written → read_curation returns None → unfiltered.
+    written = pipeline.run(config)
+
+    with zipfile.ZipFile(written[0]) as zf:
+        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
+    assert set(back["position_id"]) == {"a"}

@@ -29,6 +29,7 @@ from pathlib import Path
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
 from .config import RunConfig, load_config
+from .curation import read_curation
 from .iris_export.export import export_dir as _export_iris
 from .quantifier import PositionInputs, Quantifier, available_quantifiers
 from .records import output_for_record, position_inputs_from_record
@@ -244,7 +245,11 @@ def aggregate(
 
 
 def export(
-    tables_dir: Path | str, out_dir: Path | str | None = None
+    tables_dir: Path | str,
+    out_dir: Path | str | None = None,
+    *,
+    curation: "object | None" = None,
+    curation_path: str | None = None,
 ) -> list[Path]:
     """Write ``.iris`` bundles from the aggregated tables.
 
@@ -254,16 +259,22 @@ def export(
     (``iris_export.TABLES_TO_EXPORT``) found there, one ``.iris`` document is
     written under ``<out_dir>/iris/``. *out_dir* defaults to *tables_dir*.
 
-    Each bundle is a pure function of (table + analysis spec) — no curation or
-    other human judgment is baked in (Iris removed its exclusion mechanism). The
-    canonical tidy CSVs remain in *tables_dir* for programmatic use; the export
-    deliberately does not re-emit them in other formats.
+    When *curation* (a parsed exclusion table) is given, its excluded frames /
+    positions are filtered out of each table before the ``.iris`` is written, and
+    *curation_path* is recorded in the bundle provenance. The on-disk tidy CSVs in
+    *tables_dir* stay pure (all rows); only the bundle sees the filtered view, so
+    each ``.iris`` is a pure function of ``(table, curation)``.
 
     Returns the written ``.iris`` paths.
     """
     tables_dir = Path(tables_dir)
     out_dir = Path(out_dir) if out_dir is not None else tables_dir
-    return _export_iris(tables_dir, out_dir=out_dir / "iris")
+    return _export_iris(
+        tables_dir,
+        out_dir=out_dir / "iris",
+        curation=curation,
+        curation_path=curation_path,
+    )
 
 
 def run(config_path: Path | str) -> list[Path]:
@@ -300,7 +311,13 @@ def run(config_path: Path | str) -> list[Path]:
     if not tables:
         return []
     tables_dir = next(iter(tables.values())).parent
-    written = export(tables_dir, cfg.export_dir)
+    curation = read_curation(cfg.curation)
+    written = export(
+        tables_dir,
+        cfg.export_dir,
+        curation=curation,
+        curation_path=str(cfg.curation) if curation is not None else None,
+    )
     if cfg.render_plots and written:
         # Opt-in extra step: turn the just-written .iris bundles into static
         # figures. Imported here (not at module load) so the no-plots path keeps
