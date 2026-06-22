@@ -29,6 +29,9 @@ __all__ = ["RunConfig", "load_config"]
 #: Default for the optional export-dir key, relative to the config file's directory.
 _DEFAULT_EXPORT_DIR = "export"
 
+#: Default for the optional curation-table key, relative to the config dir.
+_DEFAULT_CURATION = "curation.csv"
+
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -47,6 +50,7 @@ class RunConfig:
 
     catalog: Path
     export_dir: Path
+    curation: Path = field(default=Path(_DEFAULT_CURATION))
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
     render_plots: bool = False
@@ -82,6 +86,7 @@ def load_config(config_path: Path | str) -> RunConfig:
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
         export_dir=_resolve(base, data.get("export_dir", _DEFAULT_EXPORT_DIR)),
+        curation=_resolve(base, data.get("curation", _DEFAULT_CURATION)),
         quantities=quantities,
         params=dict(data.get("params", {})),
         render_plots=render_plots,

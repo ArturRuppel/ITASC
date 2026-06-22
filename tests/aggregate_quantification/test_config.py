@@ -108,3 +108,23 @@ def test_unknown_quantity_raises(tmp_path):
 
     with pytest.raises(ValueError, match="bogus_metric"):
         load_config(cfg_path)
+
+
+def test_curation_defaults_beside_config(tmp_path):
+    """Absent ``curation`` key defaults to ``curation.csv`` beside the config."""
+    cfg_path = _write(tmp_path, 'catalog = "catalog.csv"\n')
+
+    cfg = load_config(cfg_path)
+
+    assert cfg.curation == (tmp_path / "curation.csv").resolve()
+
+
+def test_curation_explicit_path_resolved(tmp_path):
+    cfg_path = _write(
+        tmp_path,
+        'catalog = "catalog.csv"\ncuration = "qc/exclusions.csv"\n',
+    )
+
+    cfg = load_config(cfg_path)
+
+    assert cfg.curation == (tmp_path / "qc" / "exclusions.csv").resolve()
