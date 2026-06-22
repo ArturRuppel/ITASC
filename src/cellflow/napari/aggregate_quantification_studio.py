@@ -54,7 +54,6 @@ from cellflow.aggregate_quantification.shape_tables import catalogue_root
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
 from cellflow.napari.aggregate_quantification_aggregate_area import AggregateArea
 from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
-from cellflow.napari.aggregate_quantification_plot_area import PlotAreaWidget
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
     BuildArea,
@@ -167,11 +166,11 @@ class AggregateQuantificationStudioWidget(QWidget):
             CollapsibleSection("Parameters", self._shared_params, expanded=True)
         )
 
-        # Tools on top, then the pure Build area, the Aggregate area, then Plot.
+        # Tools on top, then the pure Build area, then the Aggregate area.
+        # (Plotting is Iris-only — no in-napari Plot area.)
         self._build_tools_section(layout)
         self._build_build_section(layout)
         self._build_aggregate_section(layout)
-        self._build_plot_section(layout)
 
         self._reload_plugins()
         self._refresh_table()
@@ -362,15 +361,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         layout.addWidget(
             CollapsibleSection("Aggregate", self._aggregate_area, expanded=False)
         )
-
-    def _build_plot_section(self, layout) -> None:
-        """The Plot area: every registered plot, grouped by family and gated by
-        product availability. Separate from building — it plots whatever the
-        in-scope positions have built."""
-        self._plot_area = PlotAreaWidget(
-            self.viewer, params_provider=self._shared_params.plot_params
-        )
-        layout.addWidget(CollapsibleSection("Plots", self._plot_area, expanded=False))
 
     # ----------------------------------------------------------- catalog actions
     def _set_catalog_status(self, message: str) -> None:
@@ -744,9 +734,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         build_area = getattr(self, "_build_area", None)
         if build_area is not None:
             self._push_context_to(build_area)
-        plot_area = getattr(self, "_plot_area", None)
-        if plot_area is not None:
-            self._push_context_to(plot_area)
         aggregate_area = getattr(self, "_aggregate_area", None)
         if aggregate_area is not None:
             self._push_context_to(aggregate_area)

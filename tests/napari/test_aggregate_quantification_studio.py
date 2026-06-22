@@ -367,7 +367,8 @@ def test_build_status_goes_to_compute_section_not_catalogue(monkeypatch):
 
 def test_section_defaults_and_compute_rename(monkeypatch):
     # Bugs 16/18/20: Parameters expanded; Build renamed to Compute; Tools /
-    # Compute / Plots collapsed by default.
+    # Compute collapsed by default. The in-napari Plots section is removed
+    # (visualization is Iris-only).
     from cellflow.napari.widgets import CollapsibleSection
 
     app = _app()
@@ -377,10 +378,10 @@ def test_section_defaults_and_compute_rename(monkeypatch):
         s.title: s for s in widget.findChildren(CollapsibleSection)
     }
     assert "Build" not in by_title and "Compute" in by_title
+    assert "Plots" not in by_title
     assert by_title["Parameters"].is_expanded is True
     assert by_title["Tools"].is_expanded is False
     assert by_title["Compute"].is_expanded is False
-    assert by_title["Plots"].is_expanded is False
     widget.deleteLater()
     app.processEvents()
 
