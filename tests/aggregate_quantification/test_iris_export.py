@@ -250,6 +250,64 @@ def test_export_dir_discovers_known_tables(tmp_path):
     assert written[0].parent == tmp_path / "iris"
 
 
+def test_export_dir_filters_curated_rows(tmp_path):
+    # A small cell_shape table: one experiment, two positions, two frames.
+    rows = []
+    for position_id in ("p1", "p2"):
+        for frame in (0, 1):
+            for cell_id in (1, 2):
+                rows.append({
+                    "condition": "ctrl",
+                    "experiment_id": "EXP1",
+                    "date": "d1",
+                    "position_id": position_id,
+                    "frame": frame,
+                    "cell_id": cell_id,
+                    "cell_shape.area_um2": 100.0,
+                })
+    df = pd.DataFrame(rows)
+    df.to_csv(tmp_path / "cell_shape.csv", index=False)
+
+    curation = pd.DataFrame({
+        "experiment_id": ["EXP1", "EXP1"],
+        "position_id": ["p1", "p2"],
+        "frame": [1, pd.NA],          # p1 frame 1, and all of p2
+        "excluded": [True, True],
+        "exclusion_reason": ["blur", "debris"],
+    })
+
+    written = export_dir(
+        tmp_path, curation=curation, curation_path="qc/exclusions.csv"
+    )
+
+    assert [p.name for p in written] == ["cell_shape.iris"]
+    # Read the parquet back out of the bundle and check the kept rows.
+    with zipfile.ZipFile(written[0]) as zf:
+        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
+        provenance = json.loads(zf.read("provenance.json"))
+    # Only p1 frame 0 survives (2 cells). p1 frame 1 dropped, all of p2 dropped.
+    assert set(zip(back["position_id"], back["frame"])) == {("p1", 0)}
+    assert len(back) == 2
+    # Marker columns are not exported.
+    assert "excluded" not in back.columns
+    assert "exclusion_reason" not in back.columns
+    # Provenance records the filter.
+    assert provenance["curation"]["rows_dropped"] == 6
+    assert provenance["curation"]["file"] == "qc/exclusions.csv"
+
+
+def test_export_dir_without_curation_keeps_all_rows(tmp_path):
+    _cells_table().to_csv(tmp_path / "cell_shape.csv", index=False)
+
+    written = export_dir(tmp_path)  # no curation
+
+    with zipfile.ZipFile(written[0]) as zf:
+        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
+        provenance = json.loads(zf.read("provenance.json"))
+    assert len(back) == len(_cells_table())
+    assert "curation" not in provenance
+
+
 # --------------------------------------------------------------------------- #
 # live integration: open a bundle in a real Iris engine (opt-in)
 # --------------------------------------------------------------------------- #

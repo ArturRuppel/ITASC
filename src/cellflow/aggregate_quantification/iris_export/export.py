@@ -17,6 +17,7 @@ import pandas as pd
 from .analyses import build_analyses
 from .document import write_iris
 from .schema import infer_schema
+from ..curation import apply_curation, filter_excluded
 
 #: Tables :func:`export_dir` writes. The object-grain morphology + motility
 #: tables for both segmented objects (cell and nucleus), each carrying premade
@@ -105,19 +106,42 @@ def export_table_frame(
     return out_path
 
 
-def export_dir(data_dir: Path | str, out_dir: Path | str | None = None) -> list[Path]:
+def export_dir(
+    data_dir: Path | str,
+    out_dir: Path | str | None = None,
+    *,
+    curation: pd.DataFrame | None = None,
+    curation_path: str | None = None,
+) -> list[Path]:
     """Export every known table found in *data_dir*.
 
     Defaults the output to ``<data_dir>/iris/``. Returns the written paths in
     table order; tables not present are skipped.
+
+    When *curation* is given (the parsed exclusion table), each table is read into
+    a frame, marked by :func:`~cellflow.aggregate_quantification.curation.apply_curation`,
+    and its excluded rows dropped by
+    :func:`~cellflow.aggregate_quantification.curation.filter_excluded` before the
+    ``.iris`` is written — so the bundle sees only kept data. The on-disk tidy
+    CSVs are never touched; the bundle's provenance records *curation_path* and how
+    many rows were dropped. With no *curation*, the unfiltered table is exported.
     """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir) if out_dir is not None else data_dir / "iris"
     written: list[Path] = []
     for stem in TABLES_TO_EXPORT:
         csv_path = data_dir / f"{stem}.csv"
-        if csv_path.is_file():
+        if not csv_path.is_file():
+            continue
+        if curation is None:
             written.append(export_table(csv_path, out_dir))
+            continue
+        kept, n_dropped = filter_excluded(apply_curation(pd.read_csv(csv_path), curation))
+        source = {
+            "source_csv": str(csv_path.resolve()),
+            "curation": {"file": curation_path, "rows_dropped": n_dropped},
+        }
+        written.append(export_table_frame(kept, stem, out_dir, source=source))
     return written
 
 
