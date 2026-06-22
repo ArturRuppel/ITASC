@@ -128,3 +128,49 @@ def test_curation_explicit_path_resolved(tmp_path):
     cfg = load_config(cfg_path)
 
     assert cfg.curation == (tmp_path / "qc" / "exclusions.csv").resolve()
+
+
+def test_load_config_without_nls_table_has_none(tmp_path):
+    (tmp_path / "catalog.csv").write_text("id\n")
+    cfg = load_config(_write(tmp_path, 'catalog = "catalog.csv"\n'))
+    assert cfg.nls is None
+
+
+def test_load_config_parses_nls_table(tmp_path):
+    (tmp_path / "catalog.csv").write_text("id\n")
+    cfg = load_config(_write(tmp_path,
+        'catalog = "catalog.csv"\n'
+        "[nls]\n"
+        "enabled = true\n"
+        'image = "0_input/NLS_zavg.tif"\n'
+        'method = "fixed"\n'
+        "threshold = 12.5\n"
+    ))
+    assert cfg.nls is not None
+    assert cfg.nls.enabled is True
+    assert cfg.nls.image == "0_input/NLS_zavg.tif"
+    assert cfg.nls.method == "fixed"
+    assert cfg.nls.threshold == 12.5
+
+
+def test_load_config_nls_defaults(tmp_path):
+    (tmp_path / "catalog.csv").write_text("id\n")
+    cfg = load_config(_write(tmp_path,
+        'catalog = "catalog.csv"\n'
+        "[nls]\n"
+        "enabled = true\n"
+    ))
+    assert cfg.nls.method == "auto"
+    assert cfg.nls.image == "0_input/NLS_zavg.tif"
+    assert cfg.nls.threshold == 0.0
+
+
+def test_load_config_rejects_unknown_nls_method(tmp_path):
+    (tmp_path / "catalog.csv").write_text("id\n")
+    with pytest.raises(ValueError, match="bogus"):
+        load_config(_write(tmp_path,
+            'catalog = "catalog.csv"\n'
+            "[nls]\n"
+            "enabled = true\n"
+            'method = "bogus"\n'
+        ))

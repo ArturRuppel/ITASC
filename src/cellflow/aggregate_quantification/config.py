@@ -24,13 +24,36 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on 3.10 only
 
 from .quantifier import available_quantifiers
 
-__all__ = ["RunConfig", "load_config"]
+__all__ = ["NlsConfig", "RunConfig", "load_config"]
 
 #: Default for the optional export-dir key, relative to the config file's directory.
 _DEFAULT_EXPORT_DIR = "export"
 
 #: Default for the optional curation-table key, relative to the config dir.
 _DEFAULT_CURATION = "curation.csv"
+
+#: Default per-position-relative marker image for the optional [nls] step.
+_DEFAULT_NLS_IMAGE = "0_input/NLS_zavg.tif"
+
+#: The NLS thresholding methods the classify step understands.
+_NLS_METHODS = ("auto", "otsu", "two_cluster", "fixed")
+
+
+@dataclass(frozen=True)
+class NlsConfig:
+    """Parsed ``[nls]`` table — the optional NLS classification step's knobs.
+
+    *image* is the marker image **relative to each position directory** (e.g.
+    ``0_input/NLS_zavg.tif``) so one entry resolves across a batch; an absolute
+    path is used verbatim. *method* picks the thresholding: ``auto`` (per-position
+    two-cluster, Otsu fallback — the default), ``otsu``, ``two_cluster``, or
+    ``fixed`` (pins *threshold* across the series).
+    """
+
+    enabled: bool = False
+    image: str = _DEFAULT_NLS_IMAGE
+    method: str = "auto"
+    threshold: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +74,7 @@ class RunConfig:
     catalog: Path
     export_dir: Path
     curation: Path = field(default=Path(_DEFAULT_CURATION))
+    nls: NlsConfig | None = None
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
     render_plots: bool = False
@@ -83,10 +107,13 @@ def load_config(config_path: Path | str) -> RunConfig:
     render_plots = bool(plots.get("render", False))
     plot_formats = tuple(plots.get("formats", ("png", "svg")))
 
+    nls = _parse_nls(data.get("nls"))
+
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
         export_dir=_resolve(base, data.get("export_dir", _DEFAULT_EXPORT_DIR)),
         curation=_resolve(base, data.get("curation", _DEFAULT_CURATION)),
+        nls=nls,
         quantities=quantities,
         params=dict(data.get("params", {})),
         render_plots=render_plots,
@@ -99,6 +126,28 @@ def _resolve(base: Path, raw: str) -> Path:
     if not candidate.is_absolute():
         candidate = base / candidate
     return candidate.expanduser().resolve(strict=False)
+
+
+def _parse_nls(table: dict | None) -> NlsConfig | None:
+    """Parse the optional ``[nls]`` table into an :class:`NlsConfig` (or ``None``).
+
+    A missing table means the step is off. *method* is validated so a typo fails
+    loudly rather than silently classifying with the wrong splitter.
+    """
+    if table is None:
+        return None
+    method = str(table.get("method", "auto"))
+    if method not in _NLS_METHODS:
+        listed = ", ".join(_NLS_METHODS)
+        raise ValueError(
+            f"Run-config [nls] selects unknown method {method!r}. Available: {listed}."
+        )
+    return NlsConfig(
+        enabled=bool(table.get("enabled", False)),
+        image=str(table.get("image", _DEFAULT_NLS_IMAGE)),
+        method=method,
+        threshold=float(table.get("threshold", 0.0)),
+    )
 
 
 def _check_known_quantities(quantities: tuple[str, ...]) -> None:
