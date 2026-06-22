@@ -141,8 +141,13 @@ def test_apply_curation_does_not_mutate_input():
 
 def test_apply_curation_keys_compared_as_strings():
     # CSV round-trips ids as strings; a numeric-looking id must still match.
-    table = _table().copy()
-    table["position_id"] = "10"
+    # Single position so frame 0 is unique (matches exactly one row).
+    table = pd.DataFrame({
+        "experiment_id": ["EXP1", "EXP1", "EXP1"],
+        "position_id": ["10", "10", "10"],
+        "frame": [0, 1, 2],
+        "cell_shape.area_um2": [1.0, 2.0, 3.0],
+    })
     cur = pd.DataFrame({
         "experiment_id": ["EXP1"], "position_id": [10],  # int in curation
         "frame": [0], "excluded": [True], "exclusion_reason": ["x"],
