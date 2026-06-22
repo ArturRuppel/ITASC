@@ -76,26 +76,29 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
-def test_position_change_during_correction_prompts_and_can_be_declined():
-    """The position spinbox stays enabled during correction; a change there is
-    guarded by a confirm-and-exit prompt and reverts when declined."""
+def test_folder_change_during_correction_prompts_and_can_be_declined(monkeypatch, tmp_path):
+    """The folder picker stays enabled during correction; selecting a folder is
+    guarded by a confirm-and-exit prompt and is a no-op when declined."""
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     w = main_mod.CellFlowMainWidget(_fake_viewer())
 
-    # Position is always usable now (context-changing controls stay enabled).
-    assert w.pos_spin.isEnabled()
-    w._committed_pos = w.pos_spin.value()
+    # The picker is always usable (context-changing controls stay enabled).
+    assert w.project_btn.isEnabled()
+    assert w._pos_dir is None
 
     # A viewer owner becomes active.
     w.gate.claim_viewer("correction:nucleus")
-    assert w.pos_spin.isEnabled()
+    assert w.project_btn.isEnabled()
     assert not w.gate.can_change_context()
 
-    # Decline the prompt → the spinbox reverts and the owner is untouched.
+    # Decline the prompt → the folder is unchanged and the owner is untouched.
+    monkeypatch.setattr(
+        main_mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path)
+    )
     w.gate.confirm_handler = lambda parent, label: False
-    w.pos_spin.setValue(w.pos_spin.value() + 1)
-    assert w.pos_spin.value() == w._committed_pos
+    w._on_set_position_folder()
+    assert w._pos_dir is None
     assert w.gate.owner == "correction:nucleus"
 
     w.deleteLater()
@@ -109,9 +112,9 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
     w = main_mod.CellFlowMainWidget(_fake_viewer())
 
     cfg = tmp_path / "cellflow_config.json"
-    cfg.write_text('{"metadata": {"position": 7}}')
-    w.path_label.setText(str(tmp_path))
-    w._committed_pos = w.pos_spin.value()
+    cfg.write_text('{"metadata": {"condition": "loaded"}}')
+    w._pos_dir = tmp_path
+    w.cond_edit.setText("original")
 
     w.gate.register_owner("stub_owner", "stub mode", exit_fn=lambda: None)
     w.gate.claim_viewer("stub_owner")
@@ -121,17 +124,16 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
     w._on_load_config()
 
     assert prompted == ["stub mode"]  # the user was asked
-    assert w.pos_spin.value() == w._committed_pos  # but nothing was loaded
+    assert w.cond_edit.text() == "original"  # but nothing was loaded
     assert w.gate.owner == "stub_owner"
 
     w.deleteLater()
 
 
-def test_position_change_during_correction_exits_owner_when_confirmed():
+def test_folder_change_during_correction_exits_owner_when_confirmed(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     w = main_mod.CellFlowMainWidget(_fake_viewer())
-    w._committed_pos = w.pos_spin.value()
 
     # Stub owner with a lightweight exit (the real correction teardown needs a
     # live viewer); the point under test is the main-widget confirm wiring.
@@ -145,13 +147,14 @@ def test_position_change_during_correction_exits_owner_when_confirmed():
     w.gate.claim_viewer("stub_owner")
     assert not w.gate.can_change_context()
 
-    # Confirm the prompt → the owner is exited and the new position commits.
+    # Confirm the prompt → the owner is exited and the new folder commits.
+    monkeypatch.setattr(
+        main_mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path)
+    )
     w.gate.confirm_handler = lambda parent, label: True
-    target = w.pos_spin.value() + 1
-    w.pos_spin.setValue(target)
+    w._on_set_position_folder()
     assert exited == [True]
-    assert w.pos_spin.value() == target
-    assert w._committed_pos == target
+    assert w._pos_dir == tmp_path
     assert w.gate.can_change_context()
 
     w.deleteLater()
@@ -229,10 +232,9 @@ def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
     assert got["cellpose"]["divergence_maps"]["nucleus"]["median_radius"] == 2
     assert got["cellpose"]["divergence_maps"]["cell"]["foreground_z_reduction"] == "max"
 
-    w.path_label.setText(str(tmp_path))
-    w.pos_spin.setValue(0)
+    w._pos_dir = tmp_path
     w._refresh_all()
-    assert w._cellpose_widget.divergence_maps_widget._pos_dir == tmp_path / "pos00"
+    assert w._cellpose_widget.divergence_maps_widget._pos_dir == tmp_path
     w.deleteLater()
 
 

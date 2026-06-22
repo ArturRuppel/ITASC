@@ -15,7 +15,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -53,10 +52,15 @@ class CellFlowMainWidget(QWidget):
         super().__init__(parent)
         self.viewer = napari_viewer
 
+        # The selected position folder — the unit of work. ``None`` until the
+        # user picks one. This folder *is* ``pos_dir``; there is no separate
+        # project root or position index.
+        self._pos_dir: Path | None = None
+
         # Single app-wide UI gate shared by all sections. It is the one source
         # of truth for control enablement: viewer-owner mutual exclusion (only
         # one of correction / db-browser / live preview at a time) and the
-        # context-change guard for position / config loading.
+        # context-change guard for folder selection / config loading.
         self.gate = UiGate(self)
 
         main_layout = QVBoxLayout(self)
@@ -163,17 +167,13 @@ class CellFlowMainWidget(QWidget):
         self._setup_theme_selector(main_layout)
 
         # Connect signals
-        self.project_btn.clicked.connect(lambda: self._on_set_project_directory())
+        self.project_btn.clicked.connect(lambda: self._on_set_position_folder())
         self.save_btn.clicked.connect(lambda: self._on_save_config())
         self.save_as_btn.clicked.connect(lambda: self._on_save_config_as())
         self.load_btn.clicked.connect(lambda: self._on_load_config())
         self.load_from_btn.clicked.connect(lambda: self._on_load_config_from())
 
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
-        # The last position the user committed; used to revert the spinbox when
-        # a context change is declined mid-mode.
-        self._committed_pos = self.pos_spin.value()
-        self.pos_spin.valueChanged.connect(self._on_pos_changed)
         self._register_gate_controls()
 
         self.gate.changed.connect(self._update_activity_banner)
@@ -193,14 +193,13 @@ class CellFlowMainWidget(QWidget):
     def _register_gate_controls(self) -> None:
         """Register top-level controls with the app-wide UI gate.
 
-        Position / project / config-load swap the underlying data, so they are
+        Folder selection / config-load swap the underlying data, so they are
         ``CONTEXT_CHANGING``: they stay enabled, but clicking one while a viewer
         owner (correction / live preview / db-browser) is active first offers to
         exit that owner (see ``_change_context``). Save Config is harmless and
         needs no gating.
         """
         for control in (
-            self.pos_spin,
             self.project_btn,
             self.load_btn,
             self.load_from_btn,
@@ -304,12 +303,6 @@ class CellFlowMainWidget(QWidget):
         self.cond_edit = QLineEdit()
         meta_row.addWidget(self.cond_edit)
 
-        meta_row.addWidget(QLabel("P:"))
-        self.pos_spin = QSpinBox()
-        self.pos_spin.setRange(0, 99)
-        self.pos_spin.setFixedWidth(40)
-        meta_row.addWidget(self.pos_spin)
-        
         self.refresh_btn = QPushButton("↺")
         icon_button(self.refresh_btn)
         self.refresh_btn.setToolTip("Refresh all status")
@@ -320,7 +313,7 @@ class CellFlowMainWidget(QWidget):
         # Row 2: Project Actions
         project_row = QHBoxLayout()
         project_row.setSpacing(4)
-        self.project_btn = QPushButton("Project Directory...")
+        self.project_btn = QPushButton("Position Folder...")
         tiny_button(self.project_btn)
         project_row.addWidget(self.project_btn)
         proj_lay.addLayout(project_row)
@@ -339,25 +332,31 @@ class CellFlowMainWidget(QWidget):
         proj_lay.addLayout(config_row)
 
         # Row 4: Path Label
-        self.path_label = QLabel("[no project]")
+        self.path_label = QLabel("[no folder]")
         muted_label(self.path_label)
         self.path_label.setWordWrap(True)
         proj_lay.addWidget(self.path_label)
 
         layout.addWidget(proj_widget)
 
-    def _on_set_project_directory(self) -> None:
-        """Set the project directory and load config if present."""
-        path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
+    def _on_set_position_folder(self) -> None:
+        """Pick a position folder and load its config if present.
+
+        The chosen folder *is* ``pos_dir`` — the unit of work. Any folder with
+        the stage layout (``0_input/`` … ``aggregate_quantification/``) is valid;
+        the child widgets no-op on missing subdirs, so no validation is needed.
+        """
+        path = QFileDialog.getExistingDirectory(self, "Select Position Folder")
         if not path:
             return
 
         def action() -> None:
             p = Path(path)
+            self._pos_dir = p
             self.path_label.setText(str(p))
             self.path_label.setToolTip(str(p))
 
-            # Look for config file
+            # Config travels with the data: look for it inside the folder.
             config_path = p / "cellflow_config.json"
             if config_path.exists():
                 self._load_config(str(config_path))
@@ -373,7 +372,6 @@ class CellFlowMainWidget(QWidget):
                 "pixel_size_um": self.px_edit.text(),
                 "time_interval_s": self.dt_edit.text(),
                 "condition": self.cond_edit.text(),
-                "position": self.pos_spin.value(),
             },
             "cellpose": self._cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
@@ -387,7 +385,8 @@ class CellFlowMainWidget(QWidget):
             if "pixel_size_um" in m: self.px_edit.setText(str(m["pixel_size_um"]))
             if "time_interval_s" in m: self.dt_edit.setText(str(m["time_interval_s"]))
             if "condition" in m: self.cond_edit.setText(str(m["condition"]))
-            if "position" in m: self.pos_spin.setValue(int(m["position"]))
+            # ``position`` from legacy project-root configs is intentionally
+            # ignored: the picked folder now carries identity.
 
         if "cellpose" in state:
             self._cellpose_widget.set_state(state["cellpose"])
@@ -399,12 +398,11 @@ class CellFlowMainWidget(QWidget):
             self.cell_workflow_widget.set_state(state["cell"])
 
     def _on_save_config(self) -> None:
-        """Save current configuration to project directory."""
-        path_text = self.path_label.text()
-        if not path_text or path_text == "[no project]":
+        """Save current configuration into the position folder."""
+        if self._pos_dir is None:
             return
-        
-        config_path = Path(path_text) / "cellflow_config.json"
+
+        config_path = self._pos_dir / "cellflow_config.json"
         self._save_config(str(config_path))
 
     def _on_save_config_as(self) -> None:
@@ -414,12 +412,11 @@ class CellFlowMainWidget(QWidget):
             self._save_config(path)
 
     def _on_load_config(self) -> None:
-        """Load configuration from project directory."""
-        path_text = self.path_label.text()
-        if not path_text or path_text == "[no project]":
+        """Load configuration from the position folder."""
+        if self._pos_dir is None:
             return
 
-        config_path = Path(path_text) / "cellflow_config.json"
+        config_path = self._pos_dir / "cellflow_config.json"
         if config_path.exists():
             self._change_context(lambda: self._load_config(str(config_path)))
         else:
@@ -430,30 +427,6 @@ class CellFlowMainWidget(QWidget):
         path = QFileDialog.getOpenFileName(self, "Load Config From", filter="JSON (*.json)")[0]
         if path:
             self._change_context(lambda: self._load_config(path))
-
-    def _on_pos_changed(self) -> None:
-        """Apply a position change, guarding against active viewer owners.
-
-        The position spinbox stays enabled during a mode (per the context-change
-        UX), so a change here may need to exit the active owner first. If the
-        user declines, the spinbox is reverted to the last committed value.
-        """
-        if self.gate.can_change_context():
-            self._committed_pos = self.pos_spin.value()
-            self._refresh_all()
-            return
-
-        new_pos = self.pos_spin.value()
-
-        def action() -> None:
-            self._committed_pos = new_pos
-            self._refresh_all()
-
-        if not self._change_context(action):
-            # Declined — restore the previous value without re-triggering.
-            self.pos_spin.blockSignals(True)
-            self.pos_spin.setValue(self._committed_pos)
-            self.pos_spin.blockSignals(False)
 
     def _save_config(self, path: str) -> None:
         """Save state to a JSON file."""
@@ -484,12 +457,7 @@ class CellFlowMainWidget(QWidget):
 
     def _refresh_all(self) -> None:
         """Refresh file status in all child widgets."""
-        path_text = self.path_label.text()
-        if path_text and path_text != "[no project]":
-            pos = self.pos_spin.value()
-            pos_dir = Path(path_text) / f"pos{pos:02d}"
-        else:
-            pos_dir = None
+        pos_dir = self._pos_dir
 
         self.data_panel.refresh(pos_dir)
         self._cellpose_widget.refresh(pos_dir)
