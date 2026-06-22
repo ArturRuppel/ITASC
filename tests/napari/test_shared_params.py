@@ -1,4 +1,4 @@
-"""The studio-level shared parameter bar: plot params + build stamping."""
+"""The studio-level shared parameter bar: build params + build stamping."""
 from __future__ import annotations
 
 import os
@@ -7,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.aggregate_quantification.plots import PlotParams
 from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
 
 
@@ -15,24 +14,20 @@ def _app():
     return QApplication.instance() or QApplication([])
 
 
-def test_plot_params_reads_fields_with_auto_defaults():
+def test_build_params_reads_fov_and_shuffles_with_default():
     app = _app()
-    w = SharedParamsWidget()
     try:
-        assert w.plot_params() == PlotParams()  # all blank → auto / default
-        w._pixel_size_edit.setText("0.25")
+        w = SharedParamsWidget()
+        # Blank shuffles -> the default (1000); blank fov -> None (unset, for gating).
+        params = w.build_params()
+        assert params["shuffles"] == 1000
+        assert params["fov_area_mm2"] is None
+
         w._fov_edit.setText("1.5")
         w._shuffles_edit.setText("200")
-        params = w.plot_params()
-        assert params.pixel_size_um == 0.25
-        assert params.fov_area_mm2 == 1.5
-        assert params.shuffles == 200
-        # Invalid entries fall back rather than raising.
-        w._pixel_size_edit.setText("nope")
-        w._shuffles_edit.setText("0")
-        params = w.plot_params()
-        assert params.pixel_size_um is None
-        assert params.shuffles == PlotParams().shuffles
+        params = w.build_params()
+        assert params["fov_area_mm2"] == 1.5
+        assert params["shuffles"] == 200
     finally:
         w.deleteLater()
         app.processEvents()

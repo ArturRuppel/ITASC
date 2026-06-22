@@ -1,19 +1,18 @@
 """One shared parameter bar for the whole Aggregate Quantification studio.
 
 Pixel size and frame interval are needed by **builds** (cell/nucleus shape need
-µm/px; dynamics needs µm/px + s/frame) *and* by **plots** (the potential
-landscape's physical axis, the density field-of-view). Field-of-view area and the
-z-score shuffle count are plot-only. Rather than duplicate these across the
-builder and every plot, the studio hosts **one** :class:`SharedParamsWidget`
-above both areas:
+µm/px; dynamics needs µm/px + s/frame). Field-of-view area and the z-score
+shuffle count are build knobs for specific metrics (density, contact-type
+z-score). Rather than duplicate these across every build, the studio hosts
+**one** :class:`SharedParamsWidget` above the build area:
 
 * :meth:`SharedParamsWidget.stamp` writes the global ``pixel_size_um`` /
   ``time_interval_s`` onto every catalogue record before a build, so the build
   reads them off ``PositionInputs``. These are global-only — there is no
   per-position auto-resolution; a metric needing one is unbuildable until it is set.
-* :meth:`SharedParamsWidget.plot_params` packages the plot-time tuning as a
-  :class:`~cellflow.napari.aggregate_quantification.plots.PlotParams` for the Plot
-  area.
+* :meth:`SharedParamsWidget.build_params` packages the build-time tuning
+  (shuffles, FOV area, pixel size, frame interval) as a plain ``dict`` for the
+  Build area's gating and for quantifiers that opt in to build params.
 
 Every field is blank (unset) by default; the ``changed`` signal lets the studio
 refresh build availability as values change.
@@ -29,11 +28,13 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.aggregate_quantification.plots import PlotParams
+#: Default permutation count for the contact-type z-score null (was PlotParams's
+#: default; the in-napari plot layer that defined PlotParams has been removed).
+_DEFAULT_SHUFFLES = 1000
 
 
 class SharedParamsWidget(QWidget):
-    """The studio's single set of build-and-plot parameter fields."""
+    """The studio's single set of build parameter fields."""
 
     #: Emitted on any field edit so the studio can re-gate builds / refresh.
     changed = Signal()
@@ -71,7 +72,7 @@ class SharedParamsWidget(QWidget):
         self._shuffles_edit = self._field(
             col,
             "Shuffles:",
-            placeholder=str(PlotParams().shuffles),
+            placeholder=str(_DEFAULT_SHUFFLES),
             tip="Label permutations for the contact-type z-score null.",
         )
 
@@ -97,16 +98,6 @@ class SharedParamsWidget(QWidget):
         layout.addLayout(row)
         return edit
 
-    # ----------------------------------------------------------------- plot side
-    def plot_params(self) -> PlotParams:
-        """Package the plot-time fields (blank/invalid → auto / default)."""
-        shuffles = _parse_int(self._shuffles_edit.text())
-        return PlotParams(
-            pixel_size_um=_parse_positive(self._pixel_size_edit.text()),
-            fov_area_mm2=_parse_positive(self._fov_edit.text()),
-            shuffles=shuffles if shuffles and shuffles > 0 else PlotParams().shuffles,
-        )
-
     # ---------------------------------------------------------------- build side
     def build_params(self) -> dict:
         """The shared knobs the studio reads at build time.
@@ -123,7 +114,7 @@ class SharedParamsWidget(QWidget):
         """
         shuffles = _parse_int(self._shuffles_edit.text())
         return {
-            "shuffles": shuffles if shuffles and shuffles > 0 else PlotParams().shuffles,
+            "shuffles": shuffles if shuffles and shuffles > 0 else _DEFAULT_SHUFFLES,
             "pixel_size_um": _parse_positive(self._pixel_size_edit.text()),
             "time_interval_s": _parse_positive(self._frame_interval_edit.text()),
             "fov_area_mm2": _parse_positive(self._fov_edit.text()),
