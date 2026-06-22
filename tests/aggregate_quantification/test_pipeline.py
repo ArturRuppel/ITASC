@@ -541,3 +541,27 @@ def test_run_without_curation_file_exports_everything(tmp_path):
     with zipfile.ZipFile(written[0]) as zf:
         back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
     assert set(back["position_id"]) == {"a"}
+
+
+def test_run_forwards_progress_cb(tmp_path, monkeypatch):
+    """run(progress_cb=...) threads the callback into build_quantities."""
+    from cellflow.aggregate_quantification import pipeline
+
+    seen = {}
+
+    def fake_build(catalog, *, quantifiers=None, params=None, progress_cb=None):
+        seen["build"] = progress_cb
+
+    monkeypatch.setattr(pipeline, "build_quantities", fake_build)
+    monkeypatch.setattr(pipeline, "classify", lambda *a, **k: [])
+    monkeypatch.setattr(pipeline, "aggregate", lambda *a, **k: {})
+    monkeypatch.setattr(pipeline, "load_catalog", lambda p: [])
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('catalog = "catalog.csv"\n', encoding="utf-8")
+
+    def cb(done, total, label):  # pragma: no cover - identity check only
+        pass
+
+    pipeline.run(cfg, progress_cb=cb)
+    assert seen["build"] is cb

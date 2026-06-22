@@ -28,13 +28,14 @@ from pathlib import Path
 
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
-from .config import NlsConfig, RunConfig, load_config
+from .config import NlsConfig, RunConfig, load_config, write_config
 from .curation import read_curation
 from .iris_export.export import export_dir as _export_iris
 from .quantifier import PositionInputs, Quantifier, available_quantifiers
 from .records import output_for_record, position_inputs_from_record
 
 __all__ = [
+    "author_config",
     "build_catalog",
     "build_quantities",
     "classify",
@@ -371,7 +372,41 @@ def export(
     )
 
 
-def run(config_path: Path | str) -> list[Path]:
+def author_config(
+    out_dir: Path | str,
+    records: Sequence[dict],
+    *,
+    quantities: Sequence[str] = (),
+    params: Mapping[str, object] | None = None,
+    nls: NlsConfig | None = None,
+    render_plots: bool = False,
+    plot_formats: Sequence[str] = ("png", "svg"),
+    catalog_name: str = "catalog.csv",
+    config_name: str = "config.toml",
+) -> Path:
+    """Write ``catalog.csv`` + ``config.toml`` into *out_dir*; return the config path.
+
+    The composition point behind the studio's "Save config…" / "Run": persist the
+    in-memory *records* to a catalog CSV, then author a run-config beside it that
+    points at that CSV (a relative ``catalog`` key, so the folder stays
+    relocatable). ``run(author_config(...))`` reproduces the UI's run headlessly.
+    Creates *out_dir* if missing.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    save_catalog(out_dir / catalog_name, records)
+    return write_config(
+        out_dir / config_name,
+        catalog=catalog_name,
+        quantities=quantities,
+        params=params,
+        nls=nls,
+        render_plots=render_plots,
+        plot_formats=plot_formats,
+    )
+
+
+def run(config_path: Path | str, *, progress_cb=None) -> list[Path]:
     """Run the whole pipeline from a TOML run-config: the "author once, then run".
 
     Loads the :class:`~cellflow.aggregate_quantification.config.RunConfig`, then
@@ -384,7 +419,8 @@ def run(config_path: Path | str) -> list[Path]:
     When the run-config turns on ``[plots].render``, the premade SuperPlots in each
     ``.iris`` are additionally rendered to static figures (PNG/SVG, editable text)
     under ``export_dir/figures`` via the Iris engine (the optional ``cellflow[plots]``
-    extra). Returns the exported ``.iris`` paths.
+    extra). Returns the exported ``.iris`` paths. The optional *progress_cb* is
+    forwarded to the build and classify stages.
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -400,10 +436,11 @@ def run(config_path: Path | str) -> list[Path]:
         catalog,
         quantifiers=select_quantifiers(cfg.quantities),
         params=cfg.params or None,
+        progress_cb=progress_cb,
     )
     # Optional, config-gated: write per-position NLS sidecars before aggregate so
     # the cell_id join picks up fresh class_labels (no-op when [nls] is absent).
-    classify(catalog, config=cfg.nls)
+    classify(catalog, config=cfg.nls, progress_cb=progress_cb)
     tables = aggregate(catalog)
     if not tables:
         return []
