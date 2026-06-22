@@ -23,7 +23,16 @@ from pathlib import Path
 
 import pandas as pd
 
-__all__ = ["CURATION_COLUMNS", "read_curation", "apply_curation", "filter_excluded"]
+__all__ = [
+    "CURATION_COLUMNS",
+    "empty_curation",
+    "read_curation",
+    "write_curation",
+    "append_exclusion",
+    "remove_exclusion",
+    "apply_curation",
+    "filter_excluded",
+]
 
 #: The columns a curation CSV carries.
 CURATION_COLUMNS = (
@@ -46,6 +55,79 @@ def read_curation(path: Path | str | None) -> pd.DataFrame | None:
     if not path.is_file():
         return None
     return pd.read_csv(path)
+
+
+def empty_curation() -> pd.DataFrame:
+    """An empty curation table with the canonical columns (object dtype).
+
+    Object columns keep an empty ``frame`` as ``NA`` (whole-position) rather than
+    coercing the column to a float that would render NaN on write.
+    """
+    return pd.DataFrame({col: pd.Series(dtype="object") for col in CURATION_COLUMNS})
+
+
+def write_curation(path: Path | str, curation: pd.DataFrame) -> None:
+    """Write *curation* to *path* as CSV (creating the parent dir), index-free."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    curation.to_csv(path, index=False)
+
+
+def append_exclusion(
+    curation: pd.DataFrame | None,
+    *,
+    experiment_id: str,
+    position_id: str,
+    frame: int | None,
+    reason: str,
+) -> pd.DataFrame:
+    """Return *curation* with one exclusion row added.
+
+    ``frame=None`` records a **whole-position** exclusion (stored as NA); a numeric
+    *frame* records a single-frame exclusion. Idempotent on the
+    ``(experiment_id, position_id, frame)`` key: an existing row with the same key
+    is replaced (its reason updated) rather than duplicated. The input is not
+    mutated.
+    """
+    base = empty_curation() if curation is None else curation
+    out = remove_exclusion(
+        base, experiment_id=experiment_id, position_id=position_id, frame=frame
+    )
+    new_row = {
+        "experiment_id": str(experiment_id),
+        "position_id": str(position_id),
+        "frame": pd.NA if frame is None else int(frame),
+        "excluded": True,
+        "exclusion_reason": str(reason),
+    }
+    return pd.concat([out, pd.DataFrame([new_row])], ignore_index=True)
+
+
+def remove_exclusion(
+    curation: pd.DataFrame | None,
+    *,
+    experiment_id: str,
+    position_id: str,
+    frame: int | None,
+) -> pd.DataFrame:
+    """Return *curation* without the row(s) matching the given key.
+
+    ``frame=None`` removes the **whole-position** row (``frame`` NA); a numeric
+    *frame* removes that single-frame row. A non-matching key is a no-op. The
+    input is not mutated.
+    """
+    if curation is None or len(curation) == 0:
+        return empty_curation()
+    out = curation.copy()
+    key = (out["experiment_id"].astype(str) == str(experiment_id)) & (
+        out["position_id"].astype(str) == str(position_id)
+    )
+    if frame is None:
+        key &= out["frame"].isna()
+    else:
+        frame_numeric = pd.to_numeric(out["frame"], errors="coerce")
+        key &= frame_numeric.notna() & (frame_numeric == float(frame))
+    return out.loc[~key].reset_index(drop=True)
 
 
 def apply_curation(
