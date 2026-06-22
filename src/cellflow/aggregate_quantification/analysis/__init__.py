@@ -9,9 +9,12 @@ reproduces on a new experiment's ``aggregate_quantification/`` directory.
 
 Run on a dataset::
 
-    python -m cellflow.aggregate_quantification.analysis AGG_DIR OUT_DIR
+    python -m cellflow.aggregate_quantification.analysis AGG_DIR OUT_DIR \
+        --correlate cell_dynamics.speed_um_per_s neighbor_count.n_neighbors
 
-See ``docs/analyses/`` for the recorded analyses and their findings.
+The package ships no dataset's questions baked in: a concrete experiment's analysis
+(its chosen correlations, bespoke titles, and the recorded findings) lives with that
+experiment, as a small driver that imports these report functions.
 """
 from .reports import label_clustering_report, metric_correlation_report
 from .stats import (

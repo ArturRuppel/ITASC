@@ -1,11 +1,20 @@
-"""Reproduce the recorded analyses for a dataset.
+"""Run the analyst-driven reports over a dataset's aggregate tables.
 
-    python -m cellflow.aggregate_quantification.analysis AGG_DIR [OUT_DIR]
+    python -m cellflow.aggregate_quantification.analysis AGG_DIR [OUT_DIR] \
+        [--correlate Y X ...]
 
 AGG_DIR is an ``aggregate_quantification/`` directory of tidy CSVs; OUT_DIR defaults
 to its parent's ``export/``. Writes figures under ``OUT_DIR/figures/analysis/`` and
-``.iris`` docs under ``OUT_DIR/iris/``. Reports whose source tables are missing are
-skipped with a note, so it runs on any dataset that has the relevant quantities.
+``.iris`` docs under ``OUT_DIR/iris/``.
+
+``label_clustering`` runs automatically whenever ``contact_type_zscore.csv`` is
+present. Metric correlations are opt-in: pass ``--correlate Y X`` (repeatable, dotted
+``table.column`` names) for each question you want — e.g.
+``--correlate cell_dynamics.speed_um_per_s neighbor_count.n_neighbors``. Reports whose
+source tables are missing are skipped with a note. The package ships *no* dataset's
+questions baked in; a specific experiment's analysis is a small driver that imports
+:mod:`cellflow.aggregate_quantification.analysis` and calls the report functions
+directly (so it can pass bespoke titles/labels).
 """
 from __future__ import annotations
 
@@ -13,13 +22,6 @@ import argparse
 from pathlib import Path
 
 from .reports import label_clustering_report, metric_correlation_report
-
-#: The standard correlations to attempt (skipped when a column's table is absent).
-_CORRELATIONS = [
-    {"x": "neighbor_count.n_neighbors", "y": "cell_dynamics.speed_um_per_s",
-     "x_label": "speed  vs  neighbour count",
-     "title": "Denser neighbourhoods → slower cells\nper-replicate correlation, by class"},
-]
 
 
 def _has(agg: Path, *columns: str) -> bool:
@@ -32,6 +34,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("agg_dir", type=Path, help="aggregate_quantification/ directory")
     ap.add_argument("out_dir", type=Path, nargs="?", default=None,
                     help="output dir (default: AGG_DIR/../export)")
+    ap.add_argument("--correlate", nargs=2, action="append", default=[],
+                    metavar=("Y", "X"),
+                    help="replicate-level correlation of Y on X (dotted "
+                         "table.column names); repeatable")
     args = ap.parse_args(argv)
     agg = args.agg_dir
     out = args.out_dir or agg.parent / "export"
@@ -45,14 +51,13 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print("skip label_clustering: contact_type_zscore.csv not found")
 
-    for spec in _CORRELATIONS:
-        if _has(agg, spec["x"], spec["y"]):
-            r = metric_correlation_report(agg, out, **spec)
-            did.append(f"correlation {spec['y'].split('.')[-1]} vs "
-                       f"{spec['x'].split('.')[-1]} "
+    for y, x in args.correlate:
+        if _has(agg, x, y):
+            r = metric_correlation_report(agg, out, x=x, y=y)
+            did.append(f"correlation {y.split('.')[-1]} vs {x.split('.')[-1]} "
                        f"({', '.join(f'{k}:r={v[0]:+.2f}' for k, v in r.by_split.items())})")
         else:
-            print(f"skip correlation {spec['y']} vs {spec['x']}: table(s) missing")
+            print(f"skip correlation {y} vs {x}: table(s) missing")
 
     print(f"\nwrote {len(did)} report(s) to {out}:")
     for d in did:

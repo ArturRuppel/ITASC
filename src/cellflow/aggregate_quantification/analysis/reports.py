@@ -119,13 +119,11 @@ def label_clustering_report(
             observed="neighbor_enrichment.observed",
             expected="neighbor_enrichment.expected", replicate=replicate)
         results["analytic null"] = analytic
+        collapsed = {k: _collapse_heterotypic(v) for k, v in results.items()}
+        type_order, type_labels = _collapsed_type_order(collapsed)
         figures.enrichment_corroboration(
-            {k: _collapse_heterotypic(v) for k, v in results.items()},
-            fig_dir / "label_clustering_corroboration",
-            type_order=["positive·positive", "negative·negative", "heterotypic"],
-            type_labels={"positive·positive": "positive\n–positive",
-                         "negative·negative": "negative\n–negative",
-                         "heterotypic": "hetero-\ntypic"},
+            collapsed, fig_dir / "label_clustering_corroboration",
+            type_order=type_order, type_labels=type_labels,
             type_col="contact_type", replicate_col=replicate,
             title="Homotypic clustering is robust to the null model")
 
@@ -153,6 +151,18 @@ def _contact_type_order(series: pd.Series):
 def _is_homo(t: str) -> bool:
     parts = str(t).split("·")
     return len(parts) == 2 and parts[0] == parts[1]
+
+
+def _collapsed_type_order(collapsed: dict[str, stats.EnrichmentResult]):
+    """Axis order/labels for the corroboration figure: the homotypic types present
+    in the (heterotypic-pooled) data, sorted, then ``heterotypic`` — derived from
+    the data so it works for any class labels, not just a fixed pair."""
+    any_rep = next(iter(collapsed.values())).per_replicate
+    homo = sorted(t for t in any_rep["contact_type"].unique() if _is_homo(t))
+    order = homo + ["heterotypic"]
+    labels = {t: t.replace("·", "\n–") for t in homo}
+    labels["heterotypic"] = "hetero-\ntypic"
+    return order, labels
 
 
 def _collapse_heterotypic(res: stats.EnrichmentResult) -> stats.EnrichmentResult:
