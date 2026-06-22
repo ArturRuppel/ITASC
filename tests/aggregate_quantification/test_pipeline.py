@@ -336,6 +336,57 @@ def test_run_from_config_round_trip(tmp_path):
     assert set(pd.read_csv(measured)["position_id"]) == {"a", "b"}
 
 
+def test_run_with_nls_classifies_before_aggregate(tmp_path):
+    """A [nls]-enabled run writes sidecars before aggregate, so the aggregated
+    cell-keyed table carries the joined class_label."""
+    from cellflow.aggregate_quantification.catalog import save_catalog
+
+    position = tmp_path / "study" / "pos1"
+    inputs = position / "0_input"
+    inputs.mkdir(parents=True)
+
+    cells = np.zeros((2, 8, 8), dtype=np.int32)
+    cells[:, :4, :] = 1
+    cells[:, 4:, :] = 2
+    cell_path = inputs / "cell_tracked_labels.tif"
+    tifffile.imwrite(cell_path, cells)
+
+    nucleus_path = inputs / "nucleus_tracked_labels.tif"
+    tifffile.imwrite(nucleus_path, cells)
+    nls = np.where(cells == 1, 100.0, 1.0).astype(np.float32)
+    tifffile.imwrite(inputs / "NLS_zavg.tif", nls)
+
+    save_catalog(tmp_path / "catalog.csv", [{
+        "id": "pos1", "experiment_id": "EXP1", "condition": "ctrl", "date": "d1",
+        "position_path": position,
+        "cell_tracked_labels_path": cell_path,
+        "nucleus_tracked_labels_path": nucleus_path,
+    }])
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'catalog = "catalog.csv"\n'
+        'quantities = ["cell_shape"]\n'
+        'export_dir = "export"\n'
+        "[params]\npixel_size_um = 0.25\n"
+        "[nls]\n"
+        "enabled = true\n"
+        'image = "0_input/NLS_zavg.tif"\n'
+        'method = "auto"\n'
+    )
+
+    pipeline.run(config)
+
+    sidecar = position / "aggregate_quantification" / "nls_classification.csv"
+    assert sidecar.is_file()
+
+    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
+
+    table = pd.read_csv(tmp_path / "study" / OUTPUT_SUBDIR / "cell_shape.csv")
+    assert "class_label" in table.columns
+    assert set(table["class_label"].dropna().unique()) <= {"positive", "negative"}
+
+
 def _run_config(tmp_path, *, plots: str = "") -> Path:
     """A minimal one-position run-config + inputs; *plots* appends a TOML block."""
     from cellflow.aggregate_quantification.catalog import save_catalog

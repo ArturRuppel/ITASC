@@ -401,6 +401,9 @@ def run(config_path: Path | str) -> list[Path]:
         quantifiers=select_quantifiers(cfg.quantities),
         params=cfg.params or None,
     )
+    # Optional, config-gated: write per-position NLS sidecars before aggregate so
+    # the cell_id join picks up fresh class_labels (no-op when [nls] is absent).
+    classify(catalog, config=cfg.nls)
     tables = aggregate(catalog)
     if not tables:
         return []
