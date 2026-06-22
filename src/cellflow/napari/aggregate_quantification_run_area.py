@@ -33,6 +33,48 @@ from cellflow.napari.ui_style import action_button, parameter_heading, status_la
 _NLS_METHODS = ("auto", "otsu", "two_cluster", "fixed")
 _DEFAULT_NLS_IMAGE = "0_input/NLS_zavg.tif"
 
+#: Friendly names for the ``PositionInputs`` fields a quantifier can ``require``.
+#: Drives the quantity sub-group headings; an unmapped field shows its raw name.
+_INPUT_LABELS = {
+    "cell_labels_path": "Cell labels",
+    "nucleus_labels_path": "Nucleus labels",
+    "contact_analysis_path": "Contacts",
+}
+#: Order the input kinds appear in; unknown fields sort last.
+_INPUT_ORDER = ("cell_labels_path", "nucleus_labels_path", "contact_analysis_path")
+
+
+def _grouped_quantities() -> list[tuple[tuple[str, ...], list]]:
+    """Registered quantifier classes grouped by their ``requires`` tuple.
+
+    Presentation-only: the grouping is derived from each quantifier's required
+    inputs, so a newly-registered metric slots into the right group automatically.
+    Single-input groups come first (in :data:`_INPUT_ORDER`), combined-input groups
+    last; quantifiers keep registration order within a group.
+    """
+    groups: dict[tuple[str, ...], list] = {}
+    for q_cls in available_quantifiers():
+        groups.setdefault(tuple(q_cls.requires), []).append(q_cls)
+
+    def order_key(item: tuple[tuple[str, ...], list]) -> tuple:
+        requires = item[0]
+        rank = tuple(
+            sorted(
+                _INPUT_ORDER.index(f) if f in _INPUT_ORDER else len(_INPUT_ORDER)
+                for f in requires
+            )
+        )
+        return (len(requires), rank)
+
+    return sorted(groups.items(), key=order_key)
+
+
+def _group_label(requires: tuple[str, ...]) -> str:
+    """Human heading for a ``requires`` tuple, e.g. ``Cell labels + Nucleus labels``."""
+    if not requires:
+        return "No inputs"
+    return " + ".join(_INPUT_LABELS.get(f, f) for f in requires)
+
 
 @dataclass
 class RunChoices:
@@ -89,12 +131,22 @@ class RunArea(QWidget):
         heading = QLabel("QUANTITIES")
         parameter_heading(heading)
         layout.addWidget(heading)
-        for q_cls in available_quantifiers():
-            cb = QCheckBox(q_cls.display_name or q_cls.quantity_id)
-            cb.setChecked(True)
-            cb.toggled.connect(lambda *_: self._refresh_enabled())
-            layout.addWidget(cb)
-            self._quantity_checks[q_cls.quantity_id] = cb
+        # One sub-group per required-input kind (derived from each quantifier's
+        # ``requires``), so the list reads by what each metric needs to build.
+        for requires, classes in _grouped_quantities():
+            sub = QLabel(_group_label(requires))
+            status_label(sub, muted=True)
+            layout.addWidget(sub)
+            group_box = QVBoxLayout()
+            group_box.setContentsMargins(12, 0, 0, 0)
+            group_box.setSpacing(0)
+            for q_cls in classes:
+                cb = QCheckBox(q_cls.display_name or q_cls.quantity_id)
+                cb.setChecked(True)
+                cb.toggled.connect(lambda *_: self._refresh_enabled())
+                group_box.addWidget(cb)
+                self._quantity_checks[q_cls.quantity_id] = cb
+            layout.addLayout(group_box)
 
     def _build_nls(self, layout) -> None:
         heading = QLabel("NLS CLASSIFICATION")
