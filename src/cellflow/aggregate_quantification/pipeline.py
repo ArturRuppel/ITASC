@@ -28,7 +28,7 @@ from pathlib import Path
 
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
-from .config import RunConfig, load_config
+from .config import NlsConfig, RunConfig, load_config
 from .curation import read_curation
 from .iris_export.export import export_dir as _export_iris
 from .quantifier import PositionInputs, Quantifier, available_quantifiers
@@ -37,6 +37,7 @@ from .records import output_for_record, position_inputs_from_record
 __all__ = [
     "build_catalog",
     "build_quantities",
+    "classify",
     "select_quantifiers",
     "aggregate",
     "export",
@@ -143,6 +144,99 @@ def build_quantities(
         if progress_cb is not None:
             progress_cb(index, total, inputs.position_dir.name)
         quantifier.build(inputs, output_for_record(quantifier, record), params=q_params)
+
+
+def classify(
+    catalog: Iterable[dict],
+    *,
+    config: NlsConfig | None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+) -> list[Path]:
+    """Write each position's NLS subpopulation sidecar CSV (the optional step).
+
+    Gated by the run-config ``[nls]`` table: when *config* is ``None`` or
+    ``config.enabled`` is false this is a no-op returning ``[]`` (positions that
+    already carry a sidecar still get their ``class_label`` joined at aggregate
+    time — unchanged behaviour). Otherwise, for every position that has the marker
+    image, the nucleus tracked-labels, and a folder to write into, it resolves a
+    threshold per ``config.method`` and calls the headless engine's
+    :func:`classify_position_nls_to_csv`. Positions missing any input are skipped
+    (not fatal). Returns the written sidecar paths.
+
+    Runs **before** :func:`aggregate` so the existing ``cell_id`` join
+    (:func:`shape_tables._join_class`) finds fresh sidecars.
+    """
+    if config is None or not config.enabled:
+        return []
+
+    jobs: list[tuple[dict, Path, Path]] = []
+    for record in catalog:
+        image = _resolve_nls_image(record, config.image)
+        labels = record.get("nucleus_tracked_labels_path")
+        labels_path = Path(labels) if labels else None
+        if (
+            image is not None and image.is_file()
+            and labels_path is not None and labels_path.is_file()
+            and record.get("position_path")
+        ):
+            jobs.append((record, image, labels_path))
+
+    from .contacts.nls_classification import (
+        classify_position_nls_to_csv,
+        nls_classification_csv_path,
+    )
+
+    written: list[Path] = []
+    total = len(jobs)
+    for index, (record, image, labels_path) in enumerate(jobs, start=1):
+        if progress_cb is not None:
+            progress_cb(index, total, str(record.get("id", "?")))
+        threshold = _nls_threshold(config, image, labels_path)
+        csv_path = nls_classification_csv_path(record["position_path"])
+        classify_position_nls_to_csv(csv_path, image, labels_path, threshold=threshold)
+        written.append(csv_path)
+    return written
+
+
+def _resolve_nls_image(record: dict, image: str) -> Path | None:
+    """Resolve the marker-image spec against *record*: absolute as-is, else joined
+    onto the record's ``position_path`` (so one relative entry resolves per
+    position). ``None`` when the record has no folder to resolve a relative path."""
+    path = Path(image)
+    if path.is_absolute():
+        return path
+    position = record.get("position_path")
+    return Path(position) / path if position else None
+
+
+def _nls_threshold(config: NlsConfig, image: Path, labels_path: Path) -> float | None:
+    """The threshold to classify with, per ``config.method``.
+
+    ``auto`` ⇒ ``None`` (the engine's :func:`auto_threshold`). ``fixed`` ⇒ the
+    configured value. ``otsu`` / ``two_cluster`` measure the per-track intensities
+    once and compute the splitter boundary, keeping the engine module untouched.
+    """
+    if config.method == "auto":
+        return None
+    if config.method == "fixed":
+        return float(config.threshold)
+
+    from .contacts.nls_classification import (
+        _read_image_stack,
+        measure_track_nls_intensity,
+        split_tracks_otsu,
+        split_tracks_two_clusters,
+    )
+
+    nls = _read_image_stack(image)
+    labels = _read_image_stack(labels_path)
+    intensities = {
+        track_id: item.intensity
+        for track_id, item in measure_track_nls_intensity(nls, labels).items()
+    }
+    splitter = split_tracks_otsu if config.method == "otsu" else split_tracks_two_clusters
+    threshold, _ = splitter(intensities)
+    return float(threshold)
 
 
 def _dependency_order(quants: Sequence[Quantifier]) -> list[Quantifier]:
