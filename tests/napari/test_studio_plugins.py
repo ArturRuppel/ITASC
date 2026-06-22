@@ -46,7 +46,7 @@ def test_group_build_metrics_nests_derived_under_their_producer():
     derived = next(g for g in groups if g.derived)
     assert derived.label == "Derived from Cell–cell contacts"
     member_ids = {q.quantity_id for q in derived.members}
-    assert {"neighbor_count", "neighbor_enrichment", "contact_type_zscore"} <= member_ids
+    assert {"neighbor_count", "signed_contact_length"} <= member_ids
     # The derived group is placed right after the group that holds its producer.
     cell_idx = labels.index("Cell")
     assert labels[cell_idx + 1] == "Derived from Cell–cell contacts"

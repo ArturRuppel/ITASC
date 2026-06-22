@@ -1,11 +1,7 @@
 """write_config — the inverse of load_config (round-trips through TOML)."""
 from __future__ import annotations
 
-from cellflow.aggregate_quantification.config import (
-    NlsConfig,
-    load_config,
-    write_config,
-)
+from cellflow.aggregate_quantification.config import load_config, write_config
 
 
 def test_round_trip_minimal(tmp_path):
@@ -13,11 +9,9 @@ def test_round_trip_minimal(tmp_path):
     write_config(path, catalog="catalog.csv", quantities=["contacts"])
     cfg = load_config(path)
     assert cfg.catalog == (tmp_path / "catalog.csv").resolve()
-    assert cfg.export_dir == (tmp_path / "export").resolve()
     assert cfg.curation == (tmp_path / "curation.csv").resolve()
     assert cfg.quantities == ("contacts",)
-    assert cfg.nls is None
-    assert cfg.render_plots is False
+    assert cfg.out_dir is None
 
 
 def test_params_drop_unset_keys(tmp_path):
@@ -32,26 +26,18 @@ def test_params_drop_unset_keys(tmp_path):
     assert cfg.params == {"pixel_size_um": 0.25, "shuffles": 1000}
 
 
-def test_nls_table_round_trips(tmp_path):
+def test_out_dir_round_trips(tmp_path):
     path = tmp_path / "config.toml"
-    write_config(
-        path,
-        catalog="catalog.csv",
-        nls=NlsConfig(enabled=True, image="0_input/NLS_zavg.tif",
-                      method="fixed", threshold=12.5),
-    )
+    write_config(path, catalog="catalog.csv", out_dir="tables")
     cfg = load_config(path)
-    assert cfg.nls == NlsConfig(enabled=True, image="0_input/NLS_zavg.tif",
-                                method="fixed", threshold=12.5)
+    assert cfg.out_dir == (tmp_path / "tables").resolve()
 
 
-def test_plots_table_round_trips(tmp_path):
+def test_out_dir_omitted_when_unset(tmp_path):
     path = tmp_path / "config.toml"
-    write_config(path, catalog="catalog.csv", render_plots=True,
-                 plot_formats=["png", "pdf"])
-    cfg = load_config(path)
-    assert cfg.render_plots is True
-    assert cfg.plot_formats == ("png", "pdf")
+    write_config(path, catalog="catalog.csv")
+    assert "out_dir" not in path.read_text()
+    assert load_config(path).out_dir is None
 
 
 def test_quantities_empty_means_all(tmp_path):

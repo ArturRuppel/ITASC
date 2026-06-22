@@ -195,17 +195,15 @@ class AggregateQuantificationWidget(QWidget):
         layout.addWidget(self.contact_analysis_progress_bar)
 
         # Display options, laid out as a two-column grid of toggles.
-        self.color_cells_by_label_cb = QCheckBox("Color cells by label")
         self.color_edges_by_id_cb = QCheckBox("Color edges by ID")
         self.color_edges_by_label_cb = QCheckBox("Color edges by label")
         self.hide_border_edges_cb = QCheckBox("Hide border edges")
         options_grid = QGridLayout()
         options_grid.setContentsMargins(0, 0, 0, 0)
         options_grid.setHorizontalSpacing(12)
-        options_grid.addWidget(self.color_cells_by_label_cb, 0, 0)
-        options_grid.addWidget(self.color_edges_by_id_cb, 0, 1)
-        options_grid.addWidget(self.color_edges_by_label_cb, 1, 0)
-        options_grid.addWidget(self.hide_border_edges_cb, 1, 1)
+        options_grid.addWidget(self.color_edges_by_id_cb, 0, 0)
+        options_grid.addWidget(self.color_edges_by_label_cb, 0, 1)
+        options_grid.addWidget(self.hide_border_edges_cb, 1, 0)
         layout.addLayout(options_grid)
 
         # Two build/show actions sit directly below the display options (no
@@ -427,7 +425,6 @@ class AggregateQuantificationWidget(QWidget):
     def get_state(self) -> dict:
         """Serialize display options (the seam shared by orchestrator + standalone)."""
         return {
-            "color_cells_by_label": self.color_cells_by_label_cb.isChecked(),
             "color_edges_by_id": self.color_edges_by_id_cb.isChecked(),
             "color_edges_by_label": self.color_edges_by_label_cb.isChecked(),
             "hide_border_edges": self.hide_border_edges_cb.isChecked(),
@@ -436,8 +433,6 @@ class AggregateQuantificationWidget(QWidget):
     def set_state(self, state: dict) -> None:
         if not isinstance(state, dict):
             return
-        if "color_cells_by_label" in state:
-            self.color_cells_by_label_cb.setChecked(bool(state["color_cells_by_label"]))
         if "color_edges_by_id" in state:
             self.color_edges_by_id_cb.setChecked(bool(state["color_edges_by_id"]))
         if "color_edges_by_label" in state:
@@ -838,7 +833,6 @@ class AggregateQuantificationWidget(QWidget):
                 pass
 
         options: dict[str, Any] = {
-            "color_cells_by_label": self.color_cells_by_label_cb.isChecked(),
             "color_edges_by_id": self.color_edges_by_id_cb.isChecked(),
             "color_edges_by_label": self.color_edges_by_label_cb.isChecked(),
             "hide_border_edges": self.hide_border_edges_cb.isChecked(),
@@ -859,7 +853,6 @@ class AggregateQuantificationWidget(QWidget):
 
         show_kwargs: dict[str, Any] = {
             "prefix": self._contact_analysis_layer_prefix,
-            "class_labels": self._read_nls_class_labels(contact_analysis_path),
             **options,
         }
         if self._cached_cell_labels is not None:
@@ -896,26 +889,6 @@ class AggregateQuantificationWidget(QWidget):
         timer.timeout.connect(_deferred_add)
         timer.start(0)
         self._pending_show_timer = timer
-
-    def _read_nls_class_labels(self, contact_analysis_path: Path) -> dict[int, str]:
-        """Best-effort ``cell_id -> label`` map from the NLS sidecar CSV.
-
-        The CSV sits beside the contacts ``.h5`` in the shared
-        ``aggregate_quantification/`` folder. Imported lazily so this public
-        widget never couples to the NLS module at import time (the
-        public/private boundary). A missing CSV → no labels (all unclassified).
-        """
-        csv_path = contact_analysis_path.parent / "nls_classification.csv"
-        if not csv_path.is_file():
-            return {}
-        try:
-            from cellflow.aggregate_quantification.contacts.nls_classification import (
-                read_nls_classification_csv,
-            )
-
-            return read_nls_classification_csv(csv_path)
-        except Exception:  # noqa: BLE001 - colouring is best-effort
-            return {}
 
     def _contact_analysis_layer_names(self) -> list[str]:
         if self.viewer is None:

@@ -3,14 +3,18 @@
 One small file, authored once and git-versioned (it carries *code status*, per the
 artifact-contract spec §1): it names the per-position **catalog** CSV, selects
 which **quantities** to compute, supplies the shared build **params**, and points
-at the **export** directory. Everything in it is a run-level choice — the
+at an optional **curation** table. Everything in it is a run-level choice — the
 per-position table itself stays a CSV (tabular, many-row, with its own
 relative-path resolution); this file is the "author once, then run" surface a
 single ``run(config)`` entry point consumes.
 
+The run produces **label-agnostic** tidy tables only; no classification step and
+no plot/figure export live here (a subpopulation classification and any plots are a
+downstream, dataset-specific concern).
+
 Paths resolve relative to the config file's own directory, so a project folder is
-relocatable: keep ``config.toml`` next to ``catalog.csv`` / ``export/`` and the
-whole thing moves together.
+relocatable: keep ``config.toml`` next to ``catalog.csv`` and the whole thing moves
+together.
 """
 from __future__ import annotations
 
@@ -25,36 +29,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on 3.10 only
 
 from .quantifier import available_quantifiers
 
-__all__ = ["NlsConfig", "RunConfig", "load_config", "write_config"]
-
-#: Default for the optional export-dir key, relative to the config file's directory.
-_DEFAULT_EXPORT_DIR = "export"
+__all__ = ["RunConfig", "load_config", "write_config"]
 
 #: Default for the optional curation-table key, relative to the config dir.
 _DEFAULT_CURATION = "curation.csv"
-
-#: Default per-position-relative marker image for the optional [nls] step.
-_DEFAULT_NLS_IMAGE = "0_input/NLS_zavg.tif"
-
-#: The NLS thresholding methods the classify step understands.
-_NLS_METHODS = ("auto", "otsu", "two_cluster", "fixed")
-
-
-@dataclass(frozen=True)
-class NlsConfig:
-    """Parsed ``[nls]`` table — the optional NLS classification step's knobs.
-
-    *image* is the marker image **relative to each position directory** (e.g.
-    ``0_input/NLS_zavg.tif``) so one entry resolves across a batch; an absolute
-    path is used verbatim. *method* picks the thresholding: ``auto`` (per-position
-    two-cluster, Otsu fallback — the default), ``otsu``, ``two_cluster``, or
-    ``fixed`` (pins *threshold* across the series).
-    """
-
-    enabled: bool = False
-    image: str = _DEFAULT_NLS_IMAGE
-    method: str = "auto"
-    threshold: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -64,31 +42,25 @@ class RunConfig:
     *quantities* empty means "every available quantifier"; a non-empty tuple
     selects a subset by ``quantity_id`` (dependency producers are pulled in at run
     time even when omitted). *params* is the shared build-knob mapping threaded to
-    quantifiers that opt in.
-
-    *render_plots* (the ``[plots]`` table's ``render``) turns on rendering the
-    premade SuperPlots to static figures via the Iris engine (the optional
-    ``cellflow[plots]`` extra); *plot_formats* (``[plots].formats``) picks the
-    output formats. When off, the run stays Iris-only with no engine dependency.
+    quantifiers that opt in. *out_dir* is where the pooled tidy tables land (flat);
+    ``None`` defaults to the catalogue root (the positions' common ancestor).
+    *curation* names an optional exclusion table authored by the curation tool for
+    downstream consumers; the aggregate step itself writes all rows.
     """
 
     catalog: Path
-    export_dir: Path
+    out_dir: Path | None = None
     curation: Path = field(default=Path(_DEFAULT_CURATION))
-    nls: NlsConfig | None = None
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
-    render_plots: bool = False
-    plot_formats: tuple[str, ...] = ("png", "svg")
 
 
 def load_config(config_path: Path | str) -> RunConfig:
     """Parse the TOML run-config at *config_path* into a :class:`RunConfig`.
 
-    ``catalog`` is required; ``export_dir`` defaults to ``export/`` beside the
-    config. Relative paths resolve against the config file's directory. Selected
-    ``quantities`` are validated against the registered quantifiers so a typo fails
-    loudly rather than silently computing nothing.
+    ``catalog`` is required. Relative paths resolve against the config file's
+    directory. Selected ``quantities`` are validated against the registered
+    quantifiers so a typo fails loudly rather than silently computing nothing.
     """
     path = Path(config_path)
     base = path.parent
@@ -104,21 +76,13 @@ def load_config(config_path: Path | str) -> RunConfig:
     quantities = tuple(data.get("quantities", ()))
     _check_known_quantities(quantities)
 
-    plots = data.get("plots", {})
-    render_plots = bool(plots.get("render", False))
-    plot_formats = tuple(plots.get("formats", ("png", "svg")))
-
-    nls = _parse_nls(data.get("nls"))
-
+    out_dir = data.get("out_dir")
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
-        export_dir=_resolve(base, data.get("export_dir", _DEFAULT_EXPORT_DIR)),
+        out_dir=_resolve(base, out_dir) if out_dir else None,
         curation=_resolve(base, data.get("curation", _DEFAULT_CURATION)),
-        nls=nls,
         quantities=quantities,
         params=dict(data.get("params", {})),
-        render_plots=render_plots,
-        plot_formats=plot_formats,
     )
 
 
@@ -127,28 +91,6 @@ def _resolve(base: Path, raw: str) -> Path:
     if not candidate.is_absolute():
         candidate = base / candidate
     return candidate.expanduser().resolve(strict=False)
-
-
-def _parse_nls(table: dict | None) -> NlsConfig | None:
-    """Parse the optional ``[nls]`` table into an :class:`NlsConfig` (or ``None``).
-
-    A missing table means the step is off. *method* is validated so a typo fails
-    loudly rather than silently classifying with the wrong splitter.
-    """
-    if table is None:
-        return None
-    method = str(table.get("method", "auto"))
-    if method not in _NLS_METHODS:
-        listed = ", ".join(_NLS_METHODS)
-        raise ValueError(
-            f"Run-config [nls] selects unknown method {method!r}. Available: {listed}."
-        )
-    return NlsConfig(
-        enabled=bool(table.get("enabled", False)),
-        image=str(table.get("image", _DEFAULT_NLS_IMAGE)),
-        method=method,
-        threshold=float(table.get("threshold", 0.0)),
-    )
 
 
 def _check_known_quantities(quantities: tuple[str, ...]) -> None:
@@ -167,29 +109,27 @@ def write_config(
     path: Path | str,
     *,
     catalog: str = "catalog.csv",
-    export_dir: str = _DEFAULT_EXPORT_DIR,
+    out_dir: str | None = None,
     curation: str = _DEFAULT_CURATION,
     quantities: Sequence[str] = (),
     params: Mapping[str, object] | None = None,
-    nls: NlsConfig | None = None,
-    render_plots: bool = False,
-    plot_formats: Sequence[str] = ("png", "svg"),
 ) -> Path:
     """Author a TOML run-config at *path* — the inverse of :func:`load_config`.
 
     Paths are written **relative** (verbatim), so the project folder stays
-    relocatable. ``quantities`` is emitted only when non-empty (empty round-trips
-    to ``()`` = "all"). ``params`` keys that are ``None`` are dropped (an unset
-    pixel size etc.). The ``[nls]`` table is written only when *nls* is given;
-    ``[plots]`` is always written. ``load_config(write_config(path, ...))``
-    reproduces the inputs (paths resolved against ``path.parent``). Returns *path*.
+    relocatable. ``out_dir`` (where the flat tables land) is emitted only when
+    given. ``quantities`` is emitted only when non-empty (empty round-trips to
+    ``()`` = "all"). ``params`` keys that are ``None`` are dropped (an unset pixel
+    size etc.). ``load_config(write_config(path, ...))`` reproduces the inputs
+    (paths resolved against ``path.parent``). Returns *path*.
     """
     path = Path(path)
     lines: list[str] = [
         f"catalog = {_toml_str(catalog)}",
-        f"export_dir = {_toml_str(export_dir)}",
         f"curation = {_toml_str(curation)}",
     ]
+    if out_dir is not None:
+        lines.append(f"out_dir = {_toml_str(out_dir)}")
     if quantities:
         lines.append(f"quantities = {_toml_array(quantities)}")
 
@@ -200,23 +140,7 @@ def write_config(
             lines.append("[params]")
             lines.extend(f"{k} = {_toml_value(v)}" for k, v in kept.items())
 
-    if nls is not None:
-        lines += [
-            "",
-            "[nls]",
-            f"enabled = {_toml_value(nls.enabled)}",
-            f"image = {_toml_str(nls.image)}",
-            f"method = {_toml_str(nls.method)}",
-            f"threshold = {_toml_value(float(nls.threshold))}",
-        ]
-
-    lines += [
-        "",
-        "[plots]",
-        f"render = {_toml_value(render_plots)}",
-        f"formats = {_toml_array(plot_formats)}",
-        "",
-    ]
+    lines.append("")
     path.write_text("\n".join(lines), encoding="utf-8")
     return path
 

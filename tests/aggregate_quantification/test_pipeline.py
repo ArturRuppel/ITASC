@@ -1,10 +1,10 @@
-"""The napari-free pipeline: discovery → build loop → aggregate → export.
+"""The napari-free pipeline: discovery → build loop → aggregate (flat tables).
 
 These cover the orchestration ``pipeline`` adds on top of the (separately tested)
 stages: that ``build_quantities`` runs one ``.build()`` per buildable
 (quantifier, position), threads shared params only into opt-in quantifiers, and
-reports progress; and that ``export`` emits the requested tidy artifacts plus the
-``.iris`` bundles.
+reports progress; and that ``aggregate`` / ``run`` pool the per-position products
+into flat, label-agnostic tidy CSVs.
 """
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ def test_build_catalog_discovers_and_writes_skeleton(tmp_path):
 # -------------------------------------------------------------- end to end
 
 
-def test_pipeline_build_aggregate_export_round_trip(tmp_path):
+def test_pipeline_build_aggregate_round_trip(tmp_path):
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
     frame[:, 4:] = 2
@@ -220,25 +220,13 @@ def test_pipeline_build_aggregate_export_round_trip(tmp_path):
     )
     tables = pipeline.aggregate(recs, tmp_path / "catalogue")
     assert "cell_shape" in tables
-
-    tables_dir = tables["cell_shape"].parent
-    written = pipeline.export(tables_dir)
-
-    # Iris-only export: one .iris bundle, no csv/parquet mirror.
-    assert {p.suffix for p in written} == {".iris"}
-    assert any(p.name == "cell_shape.iris" for p in written)
-
-
-def test_export_writes_iris_into_out_dir(tmp_path):
-    tables_dir = _build_cell_shape_tables(tmp_path)
-    out_dir = tmp_path / "export"
-
-    written = pipeline.export(tables_dir, out_dir)
-
-    assert written == [out_dir / "iris" / "cell_shape.iris"]
-    assert written[0].is_file()
-    # The canonical measurement CSV is left in place, not duplicated into export/.
-    assert not (out_dir / "cell_shape.csv").exists()
+    # Tables are written flat (no aggregate_quantification subdir) and are
+    # label-agnostic (no class_label column).
+    path = tables["cell_shape"]
+    assert path == tmp_path / "catalogue" / "cell_shape.csv"
+    df = pd.read_csv(path)
+    assert "class_label" not in df.columns
+    assert set(df["position_id"]) == {"a", "b"}
 
 
 # --------------------------------------------------------- quantities selection
@@ -266,25 +254,6 @@ def test_select_quantifiers_unknown_raises():
         pipeline.select_quantifiers(["bogus"])
 
 
-# ------------------------------------------------------------- export helpers
-
-
-def _build_cell_shape_tables(tmp_path):
-    frame = np.zeros((6, 8), dtype=np.uint16)
-    frame[:, :4] = 1
-    frame[:, 4:] = 2
-    recs = []
-    for pid in ("a", "b"):
-        rec = _record(tmp_path, pid)
-        tifffile.imwrite(rec["cell_tracked_labels_path"], np.stack([frame, frame]))
-        recs.append(rec)
-    pipeline.build_quantities(
-        recs, quantifiers=[CellShapeQuantifier()], params={"pixel_size_um": 0.25}
-    )
-    tables = pipeline.aggregate(recs, tmp_path / "catalogue")
-    return tables["cell_shape"].parent
-
-
 # ----------------------------------------------------------- run (config-driven)
 
 
@@ -301,219 +270,32 @@ def test_run_from_config_round_trip(tmp_path):
         pdir.mkdir(parents=True)
         cells = pdir / "cells.tif"
         tifffile.imwrite(cells, np.stack([frame, frame]))
-        recs.append(
-            {
-                "id": pid,
-                "condition": "ctrl",
-                "date": "d1",
-                "experiment_id": f"EXP-{pid}",
-                "position_path": pdir,
-                "cell_tracked_labels_path": cells,
-            }
-        )
-    catalog_csv = tmp_path / "catalog.csv"
-    save_catalog(catalog_csv, recs)
-
-    config = tmp_path / "config.toml"
-    config.write_text(
-        'catalog = "catalog.csv"\n'
-        'quantities = ["cell_shape"]\n'
-        "export_dir = \"export\"\n"
-        "[params]\npixel_size_um = 0.25\n"
-    )
-
-    written = pipeline.run(config)
-
-    out_dir = tmp_path / "export"
-    # Iris-only export: the .iris bundle lands under export/iris/.
-    assert written == [out_dir / "iris" / "cell_shape.iris"]
-    assert written[0].is_file()
-    # The measurement table stays under the catalogue root (study/), not export/.
-    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
-
-    measured = study / OUTPUT_SUBDIR / "cell_shape.csv"
-    assert measured.is_file()
-    assert set(pd.read_csv(measured)["position_id"]) == {"a", "b"}
-
-
-def test_run_with_nls_classifies_before_aggregate(tmp_path):
-    """A [nls]-enabled run writes sidecars before aggregate, so the aggregated
-    cell-keyed table carries the joined class_label."""
-    from cellflow.aggregate_quantification.catalog import save_catalog
-
-    position = tmp_path / "study" / "pos1"
-    inputs = position / "0_input"
-    inputs.mkdir(parents=True)
-
-    cells = np.zeros((2, 8, 8), dtype=np.int32)
-    cells[:, :4, :] = 1
-    cells[:, 4:, :] = 2
-    cell_path = inputs / "cell_tracked_labels.tif"
-    tifffile.imwrite(cell_path, cells)
-
-    nucleus_path = inputs / "nucleus_tracked_labels.tif"
-    tifffile.imwrite(nucleus_path, cells)
-    nls = np.where(cells == 1, 100.0, 1.0).astype(np.float32)
-    tifffile.imwrite(inputs / "NLS_zavg.tif", nls)
-
-    save_catalog(tmp_path / "catalog.csv", [{
-        "id": "pos1", "experiment_id": "EXP1", "condition": "ctrl", "date": "d1",
-        "position_path": position,
-        "cell_tracked_labels_path": cell_path,
-        "nucleus_tracked_labels_path": nucleus_path,
-    }])
-
-    config = tmp_path / "config.toml"
-    config.write_text(
-        'catalog = "catalog.csv"\n'
-        'quantities = ["cell_shape"]\n'
-        'export_dir = "export"\n'
-        "[params]\npixel_size_um = 0.25\n"
-        "[nls]\n"
-        "enabled = true\n"
-        'image = "0_input/NLS_zavg.tif"\n'
-        'method = "auto"\n'
-    )
-
-    pipeline.run(config)
-
-    sidecar = position / "aggregate_quantification" / "nls_classification.csv"
-    assert sidecar.is_file()
-
-    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
-
-    table = pd.read_csv(tmp_path / "study" / OUTPUT_SUBDIR / "cell_shape.csv")
-    assert "class_label" in table.columns
-    assert set(table["class_label"].dropna().unique()) <= {"positive", "negative"}
-
-
-def _run_config(tmp_path, *, plots: str = "") -> Path:
-    """A minimal one-position run-config + inputs; *plots* appends a TOML block."""
-    from cellflow.aggregate_quantification.catalog import save_catalog
-
-    frame = np.zeros((6, 8), dtype=np.uint16)
-    frame[:, :4] = 1
-    frame[:, 4:] = 2
-    pdir = tmp_path / "study" / "a"
-    pdir.mkdir(parents=True)
-    cells = pdir / "cells.tif"
-    tifffile.imwrite(cells, np.stack([frame, frame]))
-    save_catalog(tmp_path / "catalog.csv", [{
-        "id": "a", "condition": "ctrl", "date": "d1", "experiment_id": "EXP-a",
-        "position_path": pdir, "cell_tracked_labels_path": cells,
-    }])
-    config = tmp_path / "config.toml"
-    config.write_text(
-        'catalog = "catalog.csv"\n'
-        'quantities = ["cell_shape"]\n'
-        'export_dir = "export"\n'
-        "[params]\npixel_size_um = 0.25\n" + plots
-    )
-    return config
-
-
-def test_run_renders_figures_when_plots_enabled(tmp_path, monkeypatch):
-    """``[plots].render`` makes run() drive figure rendering over the written
-    .iris, into export/figures, with the configured formats. The renderer is
-    stubbed (its own end-to-end behavior is covered in test_figures)."""
-    from cellflow.aggregate_quantification.iris_export import figures
-
-    calls = {}
-
-    def fake_render(iris_dir, out_dir, *, formats):
-        calls["args"] = (Path(iris_dir), Path(out_dir), tuple(formats))
-
-    monkeypatch.setattr(figures, "render_export_dir", fake_render)
-
-    config = _run_config(tmp_path, plots="[plots]\nrender = true\nformats = ['png']\n")
-    pipeline.run(config)
-
-    out = tmp_path / "export"
-    assert calls["args"] == (out / "iris", out / "figures", ("png",))
-
-
-def test_run_skips_figures_by_default(tmp_path, monkeypatch):
-    from cellflow.aggregate_quantification.iris_export import figures
-
-    called = False
-
-    def fake_render(*a, **k):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(figures, "render_export_dir", fake_render)
-
-    pipeline.run(_run_config(tmp_path))  # no [plots] block
-
-    assert called is False
-
-
-def test_run_applies_curation_filter(tmp_path):
-    import io
-    import json
-    import zipfile
-
-    from cellflow.aggregate_quantification.catalog import save_catalog
-
-    frame = np.zeros((6, 8), dtype=np.uint16)
-    frame[:, :4] = 1
-    frame[:, 4:] = 2
-    study = tmp_path / "study"
-    recs = []
-    for pid in ("a", "b"):
-        pdir = study / pid
-        pdir.mkdir(parents=True)
-        cells = pdir / "cells.tif"
-        # three frames so a frame-level exclusion is visible
-        tifffile.imwrite(cells, np.stack([frame, frame, frame]))
         recs.append({
-            "id": pid,
-            "condition": "ctrl",
-            "date": "d1",
-            "experiment_id": f"EXP-{pid}",
-            "position_path": pdir,
+            "id": pid, "condition": "ctrl", "date": "d1",
+            "experiment_id": f"EXP-{pid}", "position_path": pdir,
             "cell_tracked_labels_path": cells,
         })
     save_catalog(tmp_path / "catalog.csv", recs)
 
-    # Exclude position b entirely, and frame 0 of position a.
-    pd.DataFrame({
-        "experiment_id": ["EXP-b", "EXP-a"],
-        "position_id": ["b", "a"],
-        "frame": [pd.NA, 0],
-        "excluded": [True, True],
-        "exclusion_reason": ["debris", "blur"],
-    }).to_csv(tmp_path / "curation.csv", index=False)
-
     config = tmp_path / "config.toml"
     config.write_text(
         'catalog = "catalog.csv"\n'
         'quantities = ["cell_shape"]\n'
-        'export_dir = "export"\n'
+        'out_dir = "tables"\n'
         "[params]\npixel_size_um = 0.25\n"
     )
 
     written = pipeline.run(config)
 
-    # The on-disk measurement CSV stays pure: both positions, all frames.
-    from cellflow.aggregate_quantification.quantifier import OUTPUT_SUBDIR
-
-    measured = pd.read_csv(study / OUTPUT_SUBDIR / "cell_shape.csv")
+    # run() returns the table name → flat CSV path map; tables land in out_dir.
+    out_dir = tmp_path / "tables"
+    assert written["cell_shape"] == out_dir / "cell_shape.csv"
+    measured = pd.read_csv(out_dir / "cell_shape.csv")
     assert set(measured["position_id"]) == {"a", "b"}
-
-    # The .iris bundle is filtered: no position b, and no frame 0 of a.
-    with zipfile.ZipFile(written[0]) as zf:
-        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
-        provenance = json.loads(zf.read("provenance.json"))
-    assert set(back["position_id"]) == {"a"}
-    assert 0 not in set(back["frame"])
-    assert provenance["curation"]["rows_dropped"] > 0
+    assert "class_label" not in measured.columns
 
 
-def test_run_without_curation_file_exports_everything(tmp_path):
-    import io
-    import zipfile
-
+def test_run_defaults_out_dir_to_catalogue_root(tmp_path):
     from cellflow.aggregate_quantification.catalog import save_catalog
 
     frame = np.zeros((6, 8), dtype=np.uint16)
@@ -528,32 +310,25 @@ def test_run_without_curation_file_exports_everything(tmp_path):
         "id": "a", "condition": "ctrl", "date": "d1", "experiment_id": "EXP-a",
         "position_path": pdir, "cell_tracked_labels_path": cells,
     }])
-
     config = tmp_path / "config.toml"
     config.write_text(
         'catalog = "catalog.csv"\nquantities = ["cell_shape"]\n'
-        'export_dir = "export"\n[params]\npixel_size_um = 0.25\n'
+        "[params]\npixel_size_um = 0.25\n"
     )
 
-    # No curation.csv written → read_curation returns None → unfiltered.
     written = pipeline.run(config)
-
-    with zipfile.ZipFile(written[0]) as zf:
-        back = pd.read_parquet(io.BytesIO(zf.read("data/table.parquet")))
-    assert set(back["position_id"]) == {"a"}
+    # No out_dir → catalogue root (the single position's parent = study/).
+    assert written["cell_shape"] == study / "cell_shape.csv"
 
 
 def test_run_forwards_progress_cb(tmp_path, monkeypatch):
     """run(progress_cb=...) threads the callback into build_quantities."""
-    from cellflow.aggregate_quantification import pipeline
-
     seen = {}
 
     def fake_build(catalog, *, quantifiers=None, params=None, progress_cb=None):
         seen["build"] = progress_cb
 
     monkeypatch.setattr(pipeline, "build_quantities", fake_build)
-    monkeypatch.setattr(pipeline, "classify", lambda *a, **k: [])
     monkeypatch.setattr(pipeline, "aggregate", lambda *a, **k: {})
     monkeypatch.setattr(pipeline, "load_catalog", lambda p: [])
 

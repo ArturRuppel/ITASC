@@ -1,11 +1,10 @@
-"""Cell-density quantifier — per-label cell counts per field-of-view area.
+"""Cell-density quantifier — per-frame cell counts per field-of-view area.
 
 Counts cells straight off the tracked **cell labels** (unique non-zero labels per
 frame), so it is a cell-labels Build product, not a contacts-derived one. The
 field-of-view area is **required** — it comes from the shared params bar and there
 is no silent image-area fallback; ``density = n_cells / fov_area_mm2`` in
-cells/mm². When an NLS classification sidecar exists the counts are also broken
-down per class; without it only the ``all`` total row is emitted.
+cells/mm². One ``all`` total row per frame (label-agnostic).
 """
 from __future__ import annotations
 
@@ -16,9 +15,6 @@ import numpy as np
 
 from cellflow.aggregate_quantification.contacts.neighborhood import cell_density
 from cellflow.aggregate_quantification.quantifier import PositionInputs, Quantifier
-from cellflow.aggregate_quantification.quantifiers._contacts_derived import (
-    nls_labels_for_position,
-)
 from cellflow.aggregate_quantification.quantifiers._tidy_table import (
     persist,
     read_derived_table,
@@ -36,7 +32,7 @@ class CellDensityQuantifier(Quantifier):
     # a PositionInputs field, so it is enforced there rather than gated here.
     requires = ("cell_labels_path",)
     default_output_name = "cell_density.csv"
-    # Density is keyed per (frame, class label), not per cell.
+    # Density is keyed per (frame, label); ``label`` is always ``"all"``.
     table_keys = ("frame", "label")
     wants_build_params = True
     # The field-of-view area has no image-area fallback, so it is a hard build
@@ -59,8 +55,7 @@ class CellDensityQuantifier(Quantifier):
                 "in Parameters before building."
             )
         frame_cells = _frame_cells_from_labels(inputs.cell_labels_path)
-        labels = nls_labels_for_position(inputs.position_dir) or {}
-        table = cell_density(frame_cells, labels, fov_area_mm2=float(fov))
+        table = cell_density(frame_cells, fov_area_mm2=float(fov))
         return persist(output_path, table)
 
     def read(self, output_path: Path) -> dict[str, np.ndarray]:

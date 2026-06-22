@@ -1,13 +1,14 @@
 """Aggregate Quantification: pool per-position sources into plottable quantities.
 
 This package hosts the quantifier seam. The stable, napari-free surface that the
-``cellflow-aggregate`` CLI calls and notebooks import is the four-stage
+``cellflow-aggregate`` CLI calls and notebooks import is the
 :mod:`~cellflow.aggregate_quantification.pipeline` — ``build_catalog`` →
-``build_quantities`` → ``aggregate`` → ``export`` — re-exported here alongside the
-catalogue load/save helpers and the quantifier registry.
+``build_quantities`` → ``aggregate`` — re-exported here alongside the catalogue
+load/save helpers and the quantifier registry. Everything it produces is
+**label-agnostic**: tidy CSVs with no subpopulation classification baked in.
 
-The contacts quantifier's public API (cell-cell edges, T1 events, NLS classes) is
-also re-exported for stability; see :mod:`cellflow.aggregate_quantification.contacts`.
+The contacts quantifier's public API (cell-cell edges, T1 events) is also
+re-exported for stability; see :mod:`cellflow.aggregate_quantification.contacts`.
 """
 
 from .catalog import load_catalog, save_catalog
@@ -16,7 +17,6 @@ from .pipeline import (
     aggregate,
     build_catalog,
     build_quantities,
-    export,
     run,
     select_quantifiers,
 )
@@ -33,18 +33,6 @@ from .contacts.build import (
     build_position_contact_analysis,
     ensure_contact_analysis,
 )
-from .contacts.nls_classification import (
-    NLSClassificationError,
-    NLSClassificationSummary,
-    TrackNLSMeasurement,
-    auto_threshold,
-    classify_by_threshold,
-    classify_position_nls_to_csv,
-    measure_track_nls_intensity,
-    nls_classification_csv_path,
-    read_nls_classification_csv,
-    write_nls_classification_csv,
-)
 
 __all__ = [
     # Pipeline: the stable CLI / notebook surface.
@@ -52,7 +40,6 @@ __all__ = [
     "build_quantities",
     "select_quantifiers",
     "aggregate",
-    "export",
     "run",
     "load_catalog",
     "save_catalog",
@@ -67,14 +54,4 @@ __all__ = [
     "ContactBatchResult",
     "discover_contact_batch_jobs",
     "run_contact_batch",
-    "NLSClassificationError",
-    "NLSClassificationSummary",
-    "TrackNLSMeasurement",
-    "auto_threshold",
-    "classify_by_threshold",
-    "classify_position_nls_to_csv",
-    "measure_track_nls_intensity",
-    "nls_classification_csv_path",
-    "read_nls_classification_csv",
-    "write_nls_classification_csv",
 ]

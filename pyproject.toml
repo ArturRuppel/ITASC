@@ -60,11 +60,8 @@ cellpose = [
 tracking = [
     "ultrack",
 ]
-plots = [
-    "iris-engine>=0.1.0",
-]
 all = [
-    "cellflow[cellpose,tracking,plots]",
+    "cellflow[cellpose,tracking]",
 ]
 test = [
     "pytest>=8",

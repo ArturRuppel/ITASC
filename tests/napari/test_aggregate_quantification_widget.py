@@ -319,7 +319,7 @@ def test_revisualize_same_position_skips_layer_rebuild(monkeypatch, tmp_path):
     assert len(add_calls) == 1, "unchanged re-Visualize must not re-add layers"
 
     # Changing a display option breaks the fast path and rebuilds.
-    widget.color_cells_by_label_cb.setChecked(True)
+    widget.color_edges_by_id_cb.setChecked(True)
     widget.visualize_btn.click()
     app.processEvents()
     assert len(add_calls) == 2
@@ -454,8 +454,6 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
             contact_analysis,
             {
                 "prefix": "[Contact Analysis] ",
-                "class_labels": {},
-                "color_cells_by_label": False,
                 "color_edges_by_id": False,
                 "color_edges_by_label": False,
                 "hide_border_edges": False,
@@ -498,7 +496,6 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
 
     monkeypatch.setattr(mod, "add_contact_analysis_layers", fake_add)
 
-    widget.color_cells_by_label_cb.setChecked(True)
     widget.color_edges_by_id_cb.setChecked(True)
     widget.color_edges_by_label_cb.setChecked(True)
     widget.hide_border_edges_cb.setChecked(True)
@@ -511,8 +508,6 @@ def test_contact_analysis_widget_forwards_visualizer_options(monkeypatch, tmp_pa
             contact_analysis,
             {
                 "prefix": "[Contact Analysis] ",
-                "class_labels": {},
-                "color_cells_by_label": True,
                 "color_edges_by_id": True,
                 "color_edges_by_label": True,
                 "hide_border_edges": True,
@@ -550,15 +545,15 @@ def test_contact_analysis_widget_checkbox_does_not_live_update_visualization(mon
     widget.visualize_btn.click()
     app.processEvents()  # overlay add is deferred to the next event-loop tick
     # Changing a checkbox must NOT trigger a reload on its own
-    widget.color_cells_by_label_cb.setChecked(True)
+    widget.color_edges_by_id_cb.setChecked(True)
     assert len(add_calls) == 1, "checkbox change must not auto-reload"
-    assert add_calls[0]["color_cells_by_label"] is False
+    assert add_calls[0]["color_edges_by_id"] is False
 
     # Clicking Visualize again picks up the updated checkbox state
     widget.visualize_btn.click()
     app.processEvents()  # overlay add is deferred to the next event-loop tick
     assert len(add_calls) == 2
-    assert add_calls[1]["color_cells_by_label"] is True
+    assert add_calls[1]["color_edges_by_id"] is True
 
     widget.deleteLater()
     app.processEvents()
@@ -770,7 +765,6 @@ def test_contact_analysis_widget_state_round_trips(monkeypatch):
 
     widget.set_state(
         {
-            "color_cells_by_label": True,
             "color_edges_by_id": True,
             "color_edges_by_label": False,
             "hide_border_edges": True,
@@ -778,7 +772,6 @@ def test_contact_analysis_widget_state_round_trips(monkeypatch):
     )
     state = widget.get_state()
     assert state == {
-        "color_cells_by_label": True,
         "color_edges_by_id": True,
         "color_edges_by_label": False,
         "hide_border_edges": True,

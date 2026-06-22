@@ -1,9 +1,9 @@
 """Cell-density quantifier: counts off the cell labels, requires a FOV area.
 
-Cell density moved off the contacts path — it counts unique non-zero labels per
-frame straight from the tracked cell-label TIFF, so it needs no
-``contact_analysis.h5``. The field-of-view area is a required build param (no
-silent image-area fallback). Backend-only — no Qt.
+Cell density counts unique non-zero labels per frame straight from the tracked
+cell-label TIFF, so it needs no ``contact_analysis.h5``. The field-of-view area is
+a required build param (no silent image-area fallback). One ``all`` total row per
+frame (label-agnostic). Backend-only — no Qt.
 """
 from __future__ import annotations
 
@@ -13,10 +13,6 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.aggregate_quantification.contacts.nls_classification import (
-    nls_classification_csv_path,
-    write_nls_classification_csv,
-)
 from cellflow.aggregate_quantification.quantifier import (
     PositionInputs,
     available_quantifiers,
@@ -37,18 +33,11 @@ def _labels_stack() -> np.ndarray:
     return frame[np.newaxis, ...]
 
 
-def _inputs(tmp_path: Path, *, classify: bool = False) -> PositionInputs:
+def _inputs(tmp_path: Path) -> PositionInputs:
     pos = tmp_path / "p1"
     pos.mkdir()
     cell_path = pos / "cells.tif"
     tifffile.imwrite(cell_path, _labels_stack())
-    if classify:
-        write_nls_classification_csv(
-            nls_classification_csv_path(pos),
-            {1: "positive", 2: "positive", 3: "negative", 4: "negative"},
-            positive_label="positive",
-            negative_label="negative",
-        )
     return PositionInputs(position_dir=pos, cell_labels_path=cell_path)
 
 
@@ -73,15 +62,7 @@ def test_counts_cells_from_labels_over_fov(tmp_path):
     assert rows["all"] == 2.0
 
 
-def test_per_class_breakdown_when_classified(tmp_path):
-    table = _build(_inputs(tmp_path, classify=True), params={"fov_area_mm2": 4.0})
-    counts = dict(zip(table["label"].tolist(), table["n_cells"].tolist()))
-    assert counts["all"] == 4
-    assert counts["positive"] == 2
-    assert counts["negative"] == 2
-
-
-def test_all_row_only_without_classification(tmp_path):
+def test_all_row_only_label_agnostic(tmp_path):
     table = _build(_inputs(tmp_path), params={"fov_area_mm2": 1.0})
     assert table["label"].tolist() == ["all"]
 

@@ -7,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.aggregate_quantification.config import NlsConfig
 from cellflow.napari.aggregate_quantification_run_area import (
     RunArea,
     RunChoices,
@@ -66,35 +65,19 @@ def test_grouping_does_not_change_choices_membership():
     app.processEvents()
 
 
-def test_nls_off_by_default_gives_none():
+def test_out_dir_empty_by_default():
     app = _app()
     area = _area()
-    assert area.choices().nls is None
+    assert area.choices().out_dir == ""
     area.deleteLater()
     app.processEvents()
 
 
-def test_nls_enabled_populates_config():
+def test_out_dir_reads_the_field():
     app = _app()
     area = _area()
-    area._nls_enabled.setChecked(True)
-    area._nls_image.setText("0_input/NLS_zavg.tif")
-    area._nls_method.setCurrentText("otsu")
-    nls = area.choices().nls
-    assert nls == NlsConfig(enabled=True, image="0_input/NLS_zavg.tif",
-                            method="otsu", threshold=0.0)
-    area.deleteLater()
-    app.processEvents()
-
-
-def test_plots_choices():
-    app = _app()
-    area = _area()
-    area._render_plots.setChecked(True)
-    area._formats.setText("png, pdf")
-    choices = area.choices()
-    assert choices.render_plots is True
-    assert choices.plot_formats == ("png", "pdf")
+    area._out_dir.setText("/data/COV2D")
+    assert area.choices().out_dir == "/data/COV2D"
     area.deleteLater()
     app.processEvents()
 

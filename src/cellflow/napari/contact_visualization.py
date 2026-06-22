@@ -45,7 +45,6 @@ _TRACK_OPACITY = 0.9
 
 def build_cell_centroid_points(
     contact_analysis: Any,
-    class_labels: Mapping[int, str] | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
     cells = _section(contact_analysis, "cells")
     frame = _column(cells, "frame").astype(float, copy=False)
@@ -57,23 +56,8 @@ def build_cell_centroid_points(
         "frame": _column(cells, "frame"),
         "cell_id": cell_id,
         "area": _column(cells, "area").astype(float, copy=False),
-        # The subpopulation label is no longer carried in the H5; it is joined
-        # from the NLS sidecar CSV (``cell_id -> label``), defaulting to the
-        # empty (unclassified) string.
-        "class_label": _class_label_column(cell_id, class_labels),
     }
     return points, features
-
-
-def _class_label_column(
-    cell_id: np.ndarray, class_labels: Mapping[int, str] | None
-) -> np.ndarray:
-    """Per-cell subpopulation labels aligned to *cell_id*, from the NLS CSV map
-    (``cell_id -> label``); cells absent from the map get the empty string."""
-    labels = class_labels or {}
-    return np.asarray(
-        [str(labels.get(int(cid), "")) for cid in np.asarray(cell_id)], dtype=object
-    )
 
 
 def build_edge_shapes(
@@ -255,14 +239,10 @@ def build_nucleus_track_shapes(
     nucleus_labels: np.ndarray,
     *,
     current_frame: int,
-    color_cells_by_label: bool = False,
-    class_labels: Mapping[int, str] | None = None,
 ) -> tuple[list[np.ndarray], np.ndarray, dict[str, np.ndarray]]:
     """Return past-only nucleus centroid track segments for one viewer frame."""
     centroids = _nucleus_centroids_by_track(nucleus_labels)
-    color_map = _cell_color_map(
-        contact_analysis, color_by_label=color_cells_by_label, class_labels=class_labels
-    )
+    color_map = _cell_color_map(contact_analysis)
     segments_by_end = _index_track_segments(centroids)
     return _build_track_shapes_for_frame(
         color_map,
@@ -281,7 +261,6 @@ def add_contact_analysis_layers(
     contact_analysis: Any,
     prefix: str = "[Contact Analysis] ",
     *,
-    color_cells_by_label: bool = False,
     color_edges_by_id: bool = False,
     color_edges_by_label: bool = False,
     hide_border_edges: bool = False,
@@ -289,7 +268,6 @@ def add_contact_analysis_layers(
     nucleus_labels: np.ndarray | None = None,
     nucleus_track_centroids: dict | None = None,
     track_tail_length: int = _TRACK_TAIL_LENGTH,
-    class_labels: Mapping[int, str] | None = None,
 ) -> list[Any]:
     """Add contact-analysis overlays as napari-native layers.
 
@@ -320,9 +298,7 @@ def add_contact_analysis_layers(
             _contact_analysis_label_path(contact_analysis, "nucleus_tracked_labels_path")
         )
 
-    cell_color_dict = _cell_color_map(
-        contact_analysis, color_by_label=color_cells_by_label, class_labels=class_labels
-    )
+    cell_color_dict = _cell_color_map(contact_analysis)
     cell_kwargs: dict[str, Any] = {}
     nucleus_kwargs: dict[str, Any] = {}
     try:
@@ -783,12 +759,7 @@ def _build_track_shapes_for_frame(
 
 def _cell_color_map(
     contact_analysis: Any,
-    *,
-    color_by_label: bool,
-    class_labels: Mapping[int, str] | None = None,
 ) -> dict[int | None, tuple[float, float, float, float] | str]:
-    if color_by_label:
-        return _cell_label_color_map(contact_analysis, class_labels)
     cells = _section(contact_analysis, "cells")
     cell_ids = np.asarray(sorted(set(_column(cells, "cell_id").astype(int))))
     cell_colors = _categorical_colors(cell_ids)
@@ -798,27 +769,6 @@ def _cell_color_map(
     }
     for cid, color in zip(cell_ids, cell_colors, strict=True):
         cmap[int(cid)] = tuple(float(c) for c in color)
-    return cmap
-
-
-def _cell_label_color_map(
-    contact_analysis: Any,
-    class_labels: Mapping[int, str] | None = None,
-) -> dict[int | None, tuple[float, float, float, float] | str]:
-    cells = _section(contact_analysis, "cells")
-    cell_ids = _column(cells, "cell_id")
-    # Colour each cell by its NLS-CSV subpopulation label (``cell_id -> label``);
-    # cells absent from the map fall to the unclassified (empty-label) colour.
-    label_column = _class_label_column(cell_ids, class_labels)
-    class_colors = _categorical_colors(label_column)
-    cmap: dict[int | None, tuple[float, float, float, float] | str] = {
-        None: "transparent",
-        0: "transparent",
-    }
-    for cid, color in zip(cell_ids, class_colors):
-        cid_int = int(cid)
-        if cid_int not in cmap:
-            cmap[cid_int] = tuple(float(c) for c in color)
     return cmap
 
 

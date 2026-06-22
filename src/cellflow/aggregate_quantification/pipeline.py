@@ -1,21 +1,24 @@
 """The napari-free orchestration surface for Aggregate Quantification.
 
-Four composable functions thread the existing headless stages — discovery,
-per-position build, aggregate, export — into one pipeline the CLI, notebooks, and
-(during the napari parallel-run) the Qt studio all drive:
+Three composable functions thread the existing headless stages — discovery,
+per-position build, aggregate — into one pipeline the CLI, notebooks, and (during
+the napari parallel-run) the Qt studio all drive:
 
     catalog = build_catalog(root, cell_name=..., nucleus_name=..., out_csv=...)
     build_quantities(catalog)                 # one .build() per (quantifier, position)
-    tables = aggregate(catalog)               # pooled, index-keyed CSVs
-    export(tables["cell_shape"].parent)       # .iris bundles (Iris-only)
+    tables = aggregate(catalog, out_dir)      # pooled, index-keyed CSVs (flat)
 
 Or, end to end from a TOML run-config: ``run("config.toml")``.
 
+Everything produced is **label-agnostic** tidy CSVs: there is no classification
+step and no plot/figure export — a subpopulation classification and any plots are a
+downstream, dataset-specific concern, computed from these tables.
+
 This module *composes* — it owns no compute. Discovery lives in :mod:`.catalog`,
 the per-position units in :mod:`.quantifier`, the record→inputs bridge in
-:mod:`.records`, pooling in :mod:`.shape_tables`, and the ``.iris`` writer in
-:mod:`.iris_export`. The only orchestration that previously lived nowhere but the
-napari studio — the per-position **build loop** — is :func:`build_quantities`.
+:mod:`.records`, and pooling in :mod:`.shape_tables`. The only orchestration that
+previously lived nowhere but the napari studio — the per-position **build loop** —
+is :func:`build_quantities`.
 
 Backend-only (no Qt / napari): the standalone wheel and headless batch runs use
 it unchanged.
@@ -28,9 +31,7 @@ from pathlib import Path
 
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
-from .config import NlsConfig, RunConfig, load_config, write_config
-from .curation import read_curation
-from .iris_export.export import export_dir as _export_iris
+from .config import RunConfig, load_config, write_config
 from .quantifier import PositionInputs, Quantifier, available_quantifiers
 from .records import output_for_record, position_inputs_from_record
 
@@ -38,10 +39,8 @@ __all__ = [
     "author_config",
     "build_catalog",
     "build_quantities",
-    "classify",
     "select_quantifiers",
     "aggregate",
-    "export",
     "run",
 ]
 
@@ -147,99 +146,6 @@ def build_quantities(
         quantifier.build(inputs, output_for_record(quantifier, record), params=q_params)
 
 
-def classify(
-    catalog: Iterable[dict],
-    *,
-    config: NlsConfig | None,
-    progress_cb: Callable[[int, int, str], None] | None = None,
-) -> list[Path]:
-    """Write each position's NLS subpopulation sidecar CSV (the optional step).
-
-    Gated by the run-config ``[nls]`` table: when *config* is ``None`` or
-    ``config.enabled`` is false this is a no-op returning ``[]`` (positions that
-    already carry a sidecar still get their ``class_label`` joined at aggregate
-    time — unchanged behaviour). Otherwise, for every position that has the marker
-    image, the nucleus tracked-labels, and a folder to write into, it resolves a
-    threshold per ``config.method`` and calls the headless engine's
-    :func:`classify_position_nls_to_csv`. Positions missing any input are skipped
-    (not fatal). Returns the written sidecar paths.
-
-    Runs **before** :func:`aggregate` so the existing ``cell_id`` join
-    (:func:`shape_tables._join_class`) finds fresh sidecars.
-    """
-    if config is None or not config.enabled:
-        return []
-
-    jobs: list[tuple[dict, Path, Path]] = []
-    for record in catalog:
-        image = _resolve_nls_image(record, config.image)
-        labels = record.get("nucleus_tracked_labels_path")
-        labels_path = Path(labels) if labels else None
-        if (
-            image is not None and image.is_file()
-            and labels_path is not None and labels_path.is_file()
-            and record.get("position_path")
-        ):
-            jobs.append((record, image, labels_path))
-
-    from .contacts.nls_classification import (
-        classify_position_nls_to_csv,
-        nls_classification_csv_path,
-    )
-
-    written: list[Path] = []
-    total = len(jobs)
-    for index, (record, image, labels_path) in enumerate(jobs, start=1):
-        if progress_cb is not None:
-            progress_cb(index, total, str(record.get("id", "?")))
-        threshold = _nls_threshold(config, image, labels_path)
-        csv_path = nls_classification_csv_path(record["position_path"])
-        classify_position_nls_to_csv(csv_path, image, labels_path, threshold=threshold)
-        written.append(csv_path)
-    return written
-
-
-def _resolve_nls_image(record: dict, image: str) -> Path | None:
-    """Resolve the marker-image spec against *record*: absolute as-is, else joined
-    onto the record's ``position_path`` (so one relative entry resolves per
-    position). ``None`` when the record has no folder to resolve a relative path."""
-    path = Path(image)
-    if path.is_absolute():
-        return path
-    position = record.get("position_path")
-    return Path(position) / path if position else None
-
-
-def _nls_threshold(config: NlsConfig, image: Path, labels_path: Path) -> float | None:
-    """The threshold to classify with, per ``config.method``.
-
-    ``auto`` ⇒ ``None`` (the engine's :func:`auto_threshold`). ``fixed`` ⇒ the
-    configured value. ``otsu`` / ``two_cluster`` measure the per-track intensities
-    once and compute the splitter boundary, keeping the engine module untouched.
-    """
-    if config.method == "auto":
-        return None
-    if config.method == "fixed":
-        return float(config.threshold)
-
-    from .contacts.nls_classification import (
-        _read_image_stack,
-        measure_track_nls_intensity,
-        split_tracks_otsu,
-        split_tracks_two_clusters,
-    )
-
-    nls = _read_image_stack(image)
-    labels = _read_image_stack(labels_path)
-    intensities = {
-        track_id: item.intensity
-        for track_id, item in measure_track_nls_intensity(nls, labels).items()
-    }
-    splitter = split_tracks_otsu if config.method == "otsu" else split_tracks_two_clusters
-    threshold, _ = splitter(intensities)
-    return float(threshold)
-
-
 def _dependency_order(quants: Sequence[Quantifier]) -> list[Quantifier]:
     """*quants* sorted so each producer precedes the quantifiers whose ``requires``
     names its ``produces``. Independent quantifiers keep their given order; a
@@ -332,55 +238,20 @@ def aggregate(
 
     Thin pass-through to
     :func:`cellflow.aggregate_quantification.shape_tables.aggregate`: returns the
-    table name → written CSV path map. *out_dir* defaults to the catalogue root
-    (the common ancestor of the positions). The tables land under
-    ``<out_dir>/aggregate_quantification/<name>.csv``.
+    table name → written CSV path map. The tables are written **flat** under
+    *out_dir* (``<out_dir>/<name>.csv``); *out_dir* defaults to the catalogue root
+    (the common ancestor of the positions).
     """
     return shape_tables.aggregate(catalog, out_dir)
-
-
-def export(
-    tables_dir: Path | str,
-    out_dir: Path | str | None = None,
-    *,
-    curation: "object | None" = None,
-    curation_path: str | None = None,
-) -> list[Path]:
-    """Write ``.iris`` bundles from the aggregated tables.
-
-    *tables_dir* is the directory holding the aggregated tidy CSVs (what
-    :func:`aggregate` wrote into — the ``aggregate_quantification`` folder). The
-    export is **Iris-only**: for each table selected for premade SuperPlots
-    (``iris_export.TABLES_TO_EXPORT``) found there, one ``.iris`` document is
-    written under ``<out_dir>/iris/``. *out_dir* defaults to *tables_dir*.
-
-    When *curation* (a parsed exclusion table) is given, its excluded frames /
-    positions are filtered out of each table before the ``.iris`` is written, and
-    *curation_path* is recorded in the bundle provenance. The on-disk tidy CSVs in
-    *tables_dir* stay pure (all rows); only the bundle sees the filtered view, so
-    each ``.iris`` is a pure function of ``(table, curation)``.
-
-    Returns the written ``.iris`` paths.
-    """
-    tables_dir = Path(tables_dir)
-    out_dir = Path(out_dir) if out_dir is not None else tables_dir
-    return _export_iris(
-        tables_dir,
-        out_dir=out_dir / "iris",
-        curation=curation,
-        curation_path=curation_path,
-    )
 
 
 def author_config(
     out_dir: Path | str,
     records: Sequence[dict],
     *,
+    tables_dir: str | None = None,
     quantities: Sequence[str] = (),
     params: Mapping[str, object] | None = None,
-    nls: NlsConfig | None = None,
-    render_plots: bool = False,
-    plot_formats: Sequence[str] = ("png", "svg"),
     catalog_name: str = "catalog.csv",
     config_name: str = "config.toml",
 ) -> Path:
@@ -389,8 +260,10 @@ def author_config(
     The composition point behind the studio's "Save config…" / "Run": persist the
     in-memory *records* to a catalog CSV, then author a run-config beside it that
     points at that CSV (a relative ``catalog`` key, so the folder stays
-    relocatable). ``run(author_config(...))`` reproduces the UI's run headlessly.
-    Creates *out_dir* if missing.
+    relocatable). *tables_dir* is written as the config's ``out_dir`` (where the
+    flat pooled tables land); ``None`` leaves it unset (defaults to the catalogue
+    root at run time). ``run(author_config(...))`` reproduces the UI's run
+    headlessly. Creates *out_dir* if missing.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -398,29 +271,21 @@ def author_config(
     return write_config(
         out_dir / config_name,
         catalog=catalog_name,
+        out_dir=tables_dir,
         quantities=quantities,
         params=params,
-        nls=nls,
-        render_plots=render_plots,
-        plot_formats=plot_formats,
     )
 
 
-def run(config_path: Path | str, *, progress_cb=None) -> list[Path]:
+def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
     """Run the whole pipeline from a TOML run-config: the "author once, then run".
 
     Loads the :class:`~cellflow.aggregate_quantification.config.RunConfig`, then
-    threads its choices through the four stages: load the catalog CSV, build the
-    selected *quantities* (dependency producers pulled in automatically), aggregate
-    the per-position products into the measurement tables, and export the ``.iris``
-    bundles into the config's ``export_dir``. The measurement tables are written
-    under the catalogue root; the ``.iris`` deliverables land in ``export_dir/iris``.
-
-    When the run-config turns on ``[plots].render``, the premade SuperPlots in each
-    ``.iris`` are additionally rendered to static figures (PNG/SVG, editable text)
-    under ``export_dir/figures`` via the Iris engine (the optional ``cellflow[plots]``
-    extra). Returns the exported ``.iris`` paths. The optional *progress_cb* is
-    forwarded to the build and classify stages.
+    threads its choices through the stages: load the catalog CSV, build the selected
+    *quantities* (dependency producers pulled in automatically), and aggregate the
+    per-position products into the flat measurement tables under the config's
+    ``out_dir`` (default: the catalogue root). Returns the table name → written CSV
+    path map. The optional *progress_cb* is forwarded to the build stage.
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -438,29 +303,4 @@ def run(config_path: Path | str, *, progress_cb=None) -> list[Path]:
         params=cfg.params or None,
         progress_cb=progress_cb,
     )
-    # Optional, config-gated: write per-position NLS sidecars before aggregate so
-    # the cell_id join picks up fresh class_labels (no-op when [nls] is absent).
-    classify(catalog, config=cfg.nls, progress_cb=progress_cb)
-    tables = aggregate(catalog)
-    if not tables:
-        return []
-    tables_dir = next(iter(tables.values())).parent
-    curation = read_curation(cfg.curation)
-    written = export(
-        tables_dir,
-        cfg.export_dir,
-        curation=curation,
-        curation_path=str(cfg.curation) if curation is not None else None,
-    )
-    if cfg.render_plots and written:
-        # Opt-in extra step: turn the just-written .iris bundles into static
-        # figures. Imported here (not at module load) so the no-plots path keeps
-        # zero dependency on the Iris engine.
-        from .iris_export.figures import render_export_dir
-
-        render_export_dir(
-            Path(cfg.export_dir) / "iris",
-            Path(cfg.export_dir) / "figures",
-            formats=cfg.plot_formats,
-        )
-    return written
+    return aggregate(catalog, cfg.out_dir)

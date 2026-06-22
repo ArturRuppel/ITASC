@@ -3,21 +3,26 @@
 Aggregate Quantification builds one per-position artifact per quantity (a tidy
 ``object_table``). This module pools those, across the in-scope positions, into a
 small set of **aggregated, index-keyed tables** — one file per distinct natural
-index — written at ``<catalogue>/aggregate_quantification/<name>.csv``. They are
-**materialized views**: regenerate-whole, never upserted, so a re-aggregate
-rewrites the file from scratch and CSV stays viable (no concurrent partial write
-into a shared file). The per-position artifacts remain the normalized source of
-truth; these tables are a reproducible projection of them.
+index — written **flat** at ``<out_dir>/<name>.csv``. They are **materialized
+views**: regenerate-whole, never upserted, so a re-aggregate rewrites the file from
+scratch and CSV stays viable (no concurrent partial write into a shared file). The
+per-position artifacts remain the normalized source of truth; these tables are a
+reproducible projection of them.
+
+The pooled tables are **label-agnostic**: a per-cell subpopulation classification
+(NLS ``class_label`` etc.) is not joined here. A consumer that wants a class split
+joins it downstream from the dataset that defines it (keyed on
+``experiment_id, position_id, cell_id``).
 
 Partitioning principle: **one table per quantifier.** Each
 :class:`~cellflow.aggregate_quantification.quantifier.Quantifier` that aggregates
 declares its natural index (``table_keys``); its tidy ``object_table`` is pooled
 across positions into a table named by the quantifier's ``quantity_id``. Value
 columns stay namespaced by ``quantity_id`` (``cell_shape.area_um2``) so a later
-joined *view* across tables never has colliding names. The keys, the catalogue
-metadata (``condition`` / ``experiment_id`` / ``date`` / ``position_id``), and the
-NLS ``class_label`` stay bare. (Previously several quantities sharing an index
-were outer-joined into one wide table — that produced god tables and is gone.)
+joined *view* across tables never has colliding names. The keys and the catalogue
+metadata (``condition`` / ``experiment_id`` / ``date`` / ``position_id``) stay
+bare. (Previously several quantities sharing an index were outer-joined into one
+wide table — that produced god tables and is gone.)
 
 Generalizes the old one-quantity-at-a-time pooling
 (``napari…plots._pooling.pool_quantity``) to "all quantities of an index,
@@ -34,7 +39,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .quantifier import OUTPUT_SUBDIR, Quantifier, available_quantifiers
+from .quantifier import Quantifier, available_quantifiers
 from .records import output_for_record
 
 __all__ = [
@@ -46,22 +51,11 @@ __all__ = [
     "aggregate",
     "table_path",
     "catalogue_root",
-    "AGGREGATE_SUBDIR",
     "METADATA_COLUMNS",
-    "CLASS_COLUMN",
 ]
-
-#: Aggregated tables live under the same per-catalogue subfolder name the
-#: per-position artifacts use (one folder name, two scopes: a position dir holds
-#: its artifacts, the catalogue root holds the pooled tables).
-AGGREGATE_SUBDIR = OUTPUT_SUBDIR
 
 #: The catalogue-metadata axes stamped (bare) onto every pooled row, in order.
 METADATA_COLUMNS = ("condition", "experiment_id", "date", "position_id")
-#: Subpopulation column left-joined from the NLS sidecar (by ``cell_id``).
-CLASS_COLUMN = "class_label"
-#: Bucket for cells with no classification (no sidecar, or never classified).
-_UNCLASSIFIED = "unclassified"
 
 
 @dataclass(frozen=True)
@@ -73,11 +67,6 @@ class ShapeTableSpec:
     name: str
     keys: tuple[str, ...]
     quantity_ids: tuple[str, ...]
-
-    @property
-    def joins_class(self) -> bool:
-        """Whether the NLS ``class_label`` is left-joined (keyed on ``cell_id``)."""
-        return "cell_id" in self.keys
 
 
 def shape_table_registry() -> dict[str, ShapeTableSpec]:
@@ -115,10 +104,9 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
     """Pool the quantifier *name*'s built product across *records* into one frame.
 
     For each in-scope record the quantifier's tidy ``object_table`` is read (value
-    columns namespaced by ``quantity_id``); the catalogue metadata is stamped, and
-    — for a table keyed on ``cell_id`` — the NLS ``class_label`` is left-joined by
-    ``cell_id`` (absent → ``unclassified``). The per-position frames are then
-    concatenated. Empty when nothing is built. In-memory only — see
+    columns namespaced by ``quantity_id``) and the catalogue metadata is stamped;
+    the per-position frames are then concatenated. The result is label-agnostic (no
+    ``class_label`` join). Empty when nothing is built. In-memory only — see
     :func:`aggregate` to persist.
     """
     spec = shape_table_registry().get(name)
@@ -130,8 +118,6 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
         merged = _position_frame(record, quantifiers, spec.keys)
         if merged is None:
             continue
-        if spec.joins_class:
-            merged = _join_class(merged, record)
         # Insert in reverse so the columns end up condition · experiment_id · date · position_id.
         for key, value in reversed(list(_position_metadata(record).items())):
             merged.insert(0, key, value)
@@ -139,13 +125,6 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     pooled = pd.concat(frames, ignore_index=True)
-    if spec.joins_class:
-        if CLASS_COLUMN not in pooled.columns:
-            pooled[CLASS_COLUMN] = _UNCLASSIFIED
-        else:
-            pooled[CLASS_COLUMN] = (
-                pooled[CLASS_COLUMN].replace("", _UNCLASSIFIED).fillna(_UNCLASSIFIED)
-            )
     _assign_row_id(pooled, spec.keys)
     return pooled
 
@@ -165,7 +144,15 @@ def _assign_row_id(df: pd.DataFrame, keys: tuple[str, ...]) -> None:
     what Iris keys on, and what any upstream annotation joined by ``id`` relies on."""
     components = [*_ROW_ID_IDENTITY, *(k for k in keys if k not in _ROW_ID_IDENTITY)]
     present = [c for c in components if c in df.columns]
-    df.insert(0, "id", df[present].astype(str).agg(_ROW_ID_SEP.join, axis=1))
+    if not present:
+        return
+    # Vectorized string join (``str.cat``). The previous ``agg('|'.join, axis=1)``
+    # raised "Expected a one-dimensional object" whenever ``present`` named a
+    # duplicate column label; ``str.cat`` over explicit single columns is robust.
+    row_id = df[present[0]].astype(str)
+    for column in present[1:]:
+        row_id = row_id.str.cat(df[column].astype(str), sep=_ROW_ID_SEP)
+    df.insert(0, "id", row_id)
 
 
 def _position_frame(
@@ -207,33 +194,6 @@ def _position_metadata(record: dict) -> dict[str, str]:
     }
 
 
-def _join_class(frame: pd.DataFrame, record: dict) -> pd.DataFrame:
-    """Left-join this position's NLS ``{cell_id: class_label}`` by ``cell_id``."""
-    if "cell_id" not in frame.columns:
-        return frame
-    from .contacts.nls_classification import (
-        nls_classification_csv_path,
-        read_nls_classification_csv,
-    )
-
-    position_path = record.get("position_path")
-    if not position_path:
-        return frame
-    csv_path = nls_classification_csv_path(position_path)
-    if not csv_path.is_file():
-        return frame
-    labels = read_nls_classification_csv(csv_path)
-    if not labels:
-        return frame
-    join_df = pd.DataFrame(
-        {
-            "cell_id": np.asarray(list(labels), dtype=np.int64),
-            CLASS_COLUMN: np.asarray(list(labels.values()), dtype=object),
-        }
-    ).drop_duplicates(subset="cell_id")
-    return frame.merge(join_df, on="cell_id", how="left")
-
-
 def catalogue_root(records: Sequence[dict]) -> Path:
     """A stable home for the aggregated tables: the common ancestor of the
     in-scope positions' folders. Falls back to the first position's parent, then
@@ -250,8 +210,8 @@ def catalogue_root(records: Sequence[dict]) -> Path:
 
 
 def table_path(out_dir: Path | str, name: str) -> Path:
-    """Where table *name*'s CSV lives under *out_dir*."""
-    return Path(out_dir) / AGGREGATE_SUBDIR / f"{name}.csv"
+    """Where table *name*'s CSV lives: **flat** under *out_dir*."""
+    return Path(out_dir) / f"{name}.csv"
 
 
 def aggregate(

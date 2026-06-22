@@ -1,20 +1,19 @@
-"""Contact cell-type labels — propagate NLS subpopulation labels onto contacts.
+"""Contact cell-type labels — propagate a per-cell label onto contacts.
 
 Each cell–cell contact (a row of the ``edges`` table) is labelled by the
-unordered pair of its two cells' NLS subpopulation labels — the per-cell
-``id,label`` produced by the NLS classifier and read back with
-:func:`cellflow.aggregate_quantification.contacts.nls_classification.read_nls_classification_csv`.
-A contact between cell types ``A`` and ``B`` is labelled ``"A-B"`` (sorted), so a
-consumer can ask how the subpopulations contact each other — homotypic vs
-heterotypic — without that aggregation living here.
+unordered pair of its two cells' labels, supplied as a generic ``cell_id -> label``
+map. A contact between cell types ``A`` and ``B`` is labelled ``"A-B"`` (sorted), so
+a consumer can ask how subpopulations contact each other — homotypic vs
+heterotypic — without that aggregation living here. The label map is the caller's
+concern (e.g. a downstream, dataset-specific classification); this module is
+label-agnostic.
 
 Headless and Qt-free, like
 :mod:`cellflow.aggregate_quantification.contacts.signed_contact_length`: it operates on an
 already-read
 :class:`~cellflow.aggregate_quantification.contacts.reader.PositionContactAnalysis`
-plus a ``cell_id -> label`` map, so it never opens HDF5 or the CSV itself and
-runs unchanged in scripts, notebooks, and plugins. The caller composes
-``read_nls_classification_csv`` with this function.
+plus a ``cell_id -> label`` map, so it never opens HDF5 itself and runs unchanged in
+scripts, notebooks, and plugins.
 """
 from __future__ import annotations
 

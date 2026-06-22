@@ -63,12 +63,6 @@ def _neighbor_count_table(cell_ids, frames):
     return {k: np.asarray([r[k] for r in rows]) for k in ("frame", "cell_id", "n_neighbors")}
 
 
-def _write_nls(record: dict, labels: dict[int, str]) -> None:
-    out = Path(record["position_path"]) / "aggregate_quantification" / "nls_classification.csv"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"id": list(labels), "label": list(labels.values())}).to_csv(out, index=False)
-
-
 # --------------------------------------------------------------------- pooling
 
 
@@ -175,22 +169,19 @@ def test_ids_do_not_collide_across_positions(tmp_path):
     assert set(rows["position_id"]) == {"a", "b"}
 
 
-# ------------------------------------------------------------------- NLS join
+# ----------------------------------------------------------- label-agnostic
 
 
-def test_nls_class_label_joined_by_cell_id(tmp_path):
+def test_pooled_table_has_no_class_label(tmp_path):
+    """The pooled tables are label-agnostic: no ``class_label`` is joined, even on a
+    cell-keyed table. A downstream consumer joins a classification itself."""
     cs = CellShapeQuantifier()
-    rec_a = _record(tmp_path, "a")
-    rec_b = _record(tmp_path, "b")
-    _write_object_table(cs, rec_a, _cell_shape_table([1, 2], [0]))
-    _write_object_table(cs, rec_b, _cell_shape_table([1], [0]))
-    _write_nls(rec_a, {1: "epithelial", 2: "mesenchymal"})  # b left unclassified
+    rec = _record(tmp_path, "a")
+    _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
 
-    df = build_table("cell_shape", [rec_a, rec_b])
+    df = build_table("cell_shape", [rec])
 
-    a = df[df["position_id"] == "a"].set_index("cell_id")["class_label"]
-    assert a.loc[1] == "epithelial" and a.loc[2] == "mesenchymal"
-    assert (df[df["position_id"] == "b"]["class_label"] == "unclassified").all()
+    assert "class_label" not in df.columns
 
 
 # --------------------------------------------------------- materialized views

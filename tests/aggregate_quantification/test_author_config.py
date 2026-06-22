@@ -1,7 +1,7 @@
 """author_config — write catalog.csv + config.toml, ready for run()."""
 from __future__ import annotations
 
-from cellflow.aggregate_quantification.config import NlsConfig, load_config
+from cellflow.aggregate_quantification.config import load_config
 from cellflow.aggregate_quantification.pipeline import author_config
 
 
@@ -35,10 +35,22 @@ def test_threads_knobs_into_config(tmp_path):
         out, [_record(tmp_path)],
         quantities=["contacts"],
         params={"pixel_size_um": 0.25, "shuffles": 1000},
-        nls=NlsConfig(enabled=True, method="auto"),
-        render_plots=True, plot_formats=["png"],
     )
     cfg = load_config(config_path)
     assert cfg.params == {"pixel_size_um": 0.25, "shuffles": 1000}
-    assert cfg.nls is not None and cfg.nls.enabled is True
-    assert cfg.render_plots is True and cfg.plot_formats == ("png",)
+
+
+def test_tables_dir_threads_into_config(tmp_path):
+    out = tmp_path / "study"
+    config_path = author_config(
+        out, [_record(tmp_path)], tables_dir=".", quantities=["contacts"]
+    )
+    cfg = load_config(config_path)
+    # ``out_dir = "."`` resolves to the config's own directory (tables land flat there).
+    assert cfg.out_dir == out.resolve()
+
+
+def test_out_dir_unset_by_default(tmp_path):
+    out = tmp_path / "study"
+    config_path = author_config(out, [_record(tmp_path)], quantities=["contacts"])
+    assert load_config(config_path).out_dir is None

@@ -212,16 +212,14 @@ def test_build_cell_centroid_points_returns_frame_prefixed_points_and_features(m
     mod = _load_module(monkeypatch)
     contact_analysis = _make_contact_analysis()
 
-    # The subpopulation label is supplied by the NLS sidecar map (cell_id ->
-    # label); cell 12 is absent, so it falls to the unclassified empty string.
-    points, features = mod.build_cell_centroid_points(contact_analysis, class_labels={11: "A"})
+    # Label-agnostic: the cell points carry only frame/cell_id/area features.
+    points, features = mod.build_cell_centroid_points(contact_analysis)
 
     assert points.shape == (2, 3)
     np.testing.assert_allclose(points[:, 0], [0.0, 1.0])
     np.testing.assert_allclose(points[:, 1:], [[1.5, 4.5], [3.25, 5.75]])
-    assert set(features) == {"frame", "cell_id", "area", "class_label"}
+    assert set(features) == {"frame", "cell_id", "area"}
     np.testing.assert_array_equal(features["cell_id"], [11, 12])
-    np.testing.assert_array_equal(features["class_label"], ["A", ""])
 
 
 def test_build_edge_shapes_returns_line_payloads_and_colored_border_edges(monkeypatch):
@@ -289,29 +287,6 @@ def test_build_edge_shapes_can_color_by_edge_label(monkeypatch):
     np.testing.assert_array_equal(features["edge_label"], ["same_label", "same_label"])
 
 
-def test_add_contact_analysis_layers_can_color_cells_by_class_label(monkeypatch, tmp_path):
-    mod = _load_module(monkeypatch)
-    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
-    viewer = _FakeViewer()
-
-    mod.add_contact_analysis_layers(
-        viewer,
-        contact_analysis,
-        color_cells_by_label=True,
-        class_labels={11: "epithelial", 12: "epithelial"},
-    )
-
-    cell_call = viewer.calls[0]
-    color_map = cell_call[3]["colormap"].color_dict
-    np.testing.assert_allclose(color_map[11], color_map[12])
-    np.testing.assert_allclose(color_map[None], [0.0, 0.0, 0.0, 0.0])
-    np.testing.assert_allclose(color_map[0], [0.0, 0.0, 0.0, 0.0])
-    nucleus_call = viewer.calls[1]
-    nucleus_color_map = nucleus_call[3]["colormap"].color_dict
-    np.testing.assert_allclose(nucleus_color_map[11], color_map[11])
-    np.testing.assert_allclose(nucleus_color_map[12], color_map[12])
-
-
 def test_build_nucleus_track_shapes_follows_centroids_and_hides_future(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
@@ -352,22 +327,6 @@ def test_build_nucleus_track_shapes_fades_more_distant_past_segments(monkeypatch
     current = colors[features["end_frame"] == 2]
     assert np.all(older[:, 3] < current[:, 3])
     assert np.all(older[:, 3] >= 0.12)
-
-
-def test_build_nucleus_track_shapes_uses_cell_class_colors_when_requested(monkeypatch, tmp_path):
-    mod = _load_module(monkeypatch)
-    contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)
-    nucleus_labels = mod._read_label_image(Path(contact_analysis["nucleus_tracked_labels_path"]))
-
-    _lines, colors, _features = mod.build_nucleus_track_shapes(
-        contact_analysis,
-        nucleus_labels,
-        current_frame=1,
-        color_cells_by_label=True,
-        class_labels={11: "same", 12: "same"},
-    )
-
-    np.testing.assert_allclose(colors[0], colors[1])
 
 
 def test_build_edge_shapes_filters_edges_with_fewer_than_two_coords(monkeypatch):

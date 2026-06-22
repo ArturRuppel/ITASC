@@ -42,10 +42,9 @@ class SignedContactLengthQuantifier(Quantifier):
         progress_cb: Callable[[int, int, str], None] | None = None,
     ) -> Path:
         analysis = derived.load_analysis(inputs)
-        labels = derived.load_labels(inputs)
         table = dict(
             signed_central_junction_lengths(
-                analysis, pixel_size_um=inputs.pixel_size_um, labels=labels
+                analysis, pixel_size_um=inputs.pixel_size_um
             )
         )
         if "contact_type" in table:

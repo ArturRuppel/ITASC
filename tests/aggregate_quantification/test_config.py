@@ -16,37 +16,22 @@ def _write(tmp: Path, text: str, name: str = "config.toml") -> Path:
 
 def test_load_minimal_config_defaults(tmp_path):
     """A bare config naming only the catalog gets sensible defaults: every
-    quantity and a flat ``export`` dir beside the config."""
+    quantity, no params, and an unset output dir (→ catalogue root at run time)."""
     cfg_path = _write(tmp_path, 'catalog = "catalog.csv"\n')
 
     cfg = load_config(cfg_path)
 
     assert isinstance(cfg, RunConfig)
     assert cfg.catalog == (tmp_path / "catalog.csv").resolve()
-    assert cfg.export_dir == (tmp_path / "export").resolve()
+    assert cfg.out_dir is None
     assert cfg.quantities == ()  # empty = run every available quantifier
     assert cfg.params == {}
-    # Plot rendering is off by default; the run stays Iris-only (no engine dep).
-    assert cfg.render_plots is False
-    assert cfg.plot_formats == ("png", "svg")
 
 
-def test_plots_table_parsed(tmp_path):
-    cfg_path = _write(
-        tmp_path,
-        """
-        catalog = "cat.csv"
-
-        [plots]
-        render = true
-        formats = ["pdf", "png"]
-        """,
-    )
-
+def test_out_dir_parsed(tmp_path):
+    cfg_path = _write(tmp_path, 'catalog = "cat.csv"\nout_dir = "tables"\n')
     cfg = load_config(cfg_path)
-
-    assert cfg.render_plots is True
-    assert cfg.plot_formats == ("pdf", "png")
+    assert cfg.out_dir == (tmp_path / "tables").resolve()
 
 
 def test_quantities_and_params_parsed(tmp_path):
@@ -75,14 +60,14 @@ def test_relative_paths_resolve_against_config_dir(tmp_path):
         sub,
         """
         catalog = "data/catalog.csv"
-        export_dir = "out"
+        out_dir = "out"
         """,
     )
 
     cfg = load_config(cfg_path)
 
     assert cfg.catalog == (sub / "data/catalog.csv").resolve()
-    assert cfg.export_dir == (sub / "out").resolve()
+    assert cfg.out_dir == (sub / "out").resolve()
 
 
 def test_absolute_paths_kept(tmp_path):
@@ -128,49 +113,3 @@ def test_curation_explicit_path_resolved(tmp_path):
     cfg = load_config(cfg_path)
 
     assert cfg.curation == (tmp_path / "qc" / "exclusions.csv").resolve()
-
-
-def test_load_config_without_nls_table_has_none(tmp_path):
-    (tmp_path / "catalog.csv").write_text("id\n")
-    cfg = load_config(_write(tmp_path, 'catalog = "catalog.csv"\n'))
-    assert cfg.nls is None
-
-
-def test_load_config_parses_nls_table(tmp_path):
-    (tmp_path / "catalog.csv").write_text("id\n")
-    cfg = load_config(_write(tmp_path,
-        'catalog = "catalog.csv"\n'
-        "[nls]\n"
-        "enabled = true\n"
-        'image = "0_input/NLS_zavg.tif"\n'
-        'method = "fixed"\n'
-        "threshold = 12.5\n"
-    ))
-    assert cfg.nls is not None
-    assert cfg.nls.enabled is True
-    assert cfg.nls.image == "0_input/NLS_zavg.tif"
-    assert cfg.nls.method == "fixed"
-    assert cfg.nls.threshold == 12.5
-
-
-def test_load_config_nls_defaults(tmp_path):
-    (tmp_path / "catalog.csv").write_text("id\n")
-    cfg = load_config(_write(tmp_path,
-        'catalog = "catalog.csv"\n'
-        "[nls]\n"
-        "enabled = true\n"
-    ))
-    assert cfg.nls.method == "auto"
-    assert cfg.nls.image == "0_input/NLS_zavg.tif"
-    assert cfg.nls.threshold == 0.0
-
-
-def test_load_config_rejects_unknown_nls_method(tmp_path):
-    (tmp_path / "catalog.csv").write_text("id\n")
-    with pytest.raises(ValueError, match="bogus"):
-        load_config(_write(tmp_path,
-            'catalog = "catalog.csv"\n'
-            "[nls]\n"
-            "enabled = true\n"
-            'method = "bogus"\n'
-        ))

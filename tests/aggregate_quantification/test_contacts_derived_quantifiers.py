@@ -1,12 +1,11 @@
 """The contacts-derived quantifiers: build → persist → object_table round-trips.
 
-These quantities (neighbor count / enrichment / contact-type z-score / density /
-signed contact length) moved off the plot path into Build. Each reads a position's
-``contact_analysis.h5`` (+ optional NLS sidecar) and persists a tidy CSV its plot
-later pools. The compute itself is covered by ``test_neighborhood.py`` /
-``test_signed_contact_length.py``; here we assert the quantifier wrapper persists and reads
-back the right columns/dtypes, honours its build params, and degrades cleanly when
-a position is unclassified. Backend-only — no Qt.
+These label-agnostic quantities (neighbor count / signed contact length) read a
+position's ``contact_analysis.h5`` and persist a tidy CSV its plot later pools. The
+compute itself is covered by ``test_neighborhood.py`` /
+``test_signed_contact_length.py``; here we assert the quantifier wrapper persists
+and reads back the right columns/dtypes and honours its build params. Backend-only
+— no Qt.
 """
 from __future__ import annotations
 
@@ -16,10 +15,6 @@ import h5py
 import numpy as np
 import pytest
 
-from cellflow.aggregate_quantification.contacts.nls_classification import (
-    nls_classification_csv_path,
-    write_nls_classification_csv,
-)
 from cellflow.aggregate_quantification.quantifier import (
     PositionInputs,
     available_quantifiers,
@@ -27,8 +22,6 @@ from cellflow.aggregate_quantification.quantifier import (
 
 _DERIVED = (
     "neighbor_count",
-    "neighbor_enrichment",
-    "contact_type_zscore",
     "signed_contact_length",
 )
 
@@ -56,18 +49,11 @@ def _write_contacts_h5(path: Path) -> None:
         h5.create_dataset("edges/coordinates/x", data=np.empty(0))
 
 
-def _inputs(tmp_path: Path, *, classify: bool = True) -> PositionInputs:
+def _inputs(tmp_path: Path) -> PositionInputs:
     pos = tmp_path / "p1"
     pos.mkdir()
     h5_path = pos / "contact_analysis.h5"
     _write_contacts_h5(h5_path)
-    if classify:
-        write_nls_classification_csv(
-            nls_classification_csv_path(pos),
-            {1: "positive", 2: "positive", 3: "negative", 4: "negative"},
-            positive_label="positive",
-            negative_label="negative",
-        )
     return PositionInputs(
         position_dir=pos, contact_analysis_path=h5_path, pixel_size_um=1.0
     )
@@ -82,7 +68,7 @@ def _build(quantity_id: str, inputs: PositionInputs, params: dict | None = None)
 
 @pytest.mark.parametrize("quantity_id", _DERIVED)
 def test_derived_quantifier_persists_and_reads_back(quantity_id, tmp_path):
-    table = _build(quantity_id, _inputs(tmp_path), params={"shuffles": 25, "fov_area_mm2": 2.0})
+    table = _build(quantity_id, _inputs(tmp_path))
     # frame / *_id keys round-trip as integers; the read survives string columns.
     assert "frame" in table
     assert table["frame"].dtype.kind == "i"
@@ -93,25 +79,6 @@ def test_neighbor_count_columns_and_degree(tmp_path):
     assert {"frame", "cell_id", "n_neighbors"} <= set(table)
     # Each of the 4 cells has exactly one neighbor in the fixture.
     assert table["n_neighbors"].tolist() == [1, 1, 1, 1]
-
-
-def test_enrichment_preserves_string_label_columns(tmp_path):
-    table = _build("neighbor_enrichment", _inputs(tmp_path))
-    assert {"focal_label", "neighbor_label", "enrichment"} <= set(table)
-    assert table["focal_label"].dtype == object
-    assert set(table["focal_label"]) <= {"positive", "negative"}
-
-
-def test_zscore_uses_shuffle_build_param(tmp_path):
-    table = _build("contact_type_zscore", _inputs(tmp_path), params={"shuffles": 16})
-    assert {"contact_type", "z_score"} <= set(table)
-    assert table["contact_type"].dtype == object
-
-
-def test_typed_quantities_empty_without_labels(tmp_path):
-    inputs = _inputs(tmp_path, classify=False)
-    assert len(_build("neighbor_enrichment", inputs)["enrichment"]) == 0
-    assert len(_build("contact_type_zscore", inputs)["z_score"]) == 0
 
 
 def test_signed_contact_length_empty_without_t1(tmp_path):

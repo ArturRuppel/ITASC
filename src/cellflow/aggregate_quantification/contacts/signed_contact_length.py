@@ -60,15 +60,15 @@ def signed_central_junction_lengths(
     * ``signed_length`` — ``±length``, in µm when *pixel_size_um* is given else px.
     * ``role`` — ``"losing"`` (negative) or ``"gaining"`` (positive).
     * ``contact_type`` — the event's **transition pair** ``"<losing>→<gaining>"``
-      (e.g. ``"A-A→A-B"``), where each side is the NLS-subpopulation contact label
+      (e.g. ``"A-A→A-B"``), where each side is the contact label
       (:func:`...contact_labels.contact_label_for`) of that junction's cell pair.
-      ``""`` when no *labels* map is given. A single per-event label is used (not
-      per-side), so both the negative losing lobe and the positive gaining lobe of
-      an event share it and a grouped curve still spans ``L = 0`` for the barrier.
+      ``""`` when no *labels* map is given (the label-agnostic default). A single
+      per-event label is used (not per-side), so both the negative losing lobe and
+      the positive gaining lobe of an event share it and a grouped curve still
+      spans ``L = 0`` for the barrier.
 
-    *labels* maps ``cell_id -> NLS label`` (from
-    :func:`...nls_classification.read_nls_classification_csv`); a cell absent from
-    it is ``"unclassified"``.
+    *labels* maps ``cell_id -> label`` (an optional, caller-supplied per-cell
+    classification); a cell absent from it is ``"unclassified"``.
 
     Returns empty (but typed) arrays when there are no events or no matching
     edges; an event whose losing/gaining edges never appear in ``edges`` simply

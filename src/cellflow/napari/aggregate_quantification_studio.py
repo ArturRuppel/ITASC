@@ -353,17 +353,21 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._push_context_to(self._run_area)
 
     def _author_run_config(self, choices) -> Path:
-        """Write catalog.csv + config.toml for the whole catalogue; return config path."""
-        out_dir = catalogue_root(self._records)
+        """Write catalog.csv + config.toml for the whole catalogue; return config path.
+
+        When the user picked an output directory, the catalog/config and the pooled
+        tables all live there (the config's ``out_dir`` is ``"."``, so tables land
+        flat beside the config). Blank falls back to the catalogue root.
+        """
+        chosen = (choices.out_dir or "").strip()
+        project_dir = Path(chosen) if chosen else catalogue_root(self._records)
         params = self._shared_params.build_params()
         return author_config(
-            out_dir,
+            project_dir,
             self._records,
+            tables_dir="." if chosen else None,
             quantities=choices.quantities,
             params=params,
-            nls=choices.nls,
-            render_plots=choices.render_plots,
-            plot_formats=choices.plot_formats,
         )
 
     def _on_run_save(self, choices) -> None:
@@ -403,11 +407,13 @@ class AggregateQuantificationStudioWidget(QWidget):
     def _on_run_progress(self, done: int, total: int, label: str) -> None:
         self._run_area.set_status(f"Running: {done}/{total} {label}")
 
-    def _on_run_done(self, written: list) -> None:
+    def _on_run_done(self, written: dict) -> None:
         self._run_worker = None
         n = len(written)
         self._run_area.set_status(
-            f"Exported {n} .iris → export/." if n else "Run finished; nothing exported."
+            f"Wrote {n} pooled table{'s' if n != 1 else ''}."
+            if n
+            else "Run finished; no tables written."
         )
 
     def _on_run_error(self, exc: Exception) -> None:
