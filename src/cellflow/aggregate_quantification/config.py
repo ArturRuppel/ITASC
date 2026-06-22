@@ -14,6 +14,7 @@ whole thing moves together.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -24,7 +25,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on 3.10 only
 
 from .quantifier import available_quantifiers
 
-__all__ = ["NlsConfig", "RunConfig", "load_config"]
+__all__ = ["NlsConfig", "RunConfig", "load_config", "write_config"]
 
 #: Default for the optional export-dir key, relative to the config file's directory.
 _DEFAULT_EXPORT_DIR = "export"
@@ -160,3 +161,80 @@ def _check_known_quantities(quantities: tuple[str, ...]) -> None:
             f"Run-config selects unknown quantit(y/ies): {listed}. "
             f"Available: {available}."
         )
+
+
+def write_config(
+    path: Path | str,
+    *,
+    catalog: str = "catalog.csv",
+    export_dir: str = _DEFAULT_EXPORT_DIR,
+    curation: str = _DEFAULT_CURATION,
+    quantities: Sequence[str] = (),
+    params: Mapping[str, object] | None = None,
+    nls: NlsConfig | None = None,
+    render_plots: bool = False,
+    plot_formats: Sequence[str] = ("png", "svg"),
+) -> Path:
+    """Author a TOML run-config at *path* — the inverse of :func:`load_config`.
+
+    Paths are written **relative** (verbatim), so the project folder stays
+    relocatable. ``quantities`` is emitted only when non-empty (empty round-trips
+    to ``()`` = "all"). ``params`` keys that are ``None`` are dropped (an unset
+    pixel size etc.). The ``[nls]`` table is written only when *nls* is given;
+    ``[plots]`` is always written. ``load_config(write_config(path, ...))``
+    reproduces the inputs (paths resolved against ``path.parent``). Returns *path*.
+    """
+    path = Path(path)
+    lines: list[str] = [
+        f"catalog = {_toml_str(catalog)}",
+        f"export_dir = {_toml_str(export_dir)}",
+        f"curation = {_toml_str(curation)}",
+    ]
+    if quantities:
+        lines.append(f"quantities = {_toml_array(quantities)}")
+
+    if params:
+        kept = {k: v for k, v in params.items() if v is not None}
+        if kept:
+            lines.append("")
+            lines.append("[params]")
+            lines.extend(f"{k} = {_toml_value(v)}" for k, v in kept.items())
+
+    if nls is not None:
+        lines += [
+            "",
+            "[nls]",
+            f"enabled = {_toml_value(nls.enabled)}",
+            f"image = {_toml_str(nls.image)}",
+            f"method = {_toml_str(nls.method)}",
+            f"threshold = {_toml_value(float(nls.threshold))}",
+        ]
+
+    lines += [
+        "",
+        "[plots]",
+        f"render = {_toml_value(render_plots)}",
+        f"formats = {_toml_array(plot_formats)}",
+        "",
+    ]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def _toml_str(value: object) -> str:
+    """A TOML basic string: backslash and double-quote escaped."""
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _toml_array(values: Sequence[object]) -> str:
+    return "[" + ", ".join(_toml_str(v) for v in values) + "]"
+
+
+def _toml_value(value: object) -> str:
+    """Serialize a scalar for our closed schema (bool / int / float / str)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return _toml_str(value)
