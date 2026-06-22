@@ -39,7 +39,6 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.aggregate_quantification.quantifier import (
-    Quantifier,
     available_quantifiers,
 )
 from cellflow.aggregate_quantification.catalog import (
@@ -48,15 +47,13 @@ from cellflow.aggregate_quantification.catalog import (
     merge_catalog_records,
     save_catalog,
 )
-from cellflow.aggregate_quantification.pipeline import build_quantities
-from cellflow.aggregate_quantification.shape_tables import aggregate as aggregate_tables
+from cellflow.aggregate_quantification.pipeline import author_config, run
 from cellflow.aggregate_quantification.shape_tables import catalogue_root
 from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
-from cellflow.napari.aggregate_quantification_aggregate_area import AggregateArea
 from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
+from cellflow.napari.aggregate_quantification_run_area import RunArea
 from cellflow.napari.aggregate_quantification_widget import _ProgressEmitter
 from cellflow.napari.studio_plugins import (
-    BuildArea,
     PluginEntry,
     available_tool_plugins,
     records_satisfying,
@@ -123,12 +120,10 @@ class AggregateQuantificationStudioWidget(QWidget):
         #: Flat plugin list: every available plugin as its own collapsible.
         self._plugin_entries: list[PluginEntry] = []
         self._plugin_sections: dict[str, _PluginSection] = {}
-        #: Background build triggered by a builder plugin.
-        self._build_worker = None
-        self._build_emitter = _ProgressEmitter(self)
-        self._build_emitter.progress.connect(self._on_build_progress)
-        #: Background aggregation (pool built products into the shape tables).
-        self._aggregate_worker = None
+        #: Background full-pipeline run (author config, then pipeline.run()).
+        self._run_worker = None
+        self._run_emitter = _ProgressEmitter(self)
+        self._run_emitter.progress.connect(self._on_run_progress)
 
         # The two regions can grow tall (embedded visualizer + several mounted
         # plugin collapsibles), so the whole studio scrolls vertically.
@@ -166,11 +161,10 @@ class AggregateQuantificationStudioWidget(QWidget):
             CollapsibleSection("Parameters", self._shared_params, expanded=True)
         )
 
-        # Tools on top, then the pure Build area, then the Aggregate area.
+        # Tools on top, then the Run area.
         # (Plotting is Iris-only — no in-napari Plot area.)
         self._build_tools_section(layout)
-        self._build_build_section(layout)
-        self._build_aggregate_section(layout)
+        self._build_run_section(layout)
 
         self._reload_plugins()
         self._refresh_table()
@@ -328,39 +322,97 @@ class AggregateQuantificationStudioWidget(QWidget):
 
         layout.addWidget(CollapsibleSection("Tools", container, expanded=False))
 
-    def _build_build_section(self, layout) -> None:
-        """The pure Compute area: one checkbox + availability dot per metric and a
-        single Run button that (re)builds every checked metric for the in-scope
-        positions. The :class:`BuildArea` body is (re)created in
-        :meth:`_reload_plugins` so a metric registered at runtime shows up. The
-        compute/status line lives here (not in the catalogue) so progress reads
-        next to the controls that triggered it."""
+    def _build_run_section(self, layout) -> None:
+        """The single Run area: author catalog.csv + config.toml from the whole
+        catalogue and drive ``pipeline.run`` on a worker. Re-created in
+        :meth:`_reload_run_area` so a runtime-registered quantity appears."""
         container = QWidget()
         col = QVBoxLayout(container)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
-        self._build_host = QWidget()
-        self._build_host_layout = QVBoxLayout(self._build_host)
-        self._build_host_layout.setContentsMargins(0, 0, 0, 0)
-        self._build_host_layout.setSpacing(0)
-        self._build_area: BuildArea | None = None
-        col.addWidget(self._build_host)
+        self._run_host = QWidget()
+        self._run_host_layout = QVBoxLayout(self._run_host)
+        self._run_host_layout.setContentsMargins(0, 0, 0, 0)
+        self._run_host_layout.setSpacing(0)
+        self._run_area: RunArea | None = None
+        col.addWidget(self._run_host)
+        layout.addWidget(CollapsibleSection("Run", container, expanded=True))
 
-        self._build_status_lbl = QLabel("")
-        self._build_status_lbl.setWordWrap(True)
-        status_label(self._build_status_lbl, muted=True)
-        col.addWidget(self._build_status_lbl)
-
-        layout.addWidget(CollapsibleSection("Compute", container, expanded=False))
-
-    def _build_aggregate_section(self, layout) -> None:
-        """The Aggregate area: a Run Aggregate button + the shape-table status
-        list. Pools what is built on disk for the in-scope positions into the
-        index-keyed tables the Plot area reads. Auto-fires after each build."""
-        self._aggregate_area = AggregateArea(self._run_aggregate)
-        layout.addWidget(
-            CollapsibleSection("Aggregate", self._aggregate_area, expanded=False)
+    def _reload_run_area(self) -> None:
+        """(Re)create the Run area body from the quantifier registry."""
+        while self._run_host_layout.count():
+            item = self._run_host_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._run_area = RunArea(
+            save_callback=self._on_run_save,
+            run_callback=self._on_run_execute,
         )
+        self._run_host_layout.addWidget(self._run_area)
+        self._push_context_to(self._run_area)
+
+    def _author_run_config(self, choices) -> Path:
+        """Write catalog.csv + config.toml for the whole catalogue; return config path."""
+        out_dir = catalogue_root(self._records)
+        params = self._shared_params.build_params()
+        return author_config(
+            out_dir,
+            self._records,
+            quantities=choices.quantities,
+            params=params,
+            nls=choices.nls,
+            render_plots=choices.render_plots,
+            plot_formats=choices.plot_formats,
+        )
+
+    def _on_run_save(self, choices) -> None:
+        if not self._records:
+            self._run_area.set_status("Add positions to the catalogue first.")
+            return
+        try:
+            config_path = self._author_run_config(choices)
+        except Exception as exc:  # noqa: BLE001 - surface authoring errors in the UI
+            self._run_area.set_status(f"Save error: {exc}")
+            return
+        self._run_area.set_status(f"Wrote {config_path.name} + catalog.csv.")
+
+    def _on_run_execute(self, choices) -> None:
+        if self._run_worker is not None:
+            self._run_area.set_status("A run is already in progress.")
+            return
+        if not self._records:
+            self._run_area.set_status("Add positions to the catalogue first.")
+            return
+        try:
+            config_path = self._author_run_config(choices)
+        except Exception as exc:  # noqa: BLE001 - surface authoring errors in the UI
+            self._run_area.set_status(f"Save error: {exc}")
+            return
+        self._run_area.set_status("Running pipeline…")
+        emit = self._run_emitter.progress.emit
+
+        @thread_worker(
+            connect={"returned": self._on_run_done, "errored": self._on_run_error}
+        )
+        def _worker():
+            return run(config_path, progress_cb=emit)
+
+        self._run_worker = _worker()
+
+    def _on_run_progress(self, done: int, total: int, label: str) -> None:
+        self._run_area.set_status(f"Running: {done}/{total} {label}")
+
+    def _on_run_done(self, written: list) -> None:
+        self._run_worker = None
+        n = len(written)
+        self._run_area.set_status(
+            f"Exported {n} .iris → export/." if n else "Run finished; nothing exported."
+        )
+
+    def _on_run_error(self, exc: Exception) -> None:
+        self._run_worker = None
+        self._run_area.set_status(f"Run error: {exc}")
 
     # ----------------------------------------------------------- catalog actions
     def _set_catalog_status(self, message: str) -> None:
@@ -433,116 +485,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._set_discover_status(
             f"Added {added} position(s). Check a builder plugin to compute quantities."
         )
-
-    # ----------------------------------------------------------------- building
-    def _set_build_status(self, message: str) -> None:
-        """Status for the Compute area (build progress / results), shown beside
-        the build controls rather than in the catalogue."""
-        self._build_status_lbl.setText(message)
-
-    def _run_quantity_builds(
-        self, quantifiers: list[Quantifier], records: list[dict], overwrite: bool
-    ) -> None:
-        """Build every *quantifier* for the in-scope *records* (Build area Run).
-
-        Delegates the per-position build loop to
-        :func:`cellflow.aggregate_quantification.pipeline.build_quantities` (the
-        Run always overwrites, so *overwrite* is implied); the studio only owns the
-        threading, progress, and post-build aggregation. One worker runs the mixed
-        metric set so several quantities build in one pass.
-        """
-        if self._build_worker is not None:
-            self._set_build_status("A build is already running.")
-            return
-        if not quantifiers or not records:
-            self._set_build_status("Nothing to build — pick a metric and a position.")
-            return
-        # The shared bar's build knobs (z-score shuffles, density FOV, px / Δt);
-        # build_quantities threads them only into quantifiers that opt in.
-        shared = getattr(self, "_shared_params", None)
-        params = shared.build_params() if shared is not None else None
-        self._begin_build(quantifiers, records, params)
-
-    def _begin_build(
-        self,
-        quantifiers: list[Quantifier],
-        records: list[dict],
-        params: dict | None,
-    ) -> None:
-        self._set_build_status("Computing builds…")
-        self._build_total = 0
-        emit = self._build_emitter.progress.emit
-
-        @thread_worker(
-            connect={"returned": self._on_build_done, "errored": self._on_build_error}
-        )
-        def _worker():
-            build_quantities(
-                records,
-                quantifiers=quantifiers,
-                params=params,
-                progress_cb=emit,
-            )
-
-        self._build_worker = _worker()
-
-    def _on_build_progress(self, done: int, total: int, label: str) -> None:
-        # The final callback (done == total) records how many builds ran; a
-        # fail-fast abort surfaces via ``_on_build_error`` instead.
-        self._build_total = total
-        self._set_build_status(f"Computing: {done}/{total} {label}")
-
-    def _on_build_done(self, _result: object) -> None:
-        self._build_worker = None
-        built = getattr(self, "_build_total", 0)
-        # Re-normalize so each position's status reflects freshly built files.
-        self._records = merge_catalog_records(self._records, [])
-        self._refresh_table()
-        self._set_build_status(f"Built {built}." if built else "Nothing to build.")
-        # Auto-aggregate the affected tables so the Plot area never reads a stale
-        # snapshot after a build (the common path); the button re-aggregates
-        # without rebuilding.
-        if built:
-            self._run_aggregate(self._scoped_records())
-
-    def _on_build_error(self, exc: Exception) -> None:
-        self._build_worker = None
-        self._set_build_status(f"Build error: {exc}")
-
-    # ---------------------------------------------------------------- aggregating
-    def _run_aggregate(self, records: list[dict]) -> None:
-        """Pool every built product for *records* into the shape tables (off the
-        GUI thread). Delegated to by the Aggregate area's Run button and fired
-        automatically after a build."""
-        if self._aggregate_worker is not None:
-            return
-        if not records:
-            self._aggregate_area.set_status("Add positions to the catalogue first.")
-            return
-        out_dir = catalogue_root(records)
-
-        @thread_worker(
-            connect={
-                "returned": self._on_aggregate_done,
-                "errored": self._on_aggregate_error,
-            }
-        )
-        def _worker():
-            return aggregate_tables(records, out_dir)
-
-        self._aggregate_worker = _worker()
-
-    def _on_aggregate_done(self, written: dict) -> None:
-        self._aggregate_worker = None
-        self._aggregate_area.refresh_status()
-        n = len(written)
-        self._aggregate_area.set_status(
-            f"Aggregated {n} table(s)." if n else "Nothing built to aggregate yet."
-        )
-
-    def _on_aggregate_error(self, exc: Exception) -> None:
-        self._aggregate_worker = None
-        self._aggregate_area.set_status(f"Aggregate error: {exc}")
 
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
@@ -653,15 +595,15 @@ class AggregateQuantificationStudioWidget(QWidget):
 
     # -------------------------------------------------------------- plugin hosting
     def _reload_plugins(self) -> None:
-        """Rebuild the tool collapsibles and the Build area from the registries.
+        """Rebuild the tool collapsibles and the Run area from the registries.
 
         Each tool gets one collapsed :class:`CollapsibleSection`; its header is
         the on/off control (no separate checkbox), and expanding it reveals the
-        body. The Build area is a single body with one metric row per quantifier.
-        Both are fed the catalogue scope whether expanded or not, so the view is
-        always current the moment it is opened.
+        body. The Run area is a single body with one quantity checkbox per
+        quantifier. Both are fed the catalogue scope whether expanded or not, so
+        the view is always current the moment it is opened.
         """
-        self._reload_build_area()
+        self._reload_run_area()
 
         while self._plugin_host_layout.count():
             item = self._plugin_host_layout.takeAt(0)
@@ -693,23 +635,6 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._plugin_host_layout.addStretch()
         self._update_plugin_availability()
 
-    def _reload_build_area(self) -> None:
-        """(Re)create the Build area body — one metric row per quantifier."""
-        while self._build_host_layout.count():
-            item = self._build_host_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        quantifiers = [q_cls() for q_cls in available_quantifiers()]
-        self._build_area = BuildArea(
-            quantifiers,
-            self._run_quantity_builds,
-            viewer=self.viewer,
-            params_provider=self._shared_params.build_params,
-        )
-        self._build_host_layout.addWidget(self._build_area)
-        self._push_context_to(self._build_area)
-
     def _on_plugin_toggled(self, entry: PluginEntry, checked: bool) -> None:
         # Expanding is the "activate" gesture: refresh the body with the current
         # scope so it is up to date even if the scope changed while collapsed.
@@ -728,15 +653,12 @@ class AggregateQuantificationStudioWidget(QWidget):
         return cached
 
     def _push_context(self) -> None:
-        """Feed every tool + the Build & Plot areas the current scope, refresh gating."""
+        """Feed every tool + the Run area the current scope, refresh gating."""
         for plugin in self._plugin_sections.values():
             self._push_context_to(plugin.body)
-        build_area = getattr(self, "_build_area", None)
-        if build_area is not None:
-            self._push_context_to(build_area)
-        aggregate_area = getattr(self, "_aggregate_area", None)
-        if aggregate_area is not None:
-            self._push_context_to(aggregate_area)
+        run_area = getattr(self, "_run_area", None)
+        if run_area is not None:
+            self._push_context_to(run_area)
         self._update_plugin_availability()
 
     def _push_context_to(self, body: QWidget) -> None:

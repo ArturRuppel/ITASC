@@ -7,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication, QLabel
 
-from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
 from cellflow.napari import aggregate_quantification_studio as mod
 from cellflow.napari.aggregate_quantification.plugins import (
     AnalysisPlugin,
@@ -67,8 +66,8 @@ def test_every_tool_is_its_own_collapsible_collapsed():
     assert all(
         not plugin.section.is_expanded for plugin in widget._plugin_sections.values()
     )
-    # The Build area carries a metric row per quantifier instead.
-    assert "contacts" in widget._build_area._rows
+    # The Run area carries a quantity checkbox per quantifier instead.
+    assert "contacts" in widget._run_area._quantity_checks
     widget.deleteLater()
     app.processEvents()
 
@@ -267,6 +266,7 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
 
 def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     """Add registers positions synchronously and never builds (that's a plugin)."""
+    # Add registers positions; building is the Run section's job.
     app = _app()
     monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
 
@@ -281,8 +281,6 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     (p1 / "aggregate_quantification" / "contact_analysis.h5").touch()
 
     widget = mod.AggregateQuantificationStudioWidget()
-    began: list = []
-    monkeypatch.setattr(widget, "_begin_build", lambda *a, **k: began.append(a))
 
     widget._root_edit.setText(str(study))
     widget._cell_name_edit.setText("cell_labels.tif")
@@ -290,9 +288,6 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     assert len(widget._pending_entries) == 2
 
     widget._on_add_to_catalogue()
-    # No build kicked off; both positions registered, statuses reflect reality.
-    assert began == []
-    assert widget._build_worker is None
     assert len(widget._records) == 2
     by_id = {r["id"]: r for r in widget._records}
     assert by_id["pos01"]["contact_analysis_status"] == "ready"
@@ -302,86 +297,55 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     app.processEvents()
 
 
-def test_build_area_run_delegates_to_pipeline(tmp_path, monkeypatch):
-    """The Build area Run forwards the checked quantifiers + in-scope records (and
-    the shared build params) to the build loop. Which positions actually build —
-    skipping those lacking inputs — is now ``pipeline.build_quantities``' job (see
-    test_pipeline), not the studio's."""
-    app = _app()
-    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
-
-    widget = mod.AggregateQuantificationStudioWidget()
-    quantifier = ContactsQuantifier()
-
-    p1, p2 = tmp_path / "p1", tmp_path / "p2"
-    for p in (p1, p2):
-        p.mkdir()
-    records = [
-        {"id": "p1", "position_path": p1, "contact_analysis_path": p1 / "contact_analysis.h5",
-         "cell_tracked_labels_path": p1 / "cells.tif"},
-        {"id": "p2", "position_path": p2, "contact_analysis_path": p2 / "contact_analysis.h5",
-         "cell_tracked_labels_path": p2 / "cells.tif"},
-    ]
-
-    captured: list = []
-    monkeypatch.setattr(widget, "_begin_build", lambda *args: captured.append(args))
-
-    widget._run_quantity_builds([quantifier], records, overwrite=True)
-    quants, recs, _params = captured[-1]
-    assert [q.quantity_id for q in quants] == ["contacts"]
-    assert [r["id"] for r in recs] == ["p1", "p2"]
-
-    # Empty scope or no metric checked is a no-op (no worker queued).
-    captured.clear()
-    widget._run_quantity_builds([quantifier], [], overwrite=True)
-    widget._run_quantity_builds([], records, overwrite=True)
-    assert captured == []
-
-    widget.deleteLater()
-    app.processEvents()
-
-
-def test_build_status_goes_to_compute_section_not_catalogue(monkeypatch):
-    # Bug 13: computing/status text belongs in the Compute section, beside the
-    # build controls — not in the catalogue status line.
-    app = _app()
-    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
-    widget = mod.AggregateQuantificationStudioWidget()
-    widget._catalog_status_lbl.setText("catalogue idle")
-
-    # "Nothing to build" is a build outcome -> Compute status, catalogue untouched.
-    widget._run_quantity_builds([ContactsQuantifier()], [], overwrite=False)
-    assert "Nothing to build" in widget._build_status_lbl.text()
-    assert widget._catalog_status_lbl.text() == "catalogue idle"
-
-    # Progress + completion also land on the Compute status.
-    widget._on_build_progress(1, 2, "p1")
-    assert "Computing" in widget._build_status_lbl.text()
-    widget._on_build_done([])
-    assert "Built" in widget._build_status_lbl.text()
-    assert widget._catalog_status_lbl.text() == "catalogue idle"
-
-    widget.deleteLater()
-    app.processEvents()
-
 
 def test_section_defaults_and_compute_rename(monkeypatch):
-    # Bugs 16/18/20: Parameters expanded; Build renamed to Compute; Tools /
-    # Compute collapsed by default. The in-napari Plots section is removed
-    # (visualization is Iris-only).
+    # The piecemeal Build/Compute + Aggregate sections are replaced by one Run
+    # section (expanded by default). Plots stay removed (Iris-only visualization).
     from cellflow.napari.widgets import CollapsibleSection
 
     app = _app()
     monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
     widget = mod.AggregateQuantificationStudioWidget()
-    by_title = {
-        s.title: s for s in widget.findChildren(CollapsibleSection)
-    }
-    assert "Build" not in by_title and "Compute" in by_title
+    by_title = {s.title: s for s in widget.findChildren(CollapsibleSection)}
+    assert "Run" in by_title
+    assert "Build" not in by_title and "Compute" not in by_title
+    assert "Aggregate" not in by_title
     assert "Plots" not in by_title
     assert by_title["Parameters"].is_expanded is True
     assert by_title["Tools"].is_expanded is False
-    assert by_title["Compute"].is_expanded is False
+    assert by_title["Run"].is_expanded is True
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_run_section_authors_config_and_dispatches_run(tmp_path, monkeypatch):
+    app = _app()
+    monkeypatch.setattr(mod, "available_tool_plugins", lambda: [])
+
+    pdir = tmp_path / "study" / "p1"
+    pdir.mkdir(parents=True)
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget._records = [
+        {"id": "p1", "position_path": pdir, "condition": "ctrl",
+         "date": "d", "notes": ""},
+    ]
+    widget._refresh_table()  # feeds the Run area the catalogue scope
+
+    seen = {}
+
+    def fake_author(out_dir, records, **kw):
+        seen["out_dir"] = out_dir
+        seen["kw"] = kw
+        return out_dir / "config.toml"
+
+    ran = {}
+    monkeypatch.setattr(mod, "author_config", fake_author)
+    monkeypatch.setattr(mod, "run", lambda p, progress_cb=None: ran.setdefault("p", p) or [])
+
+    widget._run_area._on_run()
+    assert seen["out_dir"] == pdir.parent  # catalogue root
+    assert "quantities" in seen["kw"] and "params" in seen["kw"]
+
     widget.deleteLater()
     app.processEvents()
 
