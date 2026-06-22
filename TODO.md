@@ -159,6 +159,27 @@
   - [x] **Cell shape** — first real new quantity. `quantifiers/cell_shape.py` over a headless `cell_shape/{build,reader}.py` core (regionprops: area, circularity, aspect ratio, eccentricity, solidity, … per cell per frame → `cell_shape.h5`). Added a generic headless plotting backend (`aggregate_quantification/plotting.py`: pool / aggregate / figure / CSV) and a unified **Cell Shape** group plugin (Compute + Plot, with CSV/figure export). Framework deltas: `Quantifier.default_output` + `object_table` on the base; studio build path now routes through `default_output` (was hardcoded to the contacts artifact); `owns_quantities` lets a group plugin suppress the generic auto-builder. See `notes/2026-06-10-cell-shape-quantifier-and-table-explorer-design.md`. Follow-ons: per-position shape overlay, physical units, contacts/NLS plot sections.
   - [x] **Track dynamics** — motion read off the tracked label stacks. Twin quantifiers `quantifiers/{cell,nucleus}_dynamics.py` over a headless `dynamics/` core (trajectories → instantaneous velocities, per-track summary, ensemble MSD power-law `D`/`α`, directional-autocorrelation persistence time, and collective metrics: order parameter, velocity correlation `C(r)`, 1/e correlation length, NN distance → multi-table `*_dynamics.h5`). Added `frame_interval.py` (resolves `time_interval_s` like `pixel_size.py`) + `PositionInputs.time_interval_s`. A **Track dynamics** group plugin (scope cell/nucleus; Compute + Plot with per-frame / per-track distributions via the generic `PlotPanel` and a bespoke MSD/DAC/`C(r)` curves panel). See `notes/2026-06-11-track-dynamics-quantifier-design.md`. Follow-ons: PRW/Fürth MSD fit, per-track D/α, turning-angle/arrest, motion overlays.
 
+## Aggregate Quantification: napari front-end + curation consolidation
+
+The CLI engine (config-driven `run()`, Iris-only export, analysis subpackage) is now
+canonical. napari is refocused from an interactive studio into a thin front-end +
+curator for that engine; all plotting moves to Iris. Each item has its own spec.
+
+- [ ] **napari front-end refocus** — remove the in-napari interactive plot panels
+  (`plot_panel.py`, `plots/`, dynamics/shape plot UI); keep/refocus discover&add +
+  run as the engine driver. Iris owns all plotting.
+  → `docs/superpowers/specs/2026-06-22-aggregate-napari-frontend-refocus-design.md`
+- [ ] **NLS classification → CLI engine step** — make headless NLS classification an
+  optional config-flagged pipeline step like every other step; drop the napari NLS UI.
+  → `docs/superpowers/specs/2026-06-22-aggregate-nls-classification-cli-step-design.md`
+- [ ] **Curation exclusion table + filter** — new curation tidy table (frame/position
+  + reason) left-joined onto the measurement tables to filter; the `.iris` export gets
+  the filtered data.
+  → `docs/superpowers/specs/2026-06-22-aggregate-curation-exclusion-table-design.md`
+- [ ] **Curation tool (napari)** — browse positions, scrub frames with contact-viz as
+  the overlay, mark frame/whole-position excluded + reason, writes the exclusion table.
+  → `docs/superpowers/specs/2026-06-22-aggregate-curation-tool-napari-design.md`
+
 ## TIFF Calibration (pixel size / Z step / frame interval)
 
 Background: the project's TIFF writers (all via `core/tiff.py::imwrite_grayscale`)
