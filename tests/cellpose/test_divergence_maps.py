@@ -230,6 +230,32 @@ def test_build_divergence_maps_rejects_empty_stack(tmp_path):
         )
 
 
+def test_build_divergence_maps_rejects_do_3d_flows(tmp_path):
+    """do_3d=True yields (T,3,Z,Y,X) flows the divergence builder can't consume;
+    it must say so clearly instead of a cryptic shape error or silent misread."""
+    import tifffile
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
+
+    prob = np.zeros((2, 4, 6, 6), dtype=np.float32)       # (T, Z, Y, X)
+    dp = np.zeros((2, 3, 4, 6, 6), dtype=np.float32)      # (T, 3, Z, Y, X) — do_3d
+    prob_path = tmp_path / "prob.tif"
+    dp_path = tmp_path / "dp.tif"
+    tifffile.imwrite(str(prob_path), prob)
+    tifffile.imwrite(str(dp_path), dp)
+
+    with pytest.raises(ValueError, match="do_3d"):
+        build_divergence_maps(
+            prob_path,
+            dp_path,
+            tmp_path / "c.tif",
+            tmp_path / "f.tif",
+            foreground_z_reduction="mean",
+            contour_z_reduction="mean",
+            smoothing_sigma=0.0,
+            median_radius=0,
+        )
+
+
 def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
     import tifffile
     from cellflow.cellpose.divergence_maps import build_divergence_maps

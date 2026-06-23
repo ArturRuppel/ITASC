@@ -229,6 +229,13 @@ class _LazyTiffStack:
         if len(shape) != ndim:
             raise ValueError(f"{name} must be {label}.")
         if ndim == 5 and shape[2] != 2:
+            if shape[1] == 3:
+                raise ValueError(
+                    f"{name} has shape {shape}, which is Cellpose 3D flows "
+                    f"(T×3×Z×Y×X from do_3d=True). The divergence builder needs "
+                    f"per-z 2-component flows (T×Z×2×Y×X); re-run nucleus Cellpose "
+                    f"with do_3d=False for the divergence pipeline."
+                )
             raise ValueError(f"{name} must be Z×2×Y×X or T×Z×2×Y×X.")
         return shape
 

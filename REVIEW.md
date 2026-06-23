@@ -79,8 +79,11 @@ severity, most important first.
 10. **cellpose `do_3d=True` output incompatible with divergence builder.**
     `run_nucleus_stack(do_3d=True)` yields dp `(T,3,Z,Y,X)`, but
     `build_divergence_maps` requires `(T,Z,2,Y,X)` and rejects it — a supported
-    option silently produces unusable output. Fix: guard/document the path, or
-    accept the 3-component layout. *Open.*
+    option silently produces unusable output.
+    *Status: FIXED — the dp-shape validator now recognises the `(T,3,Z,Y,X)`
+    3D-flow layout and raises an actionable error naming `do_3d`, instead of a
+    cryptic shape message or (when Z==2) a silent axis misread. Regression test
+    added.*
 
 ## Medium
 
@@ -162,6 +165,7 @@ Critical/High items resolved so far, each with a regression test:
 - #8 `aggregate_quantification/curation.py` — NaN-frame-tolerant frame match.
 - #6 `tracking_ultrack/_node_geometry.py` — centroid-distance prefilter replaces
   bbox containment.
+- #10 `cellpose/divergence_maps.py` — actionable error on `do_3d` 3D-flow input.
 
 All Critical and High items are now resolved. Suggested next: the Medium tier and
 the cross-cutting license mismatch (the failing `test_packaging_metadata` case).
