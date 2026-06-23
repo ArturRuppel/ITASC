@@ -107,9 +107,10 @@ severity, most important first.
 - ~~`segmentation/nucleus_segmentation.py:129-130` — `np.random.normal` uses the
   global RNG; `run_index` is dead → non-reproducible segmentation.~~ FIXED: noise
   now drawn from a local `default_rng(run_index)`; reproducible per run_index.
-- `correction/labels.py:937` — `clean_stranded_pixels` runs `expand_labels` over
+- ~~`correction/labels.py:937` — `clean_stranded_pixels` runs `expand_labels` over
   the whole frame per fragment (≈O(n_fragments × frame)). Restrict to a padded
-  bbox.
+  bbox.~~ FIXED: cropped to the fragment bbox padded by the expansion distance;
+  a 200-trial equivalence test confirms output-identical to the whole-frame path.
 - ~~`cellpose/divergence_maps.py:108-110` — `np.gradient` crashes on a 1-pixel Y/X
   axis.~~ FIXED: a singleton axis contributes zero divergence and is skipped.
 - ~~`aggregate_quantification/dynamics/store.py:236` — `_read_table` returns columns

@@ -273,6 +273,65 @@ def test_clean_stranded_pixels_cleans_fragments_without_filling_background_holes
     assert seg[0, 7] != 2
 
 
+def _clean_stranded_pixels_reference(seg, min_size=4, *, exclude=None):
+    """Frozen whole-frame implementation of clean_stranded_pixels.
+
+    The optimized version crops to a padded fragment bbox before expand_labels;
+    this reference does the work over the whole frame. Their outputs must match.
+    """
+    from scipy.ndimage import binary_dilation
+    from skimage.measure import label as _cc_label
+    from skimage.segmentation import expand_labels
+
+    cleared = 0
+    for cell_id in np.unique(seg):
+        if cell_id == 0:
+            continue
+        if exclude is not None and int(cell_id) in exclude:
+            continue
+        mask = seg == cell_id
+        labeled, n_comp = _cc_label(mask, return_num=True, connectivity=2)
+        if n_comp <= 1:
+            continue
+        comp_sizes = {cid: int(np.sum(labeled == cid)) for cid in range(1, n_comp + 1)}
+        largest = max(comp_sizes, key=comp_sizes.__getitem__)
+        for comp_id, n_px in comp_sizes.items():
+            if comp_id == largest:
+                continue
+            comp_mask = labeled == comp_id
+            seg[comp_mask] = 0
+            filled = expand_labels(seg, distance=n_px + 2)
+            new_labels = filled[comp_mask]
+            keep = np.zeros(new_labels.shape, dtype=bool)
+            for lbl in np.unique(new_labels):
+                if lbl == 0:
+                    continue
+                assigned_here = new_labels == lbl
+                assign_mask = np.zeros_like(seg, dtype=bool)
+                assign_mask[comp_mask] = assigned_here
+                dilated = binary_dilation(assign_mask, structure=np.ones((3, 3), dtype=bool))
+                if np.any((seg == lbl) & dilated):
+                    keep[assigned_here] = True
+            seg[comp_mask] = np.where(keep, new_labels, 0).astype(seg.dtype)
+            cleared += n_px
+    return cleared
+
+
+def test_clean_stranded_pixels_matches_whole_frame_reference():
+    """The bbox-cropped optimization must be output-identical to the whole-frame
+    reference across many random fragmented segmentations."""
+    rng = np.random.default_rng(20260623)
+    for _ in range(200):
+        # A few labels scattered as small blobs so each tends to fragment.
+        base = rng.integers(0, 4, size=(20, 20)).astype(np.uint32)
+        a = base.copy()
+        b = base.copy()
+        n_opt = clean_stranded_pixels(a, min_size=4)
+        n_ref = _clean_stranded_pixels_reference(b, min_size=4)
+        assert n_opt == n_ref
+        np.testing.assert_array_equal(a, b)
+
+
 def test_fill_label_holes_fills_hole_enclosed_by_single_cell():
     seg = np.zeros((12, 12), dtype=np.uint32)
     seg[2:10, 2:10] = 1

@@ -947,21 +947,36 @@ def clean_stranded_pixels(
                 continue
             comp_mask = labeled == comp_id
             seg[comp_mask] = 0
-            filled = expand_labels(seg, distance=n_px + 2)
-            new_labels = filled[comp_mask]
+
+            # expand_labels and the keep-check only read pixels within the
+            # expansion distance of the fragment, so crop to the fragment bbox
+            # padded by that distance instead of scanning the whole frame per
+            # fragment. Any label that can reach a fragment pixel within
+            # ``distance`` lies inside this padded box, so the result is identical.
+            distance = n_px + 2
+            ys, xs = np.nonzero(comp_mask)
+            y0 = max(int(ys.min()) - distance, 0)
+            y1 = min(int(ys.max()) + distance + 1, seg.shape[0])
+            x0 = max(int(xs.min()) - distance, 0)
+            x1 = min(int(xs.max()) + distance + 1, seg.shape[1])
+            sub = seg[y0:y1, x0:x1]
+            sub_comp = comp_mask[y0:y1, x0:x1]
+
+            filled = expand_labels(sub, distance=distance)
+            new_labels = filled[sub_comp]
             keep = np.zeros(new_labels.shape, dtype=bool)
 
             for lbl in np.unique(new_labels):
                 if lbl == 0:
                     continue
                 assigned_here = new_labels == lbl
-                assign_mask = np.zeros_like(seg, dtype=bool)
-                assign_mask[comp_mask] = assigned_here
+                assign_mask = np.zeros_like(sub, dtype=bool)
+                assign_mask[sub_comp] = assigned_here
                 dilated = binary_dilation(assign_mask, structure=np.ones((3, 3), dtype=bool))
-                if np.any((seg == lbl) & dilated):
+                if np.any((sub == lbl) & dilated):
                     keep[assigned_here] = True
 
-            seg[comp_mask] = np.where(keep, new_labels, 0).astype(seg.dtype)
+            sub[sub_comp] = np.where(keep, new_labels, 0).astype(seg.dtype)
             cleared += n_px
 
     return cleared
