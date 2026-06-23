@@ -465,8 +465,11 @@ def _file_info(path: Path) -> str:
         try:
             import tifffile
             with tifffile.TiffFile(path) as tif:
-                page_shape = tuple(tif.pages[0].shape)
-            return "×".join(str(d) for d in page_shape)
+                # The series carries the full N-D shape (T, Z, Y, X); a single
+                # page is only the 2D Y×X plane, which would drop z and t.
+                series = tif.series[0] if tif.series else None
+                shape = tuple(series.shape) if series is not None else tuple(tif.pages[0].shape)
+            return "×".join(str(d) for d in shape)
         except Exception:
             pass
         return "TIFF"
