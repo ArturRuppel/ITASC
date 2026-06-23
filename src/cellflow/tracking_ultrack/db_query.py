@@ -287,7 +287,9 @@ def summary_text(db_path: Path, frame: int) -> str:
 
     try:
         from ultrack.core.database import OverlapDB
-    except Exception:
+    except (ImportError, AttributeError):
+        # Capability probe only: an older ultrack without OverlapDB. A runtime
+        # error must not be silently turned into "no overlaps".
         OverlapDB = None
 
     engine = _engine(db_path)
@@ -424,7 +426,9 @@ def query_union_color_classes(
 
     try:
         from ultrack.core.database import OverlapDB
-    except Exception:
+    except (ImportError, AttributeError):
+        # Capability probe only: an older ultrack without OverlapDB. A runtime
+        # error must not be silently turned into "no overlaps".
         OverlapDB = None
 
     engine = _engine(db_path)

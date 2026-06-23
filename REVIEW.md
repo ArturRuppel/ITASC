@@ -173,7 +173,17 @@ severity, most important first.
   `except Exception` concentrated in napari widgets and
   `tracking_ultrack/db_query.py` (9 in one module). Several mask real failures
   (#7 is the worst).
+  PARTIALLY ADDRESSED: #7 (export) fixed; the two `db_query.py` optional-import
+  probes for `OverlapDB` narrowed to `(ImportError, AttributeError)` so a runtime
+  error can't masquerade as "no overlaps" (same class as #7). Left by design: the
+  remaining `db_query` swallows are legitimate "DB-not-ready → safe default"
+  query guards (narrowing them would break the graceful pre-build UI path), and
+  the napari widget guards are defensive event-handler catches — both are
+  observability/style cleanups, not correctness masks, and are deferred.
 - **Test gap.** `segmentation` is comparatively under-tested relative to the rest.
+  PARTIALLY ADDRESSED: this review pass added segmentation regression tests
+  (`test_nucleus_segmentation.py`, plus `_argmin_init`, dtype-write, unary-cache,
+  and per-label fill coverage in `test_cell_label_icm.py`).
 
 ## Fixed
 
