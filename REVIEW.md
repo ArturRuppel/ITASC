@@ -63,8 +63,10 @@ severity, most important first.
    errors propagate. Regression tests added.*
 8. **`aggregate_quantification/curation.py:162` — `apply_curation` crashes on NaN
    `frame`.** `out["frame"].astype("int64")` raises on shape tables whose
-   outer-merge produced NaN frames. Fix: use the `pd.to_numeric(..., errors=
-   "coerce")` pattern already in `remove_exclusion` (line 128). *Open.*
+   outer-merge produced NaN frames.
+   *Status: FIXED — uses the `pd.to_numeric(..., errors="coerce")` +
+   `.notna()` pattern from `remove_exclusion`; NaN frames no longer crash the
+   cast and simply don't match. Regression test added.*
 9. **`core/label_store.py:73-79` — `tracked_frame_exists` uses `.any()`.** A
    legitimately-tracked all-background frame reads as "not tracked", causing
    re-processing / gaps.
@@ -154,6 +156,7 @@ Critical/High items resolved so far, each with a regression test:
   instead of collapsing onto `label_ids[0]`.
 - #9 `core/label_store.py` — explicit written-frame sidecar; existence no longer
   inferred from `.any()` content.
+- #8 `aggregate_quantification/curation.py` — NaN-frame-tolerant frame match.
 
-Suggested next: #6 (centroid-in-bbox prefilter drops valid track matches) and #8
-(`apply_curation` crashes on NaN frame).
+Suggested next: #6 (centroid-in-bbox prefilter drops valid track matches — needs
+a correctness/perf decision, see note) and #10 (cellpose `do_3d` output shape).

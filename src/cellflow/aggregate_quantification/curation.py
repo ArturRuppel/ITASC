@@ -159,7 +159,10 @@ def apply_curation(
         if pd.notna(frame):
             if "frame" not in out.columns:
                 continue  # a frame-level entry cannot match a frameless table
-            key &= out["frame"].astype("int64") == int(frame)
+            # An outer-merged table can carry NaN frames (whole-position rows);
+            # coerce instead of astype("int64") so those rows don't crash the cast.
+            frame_numeric = pd.to_numeric(out["frame"], errors="coerce")
+            key &= frame_numeric.notna() & (frame_numeric == float(frame))
         out.loc[key, "excluded"] = True
         out.loc[key, "exclusion_reason"] = str(entry.get("exclusion_reason", ""))
 

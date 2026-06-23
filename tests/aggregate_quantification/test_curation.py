@@ -70,6 +70,31 @@ def test_apply_curation_position_level_excludes_every_frame():
     assert (excluded["exclusion_reason"] == "debris").all()
 
 
+def test_apply_curation_tolerates_nan_frame_in_table():
+    """A frame-level entry against a table whose ``frame`` column carries NaN
+    (e.g. an outer-merged whole-position shape row) must not crash on the
+    int64 cast — the NaN rows simply don't match."""
+    table = _table()
+    # Append a whole-position row with no frame, as an outer merge would produce.
+    table = pd.concat([
+        table,
+        pd.DataFrame([{
+            "experiment_id": "EXP1", "position_id": "p1",
+            "frame": float("nan"), "cell_shape.area_um2": 99.0,
+        }]),
+    ], ignore_index=True)
+    cur = pd.DataFrame({
+        "experiment_id": ["EXP1"], "position_id": ["p1"],
+        "frame": [1], "excluded": [True], "exclusion_reason": ["blurry"],
+    })
+
+    out = apply_curation(table, cur)  # must not raise
+
+    excluded = out[out["excluded"]]
+    assert sorted(excluded["frame"].tolist()) == [1.0]  # only the frame-1 row
+    assert not out.loc[out["frame"].isna(), "excluded"].any()
+
+
 def test_apply_curation_none_keeps_everything():
     out = apply_curation(_table(), None)
     assert not out["excluded"].any()
