@@ -104,8 +104,10 @@ severity, most important first.
   which returns 0.0 for a non-positive base (no `0**0`/`0**neg`).
 - ~~`tracking_ultrack/db_build.py:404-406` — `engine.dispose()` inside the per-frame
   loop; dispose once after.~~ FIXED: disposed once after the build loop.
-- `tracking_ultrack/corrections.py:233-234` — anchor chaining assumes `t+1` is the
-  next anchor; non-consecutive anchors leave the gap unbridged.
+- ~~`tracking_ultrack/corrections.py:233-234` — anchor chaining assumes `t+1` is the
+  next anchor; non-consecutive anchors leave the gap unbridged.~~ WON'T FIX (by
+  design): LinkDB edges are frame-to-frame, so non-consecutive anchors cannot be
+  link-forced; the solver bridges the gap with intermediate candidate nodes.
 - ~~`segmentation/nucleus_segmentation.py:129-130` — `np.random.normal` uses the
   global RNG; `run_index` is dead → non-reproducible segmentation.~~ FIXED: noise
   now drawn from a local `default_rng(run_index)`; reproducible per run_index.
@@ -118,11 +120,17 @@ severity, most important first.
 - ~~`aggregate_quantification/dynamics/store.py:236` — `_read_table` returns columns
   in HDF5 iteration (alphabetical) order, not declared order.~~ FIXED: authored
   order persisted in a `column_order` attr and restored on read (legacy fallback).
-- `aggregate_quantification/catalog.py:179-183` — discovery-only metadata
-  fallbacks (`id=stem`, `experiment_id=date`) can collide or block loads.
-- `napari/correction_widget.py:432-499` — activate clears all
+- ~~`aggregate_quantification/catalog.py:179-183` — discovery-only metadata
+  fallbacks (`id=stem`, `experiment_id=date`) can collide or block loads.~~
+  NON-ISSUE: `load_catalog` already calls `_check_unique_identity`, which raises a
+  clear named-duplicate error on collision (never silent pooling); `id` is a
+  required column so the stem fallback rarely fires; `experiment_id=date` is the
+  documented single-replicate default.
+- ~~`napari/correction_widget.py:432-499` — activate clears all
   `viewer.mouse_drag_callbacks` and restores on deactivate; overlapping owners
-  could leave the saved list stale (the UI gate should prevent this).
+  could leave the saved list stale~~ WON'T FIX (by design): the single-active-mode
+  UI gate prevents overlapping owners, as the review itself notes; no reachable
+  defect without a live multi-owner viewer state.
 
 ## Low
 
@@ -173,5 +181,16 @@ Critical/High items resolved so far, each with a regression test:
   bbox containment.
 - #10 `cellpose/divergence_maps.py` — actionable error on `do_3d` 3D-flow input.
 
-All Critical and High items are now resolved. Suggested next: the Medium tier and
-the cross-cutting license mismatch (the failing `test_packaging_metadata` case).
+All Critical and High items are resolved. Medium tier resolved (or judged
+by-design):
+- reduce.py `_is_numeric` strictness + ordered-filter no-op on non-numeric.
+- pipeline.py per-record build-param gate (per-position pixel size now builds).
+- seed_prior.py bulk update + finite zero-base prob; db_build.py single dispose.
+- nucleus_segmentation.py reproducible `default_rng(run_index)`.
+- clean_stranded_pixels padded-bbox crop (equivalence-tested).
+- divergence_2d singleton-axis tolerance; dynamics/store column-order preserved.
+- corrections.py anchor chaining, catalog.py id fallback, correction_widget mouse
+  callbacks — judged by-design / already-guarded (see notes above).
+
+Remaining: the Low tier and the cross-cutting items (license mismatch + its failing
+`test_packaging_metadata` case, README doc/version drift, the broad-`except` theme).
