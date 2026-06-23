@@ -26,6 +26,9 @@ from .core import (
     write_provenance,
     write_table_csv,
 )
+from cellflow.aggregate_quantification._provenance import (
+    report_progress as _report_progress,
+)
 
 #: The measured relational columns (everything but the tidy keys) — the value
 #: axis a plot/export chooses from. Kept explicit so the on-disk order is stable.
@@ -184,13 +187,3 @@ def _columns_from_rows(rows: list[dict]) -> dict[str, np.ndarray]:
         dtype = np.int64 if name in _KEY_COLUMNS else float
         columns[name] = np.asarray(values, dtype=dtype)
     return columns
-
-
-def _report_progress(
-    progress_cb: Callable[[int, int, str], None] | None,
-    done: int,
-    total: int,
-    message: str,
-) -> None:
-    if progress_cb is not None:
-        progress_cb(done, total, message)

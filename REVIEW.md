@@ -151,6 +151,13 @@ severity, most important first.
 - Code duplication: `_cellflow_version`, `_report_progress`, `_columns_from_rows`
   (aggregate) and `create_engine(...)` boilerplate (tracking, with inconsistent
   `check_same_thread`) are copy-pasted across modules.
+  PARTIALLY FIXED: the byte-identical `_cellflow_version` and `_report_progress`
+  (3 copies each) are consolidated into `aggregate_quantification/_provenance.py`.
+  Left as-is by design: `_columns_from_rows` is same-name/different-logic (contacts
+  has object/bool dtype special-casing — not true duplication); the tracking
+  `create_engine` calls differ intentionally (`check_same_thread=False` only on the
+  three worker-thread read paths), so a blanket helper would alter threading
+  semantics for low value.
 
 ## Cross-cutting / packaging / docs
 

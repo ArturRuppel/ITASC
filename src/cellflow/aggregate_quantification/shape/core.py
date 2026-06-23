@@ -32,6 +32,11 @@ import pandas as pd
 import tifffile
 from skimage.measure import regionprops
 
+from cellflow.aggregate_quantification._provenance import (
+    cellflow_version as _cellflow_version,
+    report_progress as _report_progress,
+)
+
 #: The measured descriptor columns (everything but the tidy keys) — the value
 #: axis a plot/export chooses from. Kept explicit so the on-disk order is stable.
 DESCRIPTOR_COLUMNS = (
@@ -245,20 +250,3 @@ def read_label_stack(path: Path) -> np.ndarray:
     return arr.astype(np.int64, copy=False)
 
 
-def _report_progress(
-    progress_cb: Callable[[int, int, str], None] | None,
-    done: int,
-    total: int,
-    message: str,
-) -> None:
-    if progress_cb is not None:
-        progress_cb(done, total, message)
-
-
-def _cellflow_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("cellflow")
-    except Exception:
-        return "unknown"

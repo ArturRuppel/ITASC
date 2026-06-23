@@ -32,6 +32,9 @@ from .collective import collective_tables, pooled_corr_length
 from .kinematics import ensemble_dac, instantaneous_table, track_summary_table
 from .msd import MSD_TRACK_COLUMNS, ensemble_msd, fit_msd_power_law, per_track_msd_fit
 from .trajectories import extract_trajectories
+from cellflow.aggregate_quantification._provenance import (
+    cellflow_version as _cellflow_version,
+)
 
 #: Build params and their defaults (a position with no override uses these).
 DEFAULT_PARAMS = {
@@ -246,12 +249,3 @@ def _read_table(group: h5py.Group) -> dict[str, np.ndarray]:
         names = [n.decode() if isinstance(n, bytes) else str(n) for n in order]
         return {name: group[name][:] for name in names if name in group}
     return {name: dataset[:] for name, dataset in group.items()}
-
-
-def _cellflow_version() -> str:
-    try:
-        from importlib.metadata import version
-
-        return version("cellflow")
-    except Exception:
-        return "unknown"
