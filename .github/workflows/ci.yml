@@ -66,7 +66,7 @@ jobs:
           python -m venv /tmp/cf-verify
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
-          pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic
+          pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
           pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl dist/cellflow_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
