@@ -9,6 +9,7 @@ from cellflow.aggregate_quantification.plotting import PlotSpec, reduce_to_units
 from cellflow.aggregate_quantification.reduce import (
     Collapse,
     Filter,
+    _is_numeric,
     run_pipeline,
     unit_collapse_chain,
 )
@@ -54,6 +55,35 @@ def test_filter_ordered_numeric():
     df = _pooled()
     out = run_pipeline(df, [Filter("frame", ">=", 1)])
     assert set(out["frame"]) == {1}
+
+
+def test_is_numeric_requires_all_values_numeric():
+    """A mostly-categorical column with a single parseable value must not be
+    treated as numeric (and silently averaged)."""
+    assert _is_numeric(pd.Series([1.0, 2.0, 3.0]))
+    assert _is_numeric(pd.Series([1.0, np.nan, 3.0]))  # NaN ignored
+    assert not _is_numeric(pd.Series(["a", "b", "5"]))  # one parseable → still categorical
+    assert not _is_numeric(pd.Series(["epithelial", "mesenchymal"]))
+
+
+def test_collapse_does_not_average_mostly_categorical_column():
+    """A class-like column where one label happens to be '5' must ride along as
+    an attribute, not be coerced and averaged into a value column."""
+    df = _pooled().copy()
+    # Replace class_label with a column that has one numeric-looking value.
+    df["grade"] = ["5" if i == 0 else "high" for i in range(len(df))]
+    out = run_pipeline(df, [Collapse(by=("condition",), stat="mean")])
+    # 'grade' is not constant within condition → dropped as a varying attribute,
+    # and must NOT appear as an averaged numeric value column.
+    assert "grade" not in out.columns or out["grade"].dtype == object
+
+
+def test_filter_ordered_on_non_numeric_column_is_noop():
+    """An ordered comparison against a fully non-numeric column is a config
+    error; keep all rows (no-op) rather than silently dropping every row."""
+    df = _pooled()
+    out = run_pipeline(df, [Filter("class_label", ">", 0)])
+    pd.testing.assert_frame_equal(out.reset_index(drop=True), df.reset_index(drop=True))
 
 
 def test_filter_not_equal_and_missing_column_noop():

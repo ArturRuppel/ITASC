@@ -87,11 +87,12 @@ severity, most important first.
 
 ## Medium
 
-- `aggregate_quantification/reduce.py:271-274` — `_is_numeric` uses `.any()`, so a
-  categorical column with one parseable number gets averaged. Require all non-null
-  values numeric.
-- `aggregate_quantification/reduce.py:129,142` — a `<`/`>` filter on an
-  existing-but-non-numeric column drops all rows silently instead of no-op.
+- ~~`aggregate_quantification/reduce.py:271-274` — `_is_numeric` uses `.any()`, so a
+  categorical column with one parseable number gets averaged.~~ FIXED: requires
+  every non-null value to parse as numeric.
+- ~~`aggregate_quantification/reduce.py:129,142` — a `<`/`>` filter on an
+  existing-but-non-numeric column drops all rows silently instead of no-op.~~
+  FIXED: a fully non-numeric column under an ordered op is a no-op (keeps rows).
 - `aggregate_quantification/pipeline.py:129` / `quantifier.py:124-128` —
   `missing_build_params` only consults the `params` dict, so pixel size set
   per-record (not under `[params]`) silently skips shape/dynamics builds.

@@ -127,6 +127,10 @@ class Filter:
         # Ordered comparisons are numeric on both sides; non-numeric cells become
         # NaN and so never satisfy a ``<``/``>`` test (dropped).
         left = pd.to_numeric(column, errors="coerce")
+        if left.notna().sum() == 0:
+            # A fully non-numeric column under an ordered op is a config error;
+            # keep every row (no-op) rather than silently emptying the table.
+            return df
         try:
             right = float(self.value)
         except (TypeError, ValueError):
@@ -269,9 +273,18 @@ def unit_collapse_chain(
 
 
 def _is_numeric(series: pd.Series) -> bool:
-    return pd.api.types.is_numeric_dtype(series) or pd.to_numeric(
-        series, errors="coerce"
-    ).notna().any()
+    """True only when the column is genuinely numeric.
+
+    Requires *every* non-null value to parse as a number, so a categorical
+    column that merely contains a stray parseable value (e.g. a grade ``"5"``
+    among labels) is not mistaken for a value column and silently averaged.
+    """
+    if pd.api.types.is_numeric_dtype(series):
+        return True
+    non_null = series.dropna()
+    if non_null.empty:
+        return False
+    return bool(pd.to_numeric(non_null, errors="coerce").notna().all())
 
 
 def _constant_attributes(
