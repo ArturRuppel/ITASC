@@ -120,15 +120,16 @@ def build_quantities(
 
     jobs: list[tuple[Quantifier, dict, dict | None]] = []
     for quantifier in quants:
-        # A metric missing a required shared param (e.g. density's FOV) is greyed
-        # out in the studio; here we skip it whole rather than fail its builds.
-        if quantifier.missing_build_params(params):
-            continue
         # Only quantifiers that opt in get the shared bar's knobs; the rest keep
         # their own ``params`` schema clean (mirrors the studio's build planning).
         q_params = dict(params) if (params and quantifier.wants_build_params) else None
         for record, fields in zip(records, available):
             if not set(quantifier.requires) <= fields:
+                continue
+            # A required build param (e.g. pixel size) may be supplied per-record
+            # rather than in the shared bar, so gate per-position: skip only this
+            # record when neither its own value nor the shared params satisfies it.
+            if quantifier.missing_build_params(_record_build_params(quantifier, record, params)):
                 continue
             jobs.append((quantifier, record, q_params))
             produced = _produced_field_for(quantifier, record)
@@ -178,6 +179,24 @@ def _available_fields(inputs: PositionInputs) -> set[str]:
     """The populated (non-``None``) ``PositionInputs`` field names — the satisfied
     prerequisites a quantifier's ``requires`` is checked against."""
     return {f.name for f in _dataclass_fields(inputs) if getattr(inputs, f.name) is not None}
+
+
+def _record_build_params(
+    quantifier: Quantifier, record: dict, params: Mapping[str, object] | None
+) -> dict:
+    """Shared *params* overlaid with the record's own required-build-param values.
+
+    A param like pixel size can be set per-position on the record (the value the
+    build actually reads via ``PositionInputs``) instead of in the shared bar, so
+    the build-param gate must see both. The record's own value wins where present,
+    mirroring ``run()``'s per-record stamping.
+    """
+    merged = dict(params or {})
+    for key in quantifier.required_build_params:
+        value = record.get(key)
+        if value is not None:
+            merged[key] = value
+    return merged
 
 
 def _produced_field_for(quantifier: Quantifier, record: dict) -> str | None:

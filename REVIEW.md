@@ -93,9 +93,11 @@ severity, most important first.
 - ~~`aggregate_quantification/reduce.py:129,142` — a `<`/`>` filter on an
   existing-but-non-numeric column drops all rows silently instead of no-op.~~
   FIXED: a fully non-numeric column under an ordered op is a no-op (keeps rows).
-- `aggregate_quantification/pipeline.py:129` / `quantifier.py:124-128` —
+- ~~`aggregate_quantification/pipeline.py:129` / `quantifier.py:124-128` —
   `missing_build_params` only consults the `params` dict, so pixel size set
-  per-record (not under `[params]`) silently skips shape/dynamics builds.
+  per-record (not under `[params]`) silently skips shape/dynamics builds.~~
+  FIXED: the build-param gate is now per-record, checking the record's own value
+  overlaid on the shared params; only positions satisfying neither are skipped.
 - ~~`tracking_ultrack/seed_prior.py:144-148` — per-node `UPDATE` (O(n) statements);
   use `bulk_update_mappings`. Also `normalized_base ** quality_exponent` can
   NaN/inf at 0.~~ FIXED: single `bulk_update_mappings`; prob via `_seed_node_prob`

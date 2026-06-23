@@ -51,6 +51,14 @@ class _ParamHungryQuantifier(_RecordingQuantifier):
     wants_build_params = True
 
 
+class _PerRecordParamQuantifier(_RecordingQuantifier):
+    """Requires a build param it reads per-record (like cell_dynamics' pixel
+    size), not from the shared params bar."""
+
+    display_name = "Per-record param (test)"
+    required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
+
+
 class _ProducerQuantifier(_RecordingQuantifier):
     """Writes the artifact a derived quantifier consumes (mirrors contacts)."""
 
@@ -151,6 +159,33 @@ def test_build_quantities_threads_params_only_into_opt_in_quantifiers(tmp_path):
 
     assert plain.calls[0][1] is None  # opted out → no shared params
     assert hungry.calls[0][1] == {"fov_area_mm2": 2.0}  # opted in
+
+
+def test_build_quantities_builds_when_required_param_is_per_record(tmp_path):
+    """A required build param supplied per-record (here pixel_size_um on the
+    record) must let that position build even with no shared params bar — the
+    gate is per-position, not shared-params-only."""
+    q = _PerRecordParamQuantifier()
+    rec = _record(tmp_path, "a")  # carries pixel_size_um=0.25
+    assert rec["pixel_size_um"] == 0.25
+
+    pipeline.build_quantities([rec], quantifiers=[q], params=None)
+
+    assert len(q.calls) == 1  # built, not skipped
+
+
+def test_build_quantities_skips_only_records_missing_required_param(tmp_path):
+    """Per-position: a record with the param builds; one without is skipped."""
+    q = _PerRecordParamQuantifier()
+    has = _record(tmp_path, "has")            # pixel_size_um=0.25
+    missing = _record(tmp_path, "missing")
+    missing["pixel_size_um"] = None           # no per-record value, no shared bar
+
+    pipeline.build_quantities([has, missing], quantifiers=[q], params=None)
+
+    # output path is position_dir / OUTPUT_SUBDIR / name → position id is two up.
+    built = {p.parent.parent.name for p, _ in q.calls}
+    assert built == {"has"}
 
 
 def test_build_quantities_reports_progress(tmp_path):
