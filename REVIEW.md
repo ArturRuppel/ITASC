@@ -161,9 +161,12 @@ severity, most important first.
 
 ## Cross-cutting / packaging / docs
 
-- **License mismatch (High, pre-release).** Umbrella `cellflow` is AGPL-3.0
+- ~~**License mismatch (High, pre-release).** Umbrella `cellflow` is AGPL-3.0
   (LICENSE + pyproject + README); all five extracted sub-packages declare
-  GPL-3.0. Resolve deliberately before any public/JOSS release.
+  GPL-3.0.~~ FIXED: AGPL-3.0 is authoritative everywhere (sub-package pyprojects,
+  CITATION.cff, packaging test). Each sub-package also now carries a `LICENSE`
+  copy of the AGPL text, so a standalone wheel/sdist ships the license in
+  `dist-info/licenses/` (the umbrella already did) — verified by a test build.
 - **Doc drift.** README documents `4_contact_analysis/`, but the code
   (`napari/main_widget.py:472`) and `napari/_paths.py` use
   `aggregate_quantification/`.
