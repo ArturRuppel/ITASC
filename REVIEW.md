@@ -134,8 +134,9 @@ severity, most important first.
 
 ## Low
 
-- `napari/main_widget.py:431-456` — config save/load failures only `print()` to
-  the console, no GUI feedback.
+- ~~`napari/main_widget.py:431-456` — config save/load failures only `print()` to
+  the console, no GUI feedback.~~ FIXED: save/load now report through napari
+  notifications (`show_info`/`show_warning`/`show_error`).
 - `tracking_ultrack/validation_state.py:84-100` — `read_validated_tracks`
   re-parses both JSON files on every call (hot in overlay loops).
 - ~~`segmentation/nucleus_segmentation.py:91` — `if not coords` is a dead guard on a

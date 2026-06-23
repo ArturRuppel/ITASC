@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import napari
+from napari.utils.notifications import show_error, show_info, show_warning
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QFileDialog,
@@ -434,9 +435,9 @@ class CellFlowMainWidget(QWidget):
         try:
             with open(path, "w") as f:
                 json.dump(state, f, indent=4)
-            print(f"Config saved to {path}")
+            show_info(f"Config saved to {path}")
         except Exception as e:
-            print(f"Error saving config: {e}")
+            show_error(f"Error saving config: {e}")
 
     def _load_config(self, path: str) -> None:
         """Load state from a JSON file."""
@@ -445,15 +446,15 @@ class CellFlowMainWidget(QWidget):
         # ``_change_context`` (which exits the owner first); refuse any path
         # that reaches here while a viewer owner is still active.
         if not self.gate.can_change_context():
-            print("Refusing to load config while a viewer mode is active.")
+            show_warning("Refusing to load config while a viewer mode is active.")
             return
         try:
             with open(path) as f:
                 state = json.load(f)
             self.set_state(state)
-            print(f"Config loaded from {path}")
+            show_info(f"Config loaded from {path}")
         except Exception as e:
-            print(f"Error loading config: {e}")
+            show_error(f"Error loading config: {e}")
 
     def _refresh_all(self) -> None:
         """Refresh file status in all child widgets."""

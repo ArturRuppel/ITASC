@@ -130,6 +130,37 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
     w.deleteLater()
 
 
+def test_config_load_failure_surfaces_via_notification(monkeypatch, tmp_path):
+    """A corrupt config must report through a GUI notification, not a bare
+    print to the console the user never sees."""
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    errors: list[str] = []
+    monkeypatch.setattr(main_mod, "show_error", lambda m: errors.append(m))
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not valid json")
+    w._load_config(str(bad))
+
+    assert errors and "Error loading config" in errors[0]
+    w.deleteLater()
+
+
+def test_config_save_failure_surfaces_via_notification(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    errors: list[str] = []
+    monkeypatch.setattr(main_mod, "show_error", lambda m: errors.append(m))
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    # A directory path can't be opened for writing → save fails.
+    w._save_config(str(tmp_path))
+
+    assert errors and "Error saving config" in errors[0]
+    w.deleteLater()
+
+
 def test_folder_change_during_correction_exits_owner_when_confirmed(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
