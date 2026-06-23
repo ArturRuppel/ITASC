@@ -66,7 +66,7 @@ from cellflow.napari._correction_validation import (
 from cellflow.napari._paths import NucleusWorkspace
 from cellflow.core.label_store import (
     read_full_tracked_stack,
-    write_tracked_frame,
+    write_full_tracked_stack,
 )
 from cellflow.tracking_ultrack.validation_state import (
     add_anchor,
@@ -495,8 +495,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         if layer.data.ndim != 3:
             self._correction_status("Tracked layer is not a 3D stack."); return
         n = layer.data.shape[0]
-        for t in range(n):
-            write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        write_full_tracked_stack(tracked_path, np.asarray(layer.data))
         self._correction_dirty = False
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
 
@@ -1251,8 +1250,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             layer.refresh()
             self._deselect_if_selection_gone()
             self.events.stack_relabeled.emit()
-        for t in range(int(layer.data.shape[0])):
-            write_tracked_frame(tracked_path, t, np.asarray(layer.data[t]))
+        write_full_tracked_stack(tracked_path, np.asarray(layer.data))
         self._correction_status(
             f"Committed {result.n_cells} cell(s); removed {result.changed_pixels} px in "
             f"{result.changed_frames} frame(s); saved to {tracked_path.name}."

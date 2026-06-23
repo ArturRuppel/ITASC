@@ -87,27 +87,30 @@ def _export_tracked_labels_raw(
 
     # Prefer public track export: tracks_to_zarr rasterizes each segment with
     # its track_id, while label-export helpers may expose per-frame segment IDs.
+    # The import is the capability probe — only a missing API (ImportError /
+    # AttributeError) should fall through to the next strategy. A runtime failure
+    # (corrupt DB, OOM) must propagate rather than silently degrade the output.
     try:
         from ultrack.core.export import to_tracks_layer, tracks_to_zarr  # type: ignore[import]
-
+    except (ImportError, AttributeError):
+        pass
+    else:
         tracks_df, _graph = to_tracks_layer(ultrack_cfg)
         labels = _materialize_labels(
             tracks_to_zarr(ultrack_cfg, tracks_df, overwrite=True)
         )
         imwrite_grayscale(output_path, labels, compression="zlib")
         return labels
-    except Exception:
-        pass
 
     # Try the modern to_labels API next (returns dask or numpy)
     try:
         from ultrack.core.export.labels import to_labels  # type: ignore[import]
-
+    except (ImportError, AttributeError):
+        pass
+    else:
         labels = _materialize_labels(to_labels(ultrack_cfg))
         imwrite_grayscale(output_path, labels, compression="zlib")
         return labels
-    except Exception:
-        pass
 
     # Fallback: CTC export → stack TIFFs
     tmpdir = Path(tempfile.mkdtemp(prefix="ultrack_ctc_"))

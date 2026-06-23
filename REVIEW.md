@@ -37,7 +37,10 @@ severity, most important first.
    added.*
 4. **`core/label_store.py:36-51` — O(T²) full-stack rewrite per frame.**
    `write_tracked_frame` decompresses + re-encodes the entire zlib TIFF on every
-   single-frame write → severe stalls in long correction sessions. *Open.*
+   single-frame write → severe stalls in long correction sessions.
+   *Status: FIXED — added `write_full_tracked_stack` (one O(T) encode); the two
+   napari save paths now batch-write the whole stack instead of looping the
+   per-frame writer. Regression tests added.*
 
 ## High
 
@@ -52,9 +55,10 @@ severity, most important first.
    *Open.*
 7. **`tracking_ultrack/export.py:99-110` — three `except Exception: pass` mask
    export failures.** A real bug (corrupt DB, OOM) is hidden and a degraded CTC
-   fallback may emit wrong/empty labels. Fix: catch only `ImportError` /
-   `AttributeError` for capability detection; let runtime errors propagate.
-   *Open.*
+   fallback may emit wrong/empty labels.
+   *Status: FIXED — capability probe (import) is separated from execution; only
+   `ImportError`/`AttributeError` falls through to the next strategy, runtime
+   errors propagate. Regression tests added.*
 8. **`aggregate_quantification/curation.py:162` — `apply_curation` crashes on NaN
    `frame`.** `out["frame"].astype("int64")` raises on shape tables whose
    outer-merge produced NaN frames. Fix: use the `pd.to_numeric(..., errors=
@@ -131,11 +135,16 @@ severity, most important first.
   (#7 is the worst).
 - **Test gap.** `segmentation` is comparatively under-tested relative to the rest.
 
-## Fixed in this branch
+## Fixed
 
-Items #1, #2, #3 above, each with a regression test:
-- `segmentation/cell_label_icm.py::commit_labels` — dtype-aware label write.
-- `correction/labels.py::_free_label` — overflow guard.
-- `cellpose/divergence_maps.py::build_divergence_maps` — empty-stack guard.
+Critical/High items resolved so far, each with a regression test:
+- #1 `segmentation/cell_label_icm.py::commit_labels` — dtype-aware label write.
+- #2 `correction/labels.py::_free_label` — overflow guard.
+- #3 `cellpose/divergence_maps.py::build_divergence_maps` — empty-stack guard.
+- #4 `core/label_store.py::write_full_tracked_stack` — O(T) batched save replaces
+  the per-frame loop in the napari correction widget.
+- #7 `tracking_ultrack/export.py` — capability detection narrowed; runtime export
+  failures propagate instead of silently degrading.
 
-Suggested next: #4 (label_store O(T²) write) and #7 (export error masking).
+Suggested next: #5 (finite `_INF` mislabels foreground) and #9 (`tracked_frame_exists`
+`.any()` misreads all-background tracked frames).

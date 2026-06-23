@@ -33,8 +33,30 @@ def _load_stack(path: Path) -> np.ndarray:
     return stack
 
 
+def write_full_tracked_stack(path: str | Path, stack: np.ndarray) -> None:
+    """Write the entire ``(T, Y, X)`` tracked stack in one encode.
+
+    A multipage zlib TIFF cannot be updated in place, so each
+    :func:`write_tracked_frame` call decodes and re-encodes the whole file.
+    Looping that over every frame to save a corrected stack is O(T²); call
+    this once instead (O(T)). A legacy singleton-Z axis ``(T, 1, Y, X)`` is
+    squeezed to match the documented schema.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    stack = np.asarray(stack, dtype=_LABEL_DTYPE)
+    if stack.ndim == 4 and stack.shape[1] == 1:
+        stack = stack[:, 0]
+    imwrite_grayscale(path, stack, compression="zlib")
+
+
 def write_tracked_frame(path: str | Path, t: int, labels: np.ndarray) -> None:
-    """Write a single tracked frame into tracked_labels.tif."""
+    """Write a single tracked frame into tracked_labels.tif.
+
+    Note: this re-encodes the entire multipage TIFF on every call. To save many
+    frames at once use :func:`write_full_tracked_stack`, which is O(T) rather
+    than O(T²) over a full-stack save.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     labels = np.asarray(labels, dtype=_LABEL_DTYPE)
