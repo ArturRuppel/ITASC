@@ -191,6 +191,9 @@ def _write_h5(
             group = h5.create_group(f"{name}/table")
             for column, values in table.items():
                 group.create_dataset(column, data=np.asarray(values))
+            # h5py iterates datasets alphabetically; persist the authored column
+            # order so _read_table can restore it rather than reshuffling.
+            group.attrs["column_order"] = list(table.keys())
         msd_table = h5["msd/table"]
         msd_table.attrs["D_um2_per_s"] = float(msd_fit.D_um2_per_s)
         msd_table.attrs["alpha"] = float(msd_fit.alpha)
@@ -233,6 +236,15 @@ def _write_provenance_attrs(group: h5py.Group, provenance: dict) -> None:
 
 
 def _read_table(group: h5py.Group) -> dict[str, np.ndarray]:
+    """Read a table group, preserving the authored column order.
+
+    h5py iterates datasets alphabetically, so fall back to that only for legacy
+    files written without the ``column_order`` attribute.
+    """
+    order = group.attrs.get("column_order")
+    if order is not None:
+        names = [n.decode() if isinstance(n, bytes) else str(n) for n in order]
+        return {name: group[name][:] for name in names if name in group}
     return {name: dataset[:] for name, dataset in group.items()}
 
 
