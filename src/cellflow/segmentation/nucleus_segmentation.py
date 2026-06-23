@@ -87,7 +87,9 @@ def _fill_and_close_labels(labels: np.ndarray) -> np.ndarray:
         if label_id == 0:
             continue
         coords = np.nonzero(labels == label_id)
-        if not coords or coords[0].size == 0:
+        # np.nonzero always returns a tuple of ndim arrays (truthy), so the only
+        # real emptiness signal is a zero-length coordinate array.
+        if coords[0].size == 0:
             continue
         slices = tuple(slice(int(axis.min()), int(axis.max()) + 1) for axis in coords)
         filled = binary_fill_holes(labels[slices] == label_id)

@@ -138,10 +138,13 @@ severity, most important first.
   the console, no GUI feedback.
 - `tracking_ultrack/validation_state.py:84-100` — `read_validated_tracks`
   re-parses both JSON files on every call (hot in overlay loops).
-- `segmentation/nucleus_segmentation.py:91` — `if not coords` is a dead guard on a
-  tuple of arrays; only `coords[0].size == 0` actually fires.
-- `segmentation/cell_label_icm.py:463-489` — unary cache read swallows errors
-  silently; a corrupt cache is indistinguishable from a cold one.
+- ~~`segmentation/nucleus_segmentation.py:91` — `if not coords` is a dead guard on a
+  tuple of arrays; only `coords[0].size == 0` actually fires.~~ FIXED: dead clause
+  removed; emptiness checked via the coordinate array length.
+- ~~`segmentation/cell_label_icm.py:463-489` — unary cache read swallows errors
+  silently; a corrupt cache is indistinguishable from a cold one.~~ FIXED: an
+  unreadable (present) cache now logs a warning before recomputing; a true cold
+  miss stays silent.
 - Code duplication: `_cellflow_version`, `_report_progress`, `_columns_from_rows`
   (aggregate) and `create_engine(...)` boilerplate (tracking, with inconsistent
   `check_same_thread`) are copy-pasted across modules.

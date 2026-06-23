@@ -18,6 +18,7 @@ answer.
 from __future__ import annotations
 
 import hashlib
+import logging
 import multiprocessing as mp
 import os
 from dataclasses import dataclass, field
@@ -30,6 +31,8 @@ import numpy as np
 from skimage.graph import MCP_Geometric
 
 from cellflow.core.tiff import imwrite_grayscale
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "CellLabelICMParams",
@@ -464,6 +467,11 @@ def _read_unary_cache(
                 )
         return unary
     except Exception:
+        # The file exists but could not be read — corrupt/partial cache, not a
+        # cold miss. Warn (don't raise) so it's visibly distinct, then recompute.
+        logger.warning(
+            "Discarding unreadable unary cache %s; recomputing.", path, exc_info=True
+        )
         return None
 
 

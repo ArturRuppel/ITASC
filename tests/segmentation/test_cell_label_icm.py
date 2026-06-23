@@ -9,10 +9,30 @@ from cellflow.segmentation.cell_label_icm import (
     CellICMState,
     CellLabelICMParams,
     _argmin_init_from_dict,
+    _read_unary_cache,
     assemble_cost_field,
     commit_labels,
     initialize_icm,
 )
+
+
+def test_read_unary_cache_missing_is_silent_cold_miss(tmp_path, caplog):
+    """A genuinely absent cache returns None without logging a warning."""
+    with caplog.at_level("WARNING"):
+        assert _read_unary_cache(tmp_path, "nope") is None
+    assert not caplog.records
+
+
+def test_read_unary_cache_corrupt_warns_and_recomputes(tmp_path, caplog):
+    """A present-but-unreadable cache must warn (distinct from a cold miss) and
+    still degrade gracefully to None."""
+    from cellflow.segmentation.cell_label_icm import _unary_cache_path
+
+    path = _unary_cache_path(tmp_path, "bad")
+    path.write_bytes(b"not an hdf5 file")
+    with caplog.at_level("WARNING"):
+        assert _read_unary_cache(tmp_path, "bad") is None
+    assert any("unreadable unary cache" in r.message for r in caplog.records)
 
 
 # ── Synthetic fixture ──────────────────────────────────────────────────────
