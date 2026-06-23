@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "Independent CellFlow piece: Ultrack-based nucleus tracking + interactive correction (napari)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPL-3.0"}
+license = {text = "AGPL-3.0"}
 authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
 keywords = ["cell-tracking", "microscopy", "napari", "ultrack"]
 dependencies = [

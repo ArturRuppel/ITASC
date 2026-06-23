@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "CellFlow Cellpose stage: local Cellpose-SAM runner + divergence-based foreground/contour maps (napari)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "GPL-3.0"}
+license = {text = "AGPL-3.0"}
 authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
 keywords = ["cell-tracking", "microscopy", "napari", "cellpose", "segmentation"]
 dependencies = [

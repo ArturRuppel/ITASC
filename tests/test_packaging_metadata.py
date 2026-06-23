@@ -74,7 +74,7 @@ def test_publication_metadata_includes_repository_readme_and_classifiers() -> No
     assert "Intended Audience :: Science/Research" in project["classifiers"]
     assert "Framework :: napari" in project["classifiers"]
     assert (
-        "License :: OSI Approved :: GNU General Public License v3 (GPLv3)"
+        "License :: OSI Approved :: GNU Affero General Public License v3"
         in project["classifiers"]
     )
 

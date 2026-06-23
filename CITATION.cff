@@ -9,7 +9,7 @@ authors:
     email: artur@ruppel.pro
 repository-code: https://github.com/ArturRuppel/CellFlow
 url: https://github.com/ArturRuppel/CellFlow
-license: GPL-3.0-only
+license: AGPL-3.0-only
 keywords:
   - cell-tracking
   - microscopy
