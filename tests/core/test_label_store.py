@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import numpy as np
+import tifffile
 
 from cellflow.core import label_store
 from cellflow.core.label_store import (
     read_full_tracked_stack,
+    tracked_frame_exists,
     write_full_tracked_stack,
     write_tracked_frame,
 )
@@ -58,6 +60,44 @@ def test_full_write_encodes_once(tmp_path, monkeypatch):
     stack = _make_stack()
     write_full_tracked_stack(tmp_path / "tracked_labels.tif", stack)
     assert calls == [stack.shape[0]]  # one encode of the full T-frame stack
+
+
+def test_tracked_frame_exists_true_for_all_background_written_frame(tmp_path):
+    """A legitimately-tracked frame that happens to be all background must read
+    as existing — existence is about being written, not about having labels."""
+    path = tmp_path / "tracked_labels.tif"
+    stack = np.zeros((3, 5, 5), dtype=np.uint32)
+    stack[0, 1, 1] = 4
+    # frame 1 is intentionally all background; frame 2 has a label
+    stack[2, 2, 2] = 8
+    write_full_tracked_stack(path, stack)
+
+    assert tracked_frame_exists(path, 0) is True
+    assert tracked_frame_exists(path, 1) is True  # all-background but written
+    assert tracked_frame_exists(path, 2) is True
+    assert tracked_frame_exists(path, 3) is False  # never written
+
+
+def test_tracked_frame_exists_via_per_frame_write(tmp_path):
+    path = tmp_path / "tracked_labels.tif"
+    write_tracked_frame(path, 0, np.zeros((5, 5), dtype=np.uint32))  # all bg
+    assert tracked_frame_exists(path, 0) is True
+    assert tracked_frame_exists(path, 1) is False
+
+
+def test_tracked_frame_exists_missing_file(tmp_path):
+    assert tracked_frame_exists(tmp_path / "nope.tif", 0) is False
+
+
+def test_tracked_frame_exists_legacy_no_sidecar(tmp_path):
+    """Files written before the sidecar existed fall back to the content
+    heuristic so old projects keep working."""
+    path = tmp_path / "tracked_labels.tif"
+    stack = np.zeros((2, 5, 5), dtype=np.uint32)
+    stack[0, 1, 1] = 4
+    tifffile.imwrite(str(path), stack)  # raw write, no sidecar
+    assert tracked_frame_exists(path, 0) is True   # has a label
+    assert tracked_frame_exists(path, 1) is False  # all background, legacy
 
 
 def test_full_write_squeezes_singleton_z(tmp_path):

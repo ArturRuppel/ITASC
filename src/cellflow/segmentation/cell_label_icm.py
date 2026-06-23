@@ -424,7 +424,10 @@ def _argmin_init_from_dict(
             better = u < best_cost[t]
             np.copyto(best_cost[t], u, where=better)
             best_ki[t][better] = ki
-    return np.where(fg_mask, label_ids[best_ki], 0).astype(np.uint32)
+    # A foreground pixel no seed reached keeps best_cost == _INF (and best_ki 0);
+    # it must stay background rather than collapse onto label_ids[0].
+    reached = best_cost < _INF
+    return np.where(fg_mask & reached, label_ids[best_ki], 0).astype(np.uint32)
 
 
 # ── Internal: HDF5 unary cache ───────────────────────────────────────────────

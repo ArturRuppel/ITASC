@@ -46,8 +46,10 @@ severity, most important first.
 
 5. **`segmentation/cell_label_icm.py:45,219` — `_INF = 1e9` is finite.**
    Foreground pixels no seed reaches keep `best_ki=0` and get assigned
-   `label_ids[0]` instead of background. Fix: mask `best_cost >= _INF` to 0 in the
-   final `np.where`. *Open.*
+   `label_ids[0]` instead of background.
+   *Status: FIXED — `_argmin_init_from_dict` masks unreached pixels
+   (`best_cost >= _INF`) to background in the final `np.where`. Regression test
+   added.*
 6. **`tracking_ultrack/_node_geometry.py:108-118` — centroid-in-bbox prefilter
    drops valid matches.** A node that genuinely overlaps the source mask but whose
    centroid falls outside its bbox (elongated/crescent/merged masks) is never
@@ -65,7 +67,10 @@ severity, most important first.
    "coerce")` pattern already in `remove_exclusion` (line 128). *Open.*
 9. **`core/label_store.py:73-79` — `tracked_frame_exists` uses `.any()`.** A
    legitimately-tracked all-background frame reads as "not tracked", causing
-   re-processing / gaps. Fix: record written frames explicitly. *Open.*
+   re-processing / gaps.
+   *Status: FIXED — written timepoints are recorded in a JSON sidecar; existence
+   is decoupled from content. Legacy files without a sidecar fall back to the
+   content heuristic. Regression tests added.*
 10. **cellpose `do_3d=True` output incompatible with divergence builder.**
     `run_nucleus_stack(do_3d=True)` yields dp `(T,3,Z,Y,X)`, but
     `build_divergence_maps` requires `(T,Z,2,Y,X)` and rejects it — a supported
@@ -145,6 +150,10 @@ Critical/High items resolved so far, each with a regression test:
   the per-frame loop in the napari correction widget.
 - #7 `tracking_ultrack/export.py` — capability detection narrowed; runtime export
   failures propagate instead of silently degrading.
+- #5 `segmentation/cell_label_icm.py` — unreached foreground pixels stay background
+  instead of collapsing onto `label_ids[0]`.
+- #9 `core/label_store.py` — explicit written-frame sidecar; existence no longer
+  inferred from `.any()` content.
 
-Suggested next: #5 (finite `_INF` mislabels foreground) and #9 (`tracked_frame_exists`
-`.any()` misreads all-background tracked frames).
+Suggested next: #6 (centroid-in-bbox prefilter drops valid track matches) and #8
+(`apply_curation` crashes on NaN frame).

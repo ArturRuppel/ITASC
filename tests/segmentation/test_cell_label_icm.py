@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 
 from cellflow.segmentation.cell_label_icm import (
+    _INF,
     CellICMState,
     CellLabelICMParams,
+    _argmin_init_from_dict,
     assemble_cost_field,
     commit_labels,
     initialize_icm,
@@ -84,6 +86,20 @@ def test_assemble_cost_field_matches_formula():
 
 
 # ── commit_labels ─────────────────────────────────────────────────────────────
+
+def test_argmin_init_leaves_unreached_foreground_as_background():
+    """A foreground pixel that no seed's geodesic front reaches must stay
+    background (0), not collapse to label_ids[0] via the best_ki=0 default."""
+    label_ids = np.array([10, 20], dtype=np.uint32)
+    fg_mask = np.ones((1, 1, 3), dtype=bool)
+    unary = {
+        (0, 10): np.array([[[0.5, _INF, _INF]]], dtype=np.float32)[0],
+        (0, 20): np.array([[[_INF, 0.3, _INF]]], dtype=np.float32)[0],
+    }
+    # pixel 2 is reached by neither label → must be 0, not 10 (label_ids[0]).
+    out = _argmin_init_from_dict(unary, fg_mask, label_ids)
+    np.testing.assert_array_equal(out[0, 0], np.array([10, 20, 0], dtype=np.uint32))
+
 
 def test_commit_labels_writes_tiff(tmp_path):
     import tifffile

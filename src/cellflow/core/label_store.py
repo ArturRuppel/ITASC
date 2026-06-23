@@ -2,10 +2,15 @@
 
 Schema: single multipage TIFF — shape (T, Y, X), dtype uint32.
 Frames that have not yet been tracked are stored as all-zeros.
-A frame is considered "tracked" (exists) if it contains at least one non-zero label.
+
+Frame existence is recorded explicitly in a JSON sidecar (``<name>.frames.json``)
+listing the written timepoint indices, so a legitimately-tracked but
+all-background frame still reads as "tracked". Files written before the sidecar
+existed fall back to the legacy content heuristic (a non-zero label present).
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +19,24 @@ import tifffile
 from cellflow.core.tiff import imwrite_grayscale
 
 _LABEL_DTYPE = np.uint32
+
+
+def _frames_sidecar(path: Path) -> Path:
+    """Path of the JSON sidecar recording which timepoints were written."""
+    return path.with_name(path.name + ".frames.json")
+
+
+def _record_written_frames(path: Path, indices) -> None:
+    """Add ``indices`` to the set of written timepoints in the sidecar."""
+    sidecar = _frames_sidecar(path)
+    written: set[int] = set()
+    if sidecar.exists():
+        try:
+            written = {int(i) for i in json.loads(sidecar.read_text())}
+        except (ValueError, OSError):
+            written = set()
+    written.update(int(i) for i in indices)
+    sidecar.write_text(json.dumps(sorted(written)))
 
 
 def _load_stack(path: Path) -> np.ndarray:
@@ -48,6 +71,7 @@ def write_full_tracked_stack(path: str | Path, stack: np.ndarray) -> None:
     if stack.ndim == 4 and stack.shape[1] == 1:
         stack = stack[:, 0]
     imwrite_grayscale(path, stack, compression="zlib")
+    _frames_sidecar(path).write_text(json.dumps(list(range(int(stack.shape[0])))))
 
 
 def write_tracked_frame(path: str | Path, t: int, labels: np.ndarray) -> None:
@@ -71,6 +95,7 @@ def write_tracked_frame(path: str | Path, t: int, labels: np.ndarray) -> None:
         stack = np.concatenate([stack, extra], axis=0)
     stack[t] = labels
     imwrite_grayscale(path, stack, compression="zlib")
+    _record_written_frames(path, [t])
 
 
 def read_tracked_frame(path: str | Path, t: int) -> np.ndarray:
@@ -93,8 +118,20 @@ def tracked_n_frames(path: str | Path) -> int:
 
 
 def tracked_frame_exists(path: str | Path, t: int) -> bool:
-    """Return True if timepoint t has been written (contains non-zero labels)."""
+    """Return True if timepoint ``t`` has been written.
+
+    Existence means the frame was written, independent of whether it carries
+    any labels — an all-background frame can be a valid tracking result. Resolved
+    from the sidecar; legacy files without one fall back to the content heuristic
+    (a non-zero label present).
+    """
     path = Path(path)
+    sidecar = _frames_sidecar(path)
+    if sidecar.exists():
+        try:
+            return int(t) in {int(i) for i in json.loads(sidecar.read_text())}
+        except (ValueError, OSError):
+            pass
     if not path.exists():
         return False
     stack = _load_stack(path)
