@@ -110,8 +110,8 @@ severity, most important first.
 - `correction/labels.py:937` — `clean_stranded_pixels` runs `expand_labels` over
   the whole frame per fragment (≈O(n_fragments × frame)). Restrict to a padded
   bbox.
-- `cellpose/divergence_maps.py:108-110` — `np.gradient` crashes on a 1-pixel Y/X
-  axis.
+- ~~`cellpose/divergence_maps.py:108-110` — `np.gradient` crashes on a 1-pixel Y/X
+  axis.~~ FIXED: a singleton axis contributes zero divergence and is skipped.
 - `aggregate_quantification/dynamics/store.py:236` — `_read_table` returns columns
   in HDF5 iteration (alphabetical) order, not declared order.
 - `aggregate_quantification/catalog.py:179-183` — discovery-only metadata

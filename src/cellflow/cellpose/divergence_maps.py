@@ -105,8 +105,18 @@ def divergence_2d(flow_yx: np.ndarray) -> np.ndarray:
         raise ValueError(
             f"flow must be (2, Y, X) with channels [dy, dx]; got {flow_yx.shape}"
         )
-    d_dy = np.gradient(flow_yx[0], axis=0)
-    d_dx = np.gradient(flow_yx[1], axis=1)
+    # np.gradient needs >= 2 samples along an axis; a singleton Y or X (e.g. a
+    # 1-pixel crop) has zero divergence contribution there, so skip it.
+    d_dy = (
+        np.gradient(flow_yx[0], axis=0)
+        if flow_yx.shape[1] >= 2
+        else np.zeros_like(flow_yx[0])
+    )
+    d_dx = (
+        np.gradient(flow_yx[1], axis=1)
+        if flow_yx.shape[2] >= 2
+        else np.zeros_like(flow_yx[1])
+    )
     return (d_dy + d_dx).astype(np.float32, copy=False)
 
 

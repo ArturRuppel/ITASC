@@ -71,6 +71,30 @@ def test_divergence_2d_rejects_wrong_shape():
         divergence_2d(np.zeros((4, 5), dtype=np.float32))
 
 
+def test_divergence_2d_handles_singleton_axis():
+    """A 1-pixel Y or X axis must not crash np.gradient; the divergence
+    contribution along a singleton axis is simply zero."""
+    from cellflow.cellpose.divergence_maps import divergence_2d
+
+    # 1-pixel-tall field: only the x-gradient contributes (dx = 3x -> 3).
+    y, x = np.mgrid[0:1, 0:6].astype(np.float32)
+    flow = np.stack([2.0 * y, 3.0 * x], axis=0)
+    div = divergence_2d(flow)
+    assert div.shape == (1, 6)
+    np.testing.assert_allclose(div[:, 1:-1], 3.0, atol=1e-5)
+
+    # 1-pixel-wide field: only the y-gradient contributes (dy = 2y -> 2).
+    y, x = np.mgrid[0:6, 0:1].astype(np.float32)
+    flow = np.stack([2.0 * y, 3.0 * x], axis=0)
+    div = divergence_2d(flow)
+    assert div.shape == (6, 1)
+    np.testing.assert_allclose(div[1:-1, :], 2.0, atol=1e-5)
+
+    # 1x1 field: both axes singleton → all-zero, no crash.
+    div = divergence_2d(np.ones((2, 1, 1), dtype=np.float32))
+    np.testing.assert_array_equal(div, np.zeros((1, 1), dtype=np.float32))
+
+
 def test_contour_from_dp_skips_filters_when_off(monkeypatch):
     import cellflow.cellpose.divergence_maps as dm
 
