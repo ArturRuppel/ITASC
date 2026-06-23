@@ -11,7 +11,7 @@ pos00/
   1_cellpose/          Cellpose probability and flow outputs + divergence maps
   2_nucleus/           nucleus segmentation, Ultrack database, tracked labels
   3_cell/              cell segmentation and tracked labels
-  4_contact_analysis/  contact-analysis HDF5 output
+  aggregate_quantification/  quantification output (contact_analysis.h5 + tables)
 ```
 
 ## Typical run
@@ -25,8 +25,8 @@ pos00/
    `2_nucleus/`.
 4. **Cell segmentation** (`cellflow-segmentation`): turn cell foreground/contour
    maps plus tracked nucleus seeds into tracked cell labels under `3_cell/`.
-5. **Contact analysis** (`cellflow-aggregate`): export contacts, edges, and T1
-   events to HDF5 under `4_contact_analysis/` and inspect them in napari.
+5. **Aggregate quantification** (`cellflow-aggregate`): export contacts, edges, and
+   T1 events to HDF5 under `aggregate_quantification/` and inspect them in napari.
 
 ## Driving the napari plugin
 

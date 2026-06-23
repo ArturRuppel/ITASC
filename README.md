@@ -66,7 +66,7 @@ pos00/
   1_cellpose/          Cellpose probability and flow outputs
   2_nucleus/           nucleus segmentation, Ultrack database, tracked labels
   3_cell/              cell segmentation and tracked labels
-  4_contact_analysis/  contact-analysis HDF5 output
+  aggregate_quantification/  quantification output (contact_analysis.h5 + tables)
 ```
 
 Typical use is:
@@ -77,12 +77,12 @@ Typical use is:
 3. Build nucleus contour/foreground sources, create an Ultrack database, solve
    tracks, and correct/validate nucleus labels under `2_nucleus/`.
 4. Generate cell foregrounds/contours and tracked cell labels under `3_cell/`.
-5. Build contact analysis under `4_contact_analysis/` and inspect the results
+5. Build quantification under `aggregate_quantification/` and inspect the results
    in napari.
 
 ## Installation
 
-CellFlow is packaged with `pyproject.toml` and currently requires Python 3.9 or
+CellFlow is packaged with `pyproject.toml` and currently requires Python 3.10 or
 newer.
 
 For development from a local checkout:

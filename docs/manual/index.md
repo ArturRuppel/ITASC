@@ -32,7 +32,7 @@ flowchart LR
     trk["cellflow-tracking<br/>2_nucleus: DB, tracks, labels"] --> seg
     seg["cellflow-segmentation<br/>3_cell: tracked cell labels"] --> agg
     trk --> agg
-    agg["cellflow-aggregate<br/>4_contact_analysis: HDF5"]
+    agg["cellflow-aggregate<br/>aggregate_quantification: HDF5"]
 ```
 
 See [The staged workflow](workflow.md) for what happens at each stage, and
