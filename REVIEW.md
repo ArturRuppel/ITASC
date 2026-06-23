@@ -137,8 +137,10 @@ severity, most important first.
 - ~~`napari/main_widget.py:431-456` — config save/load failures only `print()` to
   the console, no GUI feedback.~~ FIXED: save/load now report through napari
   notifications (`show_info`/`show_warning`/`show_error`).
-- `tracking_ultrack/validation_state.py:84-100` — `read_validated_tracks`
-  re-parses both JSON files on every call (hot in overlay loops).
+- ~~`tracking_ultrack/validation_state.py:84-100` — `read_validated_tracks`
+  re-parses both JSON files on every call (hot in overlay loops).~~ FIXED:
+  `read_corrections` and the legacy reader memoize on the file's (mtime_ns, size)
+  signature and return fresh copies; a write invalidates the entry.
 - ~~`segmentation/nucleus_segmentation.py:91` — `if not coords` is a dead guard on a
   tuple of arrays; only `coords[0].size == 0` actually fires.~~ FIXED: dead clause
   removed; emptiness checked via the coordinate array length.

@@ -35,6 +35,38 @@ def test_empty_by_default(pos_dir):
     assert not is_validated(pos_dir, 0)
 
 
+def test_read_corrections_caches_parse_between_calls(pos_dir, monkeypatch):
+    """Repeated reads of an unchanged file must not re-parse the JSON (the hot
+    overlay-loop cost the cache addresses)."""
+    add_correction(pos_dir, Correction(cell_id=1, t=0, kind="validated", y=1.0, x=1.0))
+    read_corrections(pos_dir)  # prime the cache
+
+    import cellflow.tracking_ultrack.validation_state as vs
+    calls = []
+    real = json.loads
+    monkeypatch.setattr(vs.json, "loads", lambda s: calls.append(1) or real(s))
+
+    for _ in range(5):
+        assert len(read_corrections(pos_dir)) == 1
+    assert calls == []  # served from cache, no re-parse
+
+
+def test_read_corrections_cache_invalidates_on_write(pos_dir):
+    """A write must be visible to the next read (stat signature changes)."""
+    add_correction(pos_dir, Correction(cell_id=1, t=0, kind="validated", y=1.0, x=1.0))
+    assert len(read_corrections(pos_dir)) == 1
+    add_correction(pos_dir, Correction(cell_id=2, t=1, kind="validated", y=2.0, x=2.0))
+    assert len(read_corrections(pos_dir)) == 2
+
+
+def test_read_corrections_returns_independent_copy(pos_dir):
+    """Mutating the returned list must not corrupt the cached value."""
+    add_correction(pos_dir, Correction(cell_id=1, t=0, kind="validated", y=1.0, x=1.0))
+    first = read_corrections(pos_dir)
+    first.append(Correction(cell_id=9, t=9, kind="validated", y=0.0, x=0.0))
+    assert len(read_corrections(pos_dir)) == 1  # cache unaffected
+
+
 def test_validate_single_frame(pos_dir):
     validate_frame(pos_dir, 3)
     assert is_validated(pos_dir, 3)

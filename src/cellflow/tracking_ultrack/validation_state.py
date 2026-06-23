@@ -30,6 +30,22 @@ import numpy as np
 
 from cellflow.tracking_ultrack.corrections import Correction
 
+# Stat-keyed parse caches: hot overlay loops call the readers below repeatedly,
+# and re-parsing unchanged JSON each time is the cost the review flagged. Key on
+# the file's (mtime_ns, size); a writer touching the file changes the signature
+# and invalidates the entry. Callers always receive a fresh copy, so the cached
+# value is never mutated through aliasing.
+_corrections_cache: dict[Path, tuple[tuple[int, int], list[Correction]]] = {}
+_legacy_tracks_cache: dict[Path, tuple[tuple[int, int], dict[int, set[int]]]] = {}
+
+
+def _stat_signature(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
 
 def _path(nucleus_dir: Path) -> Path:
     return Path(nucleus_dir) / "validated_frames.json"
@@ -100,15 +116,27 @@ def read_validated_tracks(nucleus_dir: Path) -> dict[int, set[int]]:
     return _read_legacy_validated_tracks(nucleus_dir)
 
 
+def _copy_tracks(data: dict[int, set[int]]) -> dict[int, set[int]]:
+    """Deep-ish copy so a cached map is never mutated through the returned value."""
+    return {cell_id: set(frames) for cell_id, frames in data.items()}
+
+
 def _read_legacy_validated_tracks(nucleus_dir: Path) -> dict[int, set[int]]:
     p = _cells_path(nucleus_dir)
-    if not p.exists():
+    sig = _stat_signature(p)
+    if sig is None:
+        _legacy_tracks_cache.pop(p, None)
         return {}
+    hit = _legacy_tracks_cache.get(p)
+    if hit is not None and hit[0] == sig:
+        return _copy_tracks(hit[1])
     try:
         raw: dict = json.loads(p.read_text())
-        return {int(k): set(int(f) for f in vs) for k, vs in raw.items() if vs}
+        parsed = {int(k): set(int(f) for f in vs) for k, vs in raw.items() if vs}
     except Exception:
         return {}
+    _legacy_tracks_cache[p] = (sig, parsed)
+    return _copy_tracks(parsed)
 
 
 def _write_validated_tracks(nucleus_dir: Path, data: dict[int, set[int]]) -> None:
@@ -231,8 +259,13 @@ def _corrections_path(nucleus_dir: Path) -> Path:
 def read_corrections(nucleus_dir: Path) -> list[Correction]:
     """Return persisted per-frame corrections, or an empty list if unavailable."""
     p = _corrections_path(nucleus_dir)
-    if not p.exists():
+    sig = _stat_signature(p)
+    if sig is None:
+        _corrections_cache.pop(p, None)
         return []
+    hit = _corrections_cache.get(p)
+    if hit is not None and hit[0] == sig:
+        return list(hit[1])  # fresh list of immutable Corrections
     try:
         raw = json.loads(p.read_text())
         corrections = [
@@ -247,7 +280,9 @@ def read_corrections(nucleus_dir: Path) -> list[Correction]:
         ]
     except Exception:
         return []
-    return sorted(corrections, key=lambda c: (c.t, c.cell_id, c.kind))
+    result = sorted(corrections, key=lambda c: (c.t, c.cell_id, c.kind))
+    _corrections_cache[p] = (sig, result)
+    return list(result)
 
 
 def write_corrections(nucleus_dir: Path, corrections: Iterable[Correction]) -> None:
