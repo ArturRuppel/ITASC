@@ -87,6 +87,26 @@ def mask_bbox(mask: np.ndarray) -> tuple[int, int, int, int] | None:
     return int(ys.min()), int(xs.min()), int(ys.max()) + 1, int(xs.max()) + 1
 
 
+def centroid_gate(mask: np.ndarray) -> tuple[float, float, float] | None:
+    """Centroid-distance prefilter for nodes that may overlap ``mask``.
+
+    Returns ``(cy, cx, radius)``: a candidate node is plausible when its
+    centroid lies within ``radius`` of ``(cy, cx)``. This replaces requiring the
+    node centroid to fall *inside* the source bbox, which drops nodes that
+    overlap an elongated / crescent / merged source but whose centroid sits
+    outside that box. ``radius`` is the source bbox diagonal — generous enough
+    to reach a comparably-sized node touching the source anywhere along its
+    extent. Returns ``None`` for an empty mask.
+    """
+    ys, xs = np.where(mask)
+    if ys.size == 0:
+        return None
+    cy = float(ys.mean())
+    cx = float(xs.mean())
+    radius = float(np.hypot(ys.max() - ys.min(), xs.max() - xs.min()))
+    return cy, cx, radius
+
+
 def match_mask_to_node(
     session, frame: int, source_mask: np.ndarray
 ) -> tuple[int, tuple[int, int, int, int], np.ndarray] | None:
@@ -94,25 +114,27 @@ def match_mask_to_node(
 
     Returns ``(node_id, bbox, mask_crop)`` for the node whose mask has the
     highest IoU with ``source_mask``, or ``None`` if the mask is empty or
-    nothing overlaps. Prefilters NodeDB by the source bounding box so only
-    plausibly-overlapping masks are deserialized.
+    nothing overlaps. Prefilters NodeDB by centroid distance (not source-bbox
+    containment) so a node overlapping an elongated/crescent/merged source —
+    whose centroid sits outside the source bbox — is still considered before the
+    exact-IoU stage prunes non-overlappers.
     """
     from ultrack.core.database import NodeDB
 
     src_bbox = mask_bbox(source_mask)
-    if src_bbox is None:
+    gate = centroid_gate(source_mask)
+    if src_bbox is None or gate is None:
         return None
     sy0, sx0, sy1, sx1 = src_bbox
     src_crop = np.ascontiguousarray(source_mask[sy0:sy1, sx0:sx1], dtype=bool)
 
+    cy, cx, radius = gate
+    dist_sq = (NodeDB.y - cy) * (NodeDB.y - cy) + (NodeDB.x - cx) * (NodeDB.x - cx)
     rows = (
         session.query(NodeDB.id, NodeDB.pickle)
         .filter(
             NodeDB.t == frame,
-            NodeDB.y >= sy0,
-            NodeDB.y <= sy1,
-            NodeDB.x >= sx0,
-            NodeDB.x <= sx1,
+            dist_sq <= radius * radius,
         )
         .all()
     )

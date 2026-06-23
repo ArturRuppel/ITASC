@@ -53,8 +53,11 @@ severity, most important first.
 6. **`tracking_ultrack/_node_geometry.py:108-118` — centroid-in-bbox prefilter
    drops valid matches.** A node that genuinely overlaps the source mask but whose
    centroid falls outside its bbox (elongated/crescent/merged masks) is never
-   considered. Fix: prefilter by bbox intersection, not centroid containment.
-   *Open.*
+   considered.
+   *Status: FIXED — NodeDB has no bbox columns, so prefilter by centroid distance
+   instead of bbox containment: candidates within the source bbox diagonal of the
+   source centroid are admitted, then exact IoU prunes non-overlappers. Pure-gate
+   + DB-backed regression tests added.*
 7. **`tracking_ultrack/export.py:99-110` — three `except Exception: pass` mask
    export failures.** A real bug (corrupt DB, OOM) is hidden and a degraded CTC
    fallback may emit wrong/empty labels.
@@ -157,6 +160,8 @@ Critical/High items resolved so far, each with a regression test:
 - #9 `core/label_store.py` — explicit written-frame sidecar; existence no longer
   inferred from `.any()` content.
 - #8 `aggregate_quantification/curation.py` — NaN-frame-tolerant frame match.
+- #6 `tracking_ultrack/_node_geometry.py` — centroid-distance prefilter replaces
+  bbox containment.
 
-Suggested next: #6 (centroid-in-bbox prefilter drops valid track matches — needs
-a correctness/perf decision, see note) and #10 (cellpose `do_3d` output shape).
+All Critical and High items are now resolved. Suggested next: the Medium tier and
+the cross-cutting license mismatch (the failing `test_packaging_metadata` case).

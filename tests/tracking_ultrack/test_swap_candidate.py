@@ -289,3 +289,27 @@ class TestCycleIndex:
             idx = cycle_index(4, idx, larger=True)
         assert sorted(seen) == [0, 1, 2, 3]
         assert idx == 0  # back to start
+
+
+class TestMatchMaskToNodeCentroidGate:
+    def test_matches_overlap_with_centroid_outside_source_bbox(self, tmp_path):
+        """Regression for the centroid-in-bbox prefilter (#6): a node overlapping
+        an elongated source whose centroid falls outside the source bbox was
+        dropped before the IoU stage. The centroid-distance gate now admits it."""
+        pytest.importorskip("ultrack")
+        from sqlalchemy.orm import Session
+
+        from cellflow.tracking_ultrack._node_geometry import match_mask_to_node
+
+        engine = _make_engine(tmp_path / "data.db")
+        # Tall node overlapping the left end of a wide source bar. Its centroid
+        # (row ~25) lies well below the source bbox rows [10, 14).
+        _insert_nodes(engine, [_make_node_row(101, 0, 10, 10, 40, 14)])
+        source_mask = _full_mask(10, 10, 14, 40)  # wide, short bar
+
+        with Session(engine) as session:
+            matched = match_mask_to_node(session, 0, source_mask)
+
+        assert matched is not None
+        node_id, _bbox, _mask = matched
+        assert node_id == 101
