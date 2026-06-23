@@ -125,9 +125,12 @@ def compute_contour_watershed(
 
     boundary_pre = np.asarray(boundary, dtype=np.float32).copy()
 
-    # Apply correlated noise perturbation
+    # Apply correlated noise perturbation. Seed a local RNG from run_index so
+    # repeated runs (and multi-run ensembles) are reproducible — the previous
+    # global np.random.normal left run_index dead and the output non-deterministic.
     if params.noise_scale > 0:
-        noise = np.random.normal(0, params.noise_scale, boundary_pre.shape)
+        rng = np.random.default_rng(params.run_index)
+        noise = rng.normal(0, params.noise_scale, boundary_pre.shape)
         if params.noise_blur_sigma > 0:
             noise = gaussian_filter(noise, sigma=params.noise_blur_sigma)
         boundary_pre = np.clip(boundary_pre + noise, 0, 1)

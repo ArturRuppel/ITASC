@@ -103,9 +103,9 @@ severity, most important first.
   loop; dispose once after.
 - `tracking_ultrack/corrections.py:233-234` — anchor chaining assumes `t+1` is the
   next anchor; non-consecutive anchors leave the gap unbridged.
-- `segmentation/nucleus_segmentation.py:129-130` — `np.random.normal` uses the
-  global RNG; `run_index` is dead → non-reproducible segmentation. Use
-  `default_rng(run_index)`.
+- ~~`segmentation/nucleus_segmentation.py:129-130` — `np.random.normal` uses the
+  global RNG; `run_index` is dead → non-reproducible segmentation.~~ FIXED: noise
+  now drawn from a local `default_rng(run_index)`; reproducible per run_index.
 - `correction/labels.py:937` — `clean_stranded_pixels` runs `expand_labels` over
   the whole frame per fragment (≈O(n_fragments × frame)). Restrict to a padded
   bbox.
