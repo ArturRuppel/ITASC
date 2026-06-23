@@ -94,7 +94,20 @@ def _draw_line(shape: tuple[int, int], pts: list[tuple[int, int]]) -> np.ndarray
 # ── misc helpers ──────────────────────────────────────────────────────────────
 
 def _free_label(seg: np.ndarray) -> int:
-    return int(seg.max()) + 1
+    """Return an unused label id (``max + 1``).
+
+    The result is written back into ``seg``, so it must fit the array's
+    dtype; for an integer ``seg`` whose max equals the dtype ceiling the
+    increment would wrap to 0 (background) or collide with an existing id.
+    Raise instead of corrupting the segmentation.
+    """
+    new_label = int(seg.max()) + 1
+    if np.issubdtype(seg.dtype, np.integer) and new_label > np.iinfo(seg.dtype).max:
+        raise OverflowError(
+            f"No free label available: max id {new_label - 1} already at the "
+            f"{seg.dtype} ceiling. Re-save the stack with a wider integer dtype."
+        )
+    return new_label
 
 
 def _touches(seg: np.ndarray, la: int, lb: int) -> bool:

@@ -274,6 +274,8 @@ def build_divergence_maps(
 
     n_t = int(prob_stack.shape[0])
     n_z = int(prob_stack.shape[1])
+    if n_t == 0:
+        raise ValueError("prob/dp stack has no frames (T=0); nothing to compute.")
     total_steps = n_t + (n_t * n_z) + 2
     progress_done = 0
     contour_frames: list[np.ndarray] = []

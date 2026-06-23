@@ -94,3 +94,16 @@ def test_commit_labels_writes_tiff(tmp_path):
     assert out.exists()
     loaded = tifffile.imread(str(out))
     np.testing.assert_array_equal(loaded, labels.astype(np.uint16))
+    assert loaded.dtype == np.uint16
+
+
+def test_commit_labels_preserves_ids_above_uint16(tmp_path):
+    """Track ids beyond 65535 must not wrap to uint16 (silent cell merge)."""
+    import tifffile
+    labels = np.zeros((1, 4, 4), dtype=np.uint32)
+    labels[0, 1, 1] = 70000  # > np.iinfo(np.uint16).max
+    out = tmp_path / "tracked_labels.tif"
+    commit_labels(labels, out)
+    loaded = tifffile.imread(str(out))
+    assert loaded.dtype == np.uint32
+    assert int(loaded.max()) == 70000

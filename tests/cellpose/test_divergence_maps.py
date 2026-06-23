@@ -204,6 +204,32 @@ def test_build_divergence_maps_writes_and_reports(tmp_path):
     assert calls[-1][0] == calls[-1][1]  # final report has done==total
 
 
+@pytest.mark.filterwarnings("ignore:.*zero-size array.*:UserWarning")
+def test_build_divergence_maps_rejects_empty_stack(tmp_path):
+    """A T=0 stack must raise cleanly, not crash in np.stack([])."""
+    import tifffile
+    from cellflow.cellpose.divergence_maps import build_divergence_maps
+
+    prob = np.zeros((0, 3, 5, 6), dtype=np.float32)
+    dp = np.zeros((0, 3, 2, 5, 6), dtype=np.float32)
+    prob_path = tmp_path / "prob.tif"
+    dp_path = tmp_path / "dp.tif"
+    tifffile.imwrite(str(prob_path), prob)
+    tifffile.imwrite(str(dp_path), dp)
+
+    with pytest.raises(ValueError, match="no frames"):
+        build_divergence_maps(
+            prob_path,
+            dp_path,
+            tmp_path / "c.tif",
+            tmp_path / "f.tif",
+            foreground_z_reduction="mean",
+            contour_z_reduction="mean",
+            smoothing_sigma=0.0,
+            median_radius=0,
+        )
+
+
 def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
     import tifffile
     from cellflow.cellpose.divergence_maps import build_divergence_maps

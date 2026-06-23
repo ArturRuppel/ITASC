@@ -585,11 +585,19 @@ def initialize_icm(
 
 
 def commit_labels(labels: np.ndarray, output_path: Path | str) -> None:
-    """Write label array to TIFF."""
+    """Write label array to TIFF.
+
+    Labels are stored as ``uint16`` when they fit (compact, backward
+    compatible) and promoted to ``uint32`` otherwise. Casting a track id
+    above 65535 down to ``uint16`` would silently wrap and merge distinct
+    cells, so the dtype is chosen from the actual maximum label.
+    """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    max_label = int(labels.max()) if labels.size else 0
+    out_dtype = np.uint16 if max_label <= np.iinfo(np.uint16).max else np.uint32
     imwrite_grayscale(
         output_path,
-        labels.astype(np.uint16, copy=False),
+        labels.astype(out_dtype, copy=False),
         compression="zlib",
     )

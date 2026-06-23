@@ -1,5 +1,6 @@
 
 from cellflow.correction.labels import (
+    _free_label,
     add_cell,
     carve_into_selected,
     clean_stranded_pixels,
@@ -23,6 +24,20 @@ def test_correction_package_does_not_reexport_apply_gamma():
 def test_gamma_identity():
     logits = np.array([-1.0, 0.0, 1.0])
     assert np.allclose(apply_gamma(logits, 1.0), logits)
+
+
+def test_free_label_returns_next_id():
+    seg = np.zeros((4, 4), dtype=np.uint16)
+    seg[1, 1] = 5
+    assert _free_label(seg) == 6
+
+
+def test_free_label_raises_at_dtype_ceiling():
+    """max+1 must not wrap to 0/collide when seg is at the uint16 ceiling."""
+    seg = np.zeros((4, 4), dtype=np.uint16)
+    seg[0, 0] = np.iinfo(np.uint16).max
+    with pytest.raises(OverflowError):
+        _free_label(seg)
 
 def test_gamma_values():
     logits = np.array([0.0]) # prob 0.5
