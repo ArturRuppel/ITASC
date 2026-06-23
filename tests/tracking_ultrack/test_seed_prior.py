@@ -6,10 +6,33 @@ import tifffile
 
 from cellflow.tracking_ultrack.config import TrackingConfig
 from cellflow.tracking_ultrack.seed_prior import (
+    _seed_node_prob,
     compute_drop_frac,
     compute_mask_circularity,
     write_seed_prior_node_probs,
 )
+
+
+def test_seed_node_prob_is_finite_at_zero_base():
+    """A zero-quality node must score 0.0 for any exponent, never inf/NaN
+    (0**0 == 1 and 0**negative == inf would corrupt the seed prior)."""
+    import math
+
+    for exponent in (8.0, 1.0, 0.0, -2.0, 0.5):
+        p = _seed_node_prob(base=0.0, max_base=1.25, exponent=exponent)
+        assert p == 0.0
+        assert math.isfinite(p)
+
+
+def test_seed_node_prob_normalizes_and_powers():
+    # base/max_base = 0.5, ** 2 = 0.25
+    assert _seed_node_prob(base=1.0, max_base=2.0, exponent=2.0) == pytest.approx(0.25)
+    # max_base == 0 → use base directly (then powered)
+    assert _seed_node_prob(base=0.5, max_base=0.0, exponent=1.0) == pytest.approx(0.5)
+
+
+def test_seed_node_prob_clamps_negative_base():
+    assert _seed_node_prob(base=-0.3, max_base=1.0, exponent=0.5) == 0.0
 
 
 def test_compute_drop_frac_counts_outer_ring_pixels_below_inside_median():

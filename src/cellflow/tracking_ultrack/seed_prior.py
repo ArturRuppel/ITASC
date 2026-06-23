@@ -98,6 +98,19 @@ def compute_mask_circularity(mask: np.ndarray) -> float:
     return float(np.clip(circularity, 0.0, 1.0))
 
 
+def _seed_node_prob(base: float, max_base: float, exponent: float) -> float:
+    """Normalise ``base`` to [0, 1] and raise it to ``exponent``.
+
+    Guards the zero-quality case: ``0 ** 0 == 1`` and ``0 ** negative == inf``
+    would both corrupt the seed prior, so a non-positive normalised base scores
+    a flat ``0.0`` regardless of exponent.
+    """
+    normalized = base / max_base if max_base > 0 else base
+    if normalized <= 0.0:
+        return 0.0
+    return float(normalized ** exponent)
+
+
 def write_seed_prior_node_probs(
     working_dir: str | Path,
     intensity_image_path: str | Path,
@@ -119,7 +132,8 @@ def write_seed_prior_node_probs(
         ).all()
 
         anchor_ids: list[int] = []
-        scored = 0
+        score_updates: list[dict[str, object]] = []
+        max_base = cfg.quality_weight + cfg.circularity_weight
         for node_id, t, node, annot in rows:
             if annot == VarAnnotation.REAL:
                 anchor_ids.append(int(node_id))
@@ -139,21 +153,19 @@ def write_seed_prior_node_probs(
             drop_frac = compute_drop_frac(signal[record.t], record.bbox, record.mask)
             circularity = compute_mask_circularity(record.mask)
             base = cfg.quality_weight * drop_frac + cfg.circularity_weight * circularity
-            max_base = cfg.quality_weight + cfg.circularity_weight
-            normalized_base = base / max_base if max_base > 0 else base
-            node_prob = float(normalized_base ** cfg.quality_exponent)
-            session.query(NodeDB).where(NodeDB.id == record.node_id).update(
-                {NodeDB.node_prob: node_prob},
-                synchronize_session=False,
-            )
-            scored += 1
+            node_prob = _seed_node_prob(base, max_base, cfg.quality_exponent)
+            score_updates.append({"id": record.node_id, "node_prob": node_prob})
 
+        # One bulk UPDATE instead of a statement per node (was O(n) round-trips).
+        if score_updates:
+            session.bulk_update_mappings(NodeDB, score_updates)
         if anchor_ids:
             session.query(NodeDB).where(NodeDB.id.in_(anchor_ids)).update(
                 {NodeDB.node_prob: 1.0},
                 synchronize_session=False,
             )
         session.commit()
+        scored = len(score_updates)
 
     engine.dispose()
     return SeedPriorReport(scored=scored, seeds=len(anchor_ids))

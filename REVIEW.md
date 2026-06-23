@@ -96,11 +96,12 @@ severity, most important first.
 - `aggregate_quantification/pipeline.py:129` / `quantifier.py:124-128` —
   `missing_build_params` only consults the `params` dict, so pixel size set
   per-record (not under `[params]`) silently skips shape/dynamics builds.
-- `tracking_ultrack/seed_prior.py:144-148` — per-node `UPDATE` (O(n) statements);
+- ~~`tracking_ultrack/seed_prior.py:144-148` — per-node `UPDATE` (O(n) statements);
   use `bulk_update_mappings`. Also `normalized_base ** quality_exponent` can
-  NaN/inf at 0.
-- `tracking_ultrack/db_build.py:404-406` — `engine.dispose()` inside the per-frame
-  loop; dispose once after.
+  NaN/inf at 0.~~ FIXED: single `bulk_update_mappings`; prob via `_seed_node_prob`
+  which returns 0.0 for a non-positive base (no `0**0`/`0**neg`).
+- ~~`tracking_ultrack/db_build.py:404-406` — `engine.dispose()` inside the per-frame
+  loop; dispose once after.~~ FIXED: disposed once after the build loop.
 - `tracking_ultrack/corrections.py:233-234` — anchor chaining assumes `t+1` is the
   next anchor; non-consecutive anchors leave the gap unbridged.
 - ~~`segmentation/nucleus_segmentation.py:129-130` — `np.random.normal` uses the

@@ -323,10 +323,12 @@ def build_atom_union_database(
     for t in range(n_frames):
         # Cancellation is cooperative and per-frame: a build over many frames is
         # the bulk of the work, so polling here lets a Cancel click take effect
-        # within one frame instead of after the whole build. ``engine.dispose()``
-        # below has already committed/closed each completed frame's rows.
+        # within one frame instead of after the whole build.
         _check_cancel(cancel)
         _notify(progress_cb, f"Building candidates frame {t + 1}/{n_frames}...")
+        # _stream_insert commits each frame's rows, so a cancel between frames
+        # loses nothing; the engine pool is disposed once after the loop rather
+        # than per frame (which forced a full reconnect every iteration).
         frame_atoms = atoms_stack[t]
         n_atoms = int(frame_atoms.max())
         if n_atoms == 0:
@@ -403,11 +405,11 @@ def build_atom_union_database(
 
         _stream_insert(Session, engine, nodes)
         _stream_insert(Session, engine, overlaps)
-        engine.dispose()
 
         total_nodes += len(nodes)
         total_overlaps += len(overlaps)
 
+    engine.dispose()
     _notify(
         progress_cb,
         f"Wrote {total_nodes} candidate nodes, {total_overlaps} overlap rows.",
