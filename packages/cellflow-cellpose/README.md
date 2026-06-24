@@ -36,6 +36,11 @@ so importing the package does not require them.
   Per channel: **Segment** runs Cellpose native masks; **Track** links them over
   time with laptrack (max-distance / frame-gap in *Tracking parameters*).
 
+  After tracking, the embedded **Correction** panel (the basic, ultrack-free cell
+  corrector) edits the tracked **cell** labels in place — contour extend/carve,
+  fill-holes and stranded-fragment cleanup — and saves back to `cell_tracked.tif`.
+  It targets 2D+t (single-Z) cell labels.
+
 - **Headless / scripting:**
 
   ```python

@@ -49,6 +49,7 @@ from cellflow.napari.ui_style import (
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 
 logger = logging.getLogger(__name__)
@@ -228,6 +229,19 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         # ── Tracking params (shared) ──
         self.tracking_section = self._build_tracking_params_section()
         root.addWidget(self.tracking_section)
+
+        # ── Cell correction ──
+        # Reuse the app's *basic* cell corrector — the ultrack/OverlapDB-free one
+        # — pointed at the flat ``cell_tracked.tif`` this tool writes, so
+        # segment → track → correct is one surface. The widget brings its own
+        # "Correction" header + ⏻ activate button. Nucleus correction (the
+        # candidate-DB workflow) is intentionally not shipped in this distro.
+        self.cell_correction = CellCorrectionWidget(
+            self.viewer,
+            labels_path_provider=self._cell_tracked_path,
+            parent=self,
+        )
+        root.addWidget(self.cell_correction)
 
         # ── Status + progress ──
         self.status_lbl = _make_status()
@@ -469,6 +483,10 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self._set_running(f"{channel}_track")
         self._status(f"Tracking {channel} masks (laptrack)...")
         self._worker = _worker()
+
+    def _cell_tracked_path(self) -> Path | None:
+        """Flat tracked-cell-labels file the embedded corrector loads/saves."""
+        return self._output_dir / "cell_tracked.tif" if self._output_dir else None
 
     def _errored(self, exc) -> None:
         self._worker = None

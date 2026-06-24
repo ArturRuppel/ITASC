@@ -156,3 +156,34 @@ def test_factory_returns_widget():
     w = stw.make_cellpose_segment_track_widget(_FakeViewer())
     assert isinstance(w, stw.CellposeSegmentTrackWidget)
     w.deleteLater()
+
+
+# ── embedded cell correction ────────────────────────────────────────────────
+def test_embeds_cell_corrector_targeting_flat_tracked(tmp_path: Path):
+    """The basic cell corrector is embedded and points at <out>/cell_tracked.tif."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    assert isinstance(w.cell_correction, CellCorrectionWidget)
+    # cleared output dir → the labels provider yields None (corrector stays idle).
+    w._output_dir_edit.setText("")
+    w._apply_paths()
+    assert w.cell_correction._cell_labels_path() is None
+    # point the tool at an output dir → corrector targets the flat tracked file.
+    w._output_dir_edit.setText(str(tmp_path))
+    w._apply_paths()
+    assert w.cell_correction._cell_labels_path() == tmp_path / "cell_tracked.tif"
+    w.deleteLater()
+
+
+def test_cell_corrector_default_paths_unchanged():
+    """Without overrides the corrector keeps the app's staged pos-dir paths."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    c = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: Path("/proj/pos1"))
+    assert c._cell_labels_path() == Path("/proj/pos1/3_cell/tracked_labels.tif")
+    assert c._cell_foreground_path() == Path("/proj/pos1/1_cellpose/cell_foreground.tif")
+    assert c._nuc_foreground_path() == Path("/proj/pos1/1_cellpose/nucleus_foreground.tif")
+    c.deleteLater()

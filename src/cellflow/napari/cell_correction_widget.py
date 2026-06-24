@@ -79,6 +79,15 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
     files_widget_refresh_callback:
         Called with the current ``pos_dir`` after save operations so that the
         parent workflow can refresh its file status panel.
+    labels_path_provider:
+        Optional zero-argument callable returning the tracked-cell-labels file to
+        load and save.  When given it overrides the default position-dir path
+        (``<pos_dir>/3_cell/tracked_labels.tif``), letting a standalone tool point
+        the corrector at a flat output file.  Defaults to None → unchanged app
+        behaviour.
+    cell_ref_path_provider, nucleus_ref_path_provider:
+        Optional overrides for the cell / nucleus reference-image backdrops
+        (default ``<pos_dir>/1_cellpose/*_foreground.tif``).  None → app default.
     parent:
         Optional Qt parent.
     """
@@ -89,6 +98,9 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         *,
         pos_dir_provider: Callable[[], Path | None] | None = None,
         files_widget_refresh_callback: Callable[[Path | None], None] | None = None,
+        labels_path_provider: Callable[[], Path | None] | None = None,
+        cell_ref_path_provider: Callable[[], Path | None] | None = None,
+        nucleus_ref_path_provider: Callable[[], Path | None] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -96,6 +108,9 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._pos_dir_provider = pos_dir_provider
         self._local_pos_dir: Path | None = None
         self._files_widget_refresh = files_widget_refresh_callback or (lambda _pd: None)
+        self._labels_path_provider = labels_path_provider
+        self._cell_ref_path_provider = cell_ref_path_provider
+        self._nucleus_ref_path_provider = nucleus_ref_path_provider
         self._correction_view_state: LayerViewState | None = None
         self._correction_owned_layers: set[str] = set()
         self._correction_dirty: bool = False
@@ -493,12 +508,18 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         return self._pos_dir.joinpath(*parts) if self._pos_dir else None
 
     def _cell_labels_path(self) -> Path | None:
+        if self._labels_path_provider is not None:
+            return self._labels_path_provider()
         return self._p("3_cell", "tracked_labels.tif")
 
     def _cell_foreground_path(self) -> Path | None:
+        if self._cell_ref_path_provider is not None:
+            return self._cell_ref_path_provider()
         return self._p("1_cellpose", "cell_foreground.tif")
 
     def _nuc_foreground_path(self) -> Path | None:
+        if self._nucleus_ref_path_provider is not None:
+            return self._nucleus_ref_path_provider()
         return self._p("1_cellpose", "nucleus_foreground.tif")
 
     # ------------------------------------------------------------------ #

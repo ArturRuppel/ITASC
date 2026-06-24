@@ -56,6 +56,12 @@ bypass-selection = true
 "../../src/cellflow/cellpose" = "cellflow/cellpose"
 # The standalone surface is the segment+track widget (napari.yaml points here).
 "../../src/cellflow/napari/cellpose_segment_track_widget.py" = "cellflow/napari/cellpose_segment_track_widget.py"
+# The basic (ultrack/OverlapDB-free) cell corrector is embedded in the
+# segment+track widget so the tool covers segment → track → correct. Its base
+# (correction_widget + _correction_ui/_correction_layer_lifecycle) ships in
+# cellflow-core; _spotlight is the only shared dep core does not yet ship.
+"../../src/cellflow/napari/cell_correction_widget.py" = "cellflow/napari/cell_correction_widget.py"
+"../../src/cellflow/napari/_spotlight.py" = "cellflow/napari/_spotlight.py"
 # cellpose_widget + divergence_maps_widget stay shipped (Qt-free of the model):
 # the integrated app imports them directly for its in-app Cellpose stage; they
 # are no longer the distro's standalone napari command but remain importable.
