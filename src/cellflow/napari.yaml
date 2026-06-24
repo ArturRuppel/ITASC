@@ -29,6 +29,13 @@ contributions:
     - id: cellflow.aggregate_quantification_widget
       title: "Aggregate Quantification"
       python_name: cellflow.napari.aggregate_quantification_widget:make_aggregate_quantification_widget
+    # The cellflow-cellpose distribution's *standalone* surface — native-mask
+    # segment + laptrack track + embedded basic correction. It is not part of the
+    # integrated pipeline (the pipeline uses the Cellpose widget above); it is
+    # mirrored here only so the full install can also reach the standalone tool.
+    - id: cellflow.cellpose_segment_track_widget
+      title: "Cellpose Segment + Track"
+      python_name: cellflow.napari.cellpose_segment_track_widget:make_cellpose_segment_track_widget
   widgets:
     - command: cellflow.main_widget
       display_name: "CellFlow"
@@ -40,3 +47,5 @@ contributions:
       display_name: "Cell Segmentation"
     - command: cellflow.aggregate_quantification_widget
       display_name: "Aggregate Quantification"
+    - command: cellflow.cellpose_segment_track_widget
+      display_name: "Cellpose Segment + Track"

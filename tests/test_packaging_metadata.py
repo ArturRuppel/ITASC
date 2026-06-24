@@ -55,7 +55,7 @@ def test_full_install_folds_extracted_pieces_into_single_napari_manifest() -> No
     # Every standalone piece's widget factory is mirrored verbatim in the folded
     # manifest, so the full install and a standalone install expose the same
     # callable for each piece.
-    for piece in ("aggregate_quantification", "tracking_ultrack"):
+    for piece in ("aggregate_quantification", "tracking_ultrack", "cellpose"):
         standalone = (
             Path("src") / "cellflow" / piece / "napari.yaml"
         ).read_text(encoding="utf-8")
