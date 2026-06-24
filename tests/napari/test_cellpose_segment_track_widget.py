@@ -102,13 +102,15 @@ def test_layer_name_tags_channel():
 
 # ── compute steps (Qt-free) ─────────────────────────────────────────────────
 def test_segment_channel_returns_masks_array(tmp_path: Path, _model):
+    # Layout-free: a (T, Y, X) stack canonicalises to (T, 1, Y, X) with no layout
+    # arg, and is segmented per-plane (do_3d is always off in the standalone).
     raw = tmp_path / "nuc.tif"
-    tifffile.imwrite(str(raw), np.zeros((2, 3, 8, 8), dtype=np.float32))
+    tifffile.imwrite(str(raw), np.zeros((2, 8, 8), dtype=np.float32))
     params = cellpose_runner.NucleusParams(
-        do_3d=True, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+        do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
     )
-    masks = stw.segment_channel(raw, "nucleus", params, "3D+t")
-    assert masks.shape == (2, 3, 8, 8)
+    masks = stw.segment_channel(raw, "nucleus", params)
+    assert masks.shape == (2, 1, 8, 8)
     assert masks.dtype == np.int32
 
 
@@ -215,7 +217,7 @@ def test_segment_track_joint_returns_paired_stacks(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
     nuc_out, cell_out = stw.segment_track_joint(
-        nuc, cell, "2D+t", "2D+t",
+        nuc, cell,
         cellpose_runner.NucleusParams(
             do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
         ),
@@ -238,6 +240,19 @@ def test_set_running_joint_swaps_glyph():
     w.deleteLater()
 
 
+def test_widget_has_no_layout_or_3d_mode_controls():
+    """P3.5: the input-layout picker, 3D mode and anisotropy are gone."""
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    for attr in (
+        "nuc_layout_combo", "cell_layout_combo", "nuc_3d_chk", "nuc_anisotropy_spin",
+    ):
+        assert not hasattr(w, attr), attr
+    # Nucleus segmentation is always per-plane in the standalone.
+    assert w._build_nucleus_params().do_3d is False
+    w.deleteLater()
+
+
 def test_widget_has_no_output_dir_or_file_contract_in_source():
     src = Path(stw.__file__).read_text()
     # results are layers, so there is no flat-file output contract anymore.
@@ -245,6 +260,10 @@ def test_widget_has_no_output_dir_or_file_contract_in_source():
     assert "{channel}_masks.tif" not in src and "{channel}_tracked.tif" not in src
     # layers are channel-tagged.
     assert "[{channel.title()}] {kind}" in src
+    # the 4-way layout picker is gone (segmentation is layout-free per-plane).
+    assert "_layout_combo" not in src
+    assert "_LAYOUT_OPTIONS" not in src
+    assert "currentText()" not in src  # no layout combo to read
 
 
 def test_set_running_swaps_glyph_to_cancel_for_each_action():

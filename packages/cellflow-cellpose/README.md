@@ -30,16 +30,22 @@ so importing the package does not require them.
 ## Use
 
 - **napari plugin:** add the *Cellpose Segment + Track* widget. It exposes
-  explicit file pickers — point directly at your files, no enforced layout:
+  explicit file pickers — point directly at your files, **no layout to declare**:
   - **Nucleus channel** — raw nucleus stack `.tif`
   - **Cell channel** — raw cell stack `.tif`
 
+  Every plane is segmented individually, so the input shape needs no `2D/2D+t/3D/
+  3D+t` selection. Axis identity only matters for tracking, and is inferred: the
+  last two axes are `Y, X`; of the remaining leading axes the **shorter is `Z`**
+  and the longer is **time** (the preview status shows the inferred `T`/`Z`).
+
   Per channel: **Preview** (▷) runs native masks on the current frame so you can
   tune diameter/min-size/gamma first; **Segment** (▶) runs Cellpose native masks
-  over the whole stack; **Track** (⊳) links them over time with laptrack
-  (max-distance / frame-gap in *Tracking parameters*). Results land as layers
-  tagged `[Nucleus]` / `[Cell]` (`… masks`, `… tracked`, `… preview`); save them
-  via napari.
+  over the whole stack; **Track** (⊳) links them **axis-by-axis** — it stitches
+  the `z` axis by overlap (so a cell spanning planes becomes one object), then
+  tracks time by motion with laptrack (max-distance / frame-gap in *Tracking
+  parameters*). Results land as layers tagged `[Nucleus]` / `[Cell]` (`… masks`,
+  `… tracked`, `… preview`); save them via napari.
 
   **Joint** (⧉) — enabled once *both* a nucleus and a cell input are set — runs a
   nucleus-anchored cell segmentation instead of independent masks: it segments
@@ -72,8 +78,10 @@ so importing the package does not require them.
 
 ## I/O contract
 
-- **Input:** any multi-dimensional `nucleus` / `cell` `.tif` (2D/2D+t/3D/3D+t),
-  picked explicitly — there is no required `0_input/` layout.
+- **Input:** any 2-D..4-D `nucleus` / `cell` `.tif`, picked explicitly — there is
+  no required `0_input/` layout and **no layout to declare**. Every plane is
+  segmented individually; for tracking the shorter leading axis is read as `Z`,
+  the longer as time.
 - **Output:** napari **layers**, not files. Masks/tracked/preview are added as
   `int32` Labels layers tagged `[Nucleus]` / `[Cell]` (singleton-Z squeezed to
   `(T, Y, X)` for 2D+t data); the user saves them with napari's *Save Selected

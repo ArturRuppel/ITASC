@@ -13,6 +13,72 @@ import pytest
 from cellflow.cellpose import track_laptrack as tl
 
 
+def test_stitch_z_merges_overlapping_planes_into_one_object():
+    # (T=1, Z=3): a 4x4 block at the same (y,x) in all 3 z-planes, each plane
+    # independently labelled (10, 11, 12). They overlap fully → one object.
+    masks = np.zeros((1, 3, 6, 6), dtype=np.int32)
+    masks[0, 0, 1:5, 1:5] = 10
+    masks[0, 1, 1:5, 1:5] = 11
+    masks[0, 2, 1:5, 1:5] = 12
+    out = tl.stitch_z(masks, iou_threshold=0.25)
+    block = out[0, :, 1:5, 1:5]
+    assert (block == block[0, 0, 0]).all() and block[0, 0, 0] != 0
+
+
+def test_stitch_z_keeps_non_overlapping_objects_separate():
+    masks = np.zeros((1, 2, 8, 8), dtype=np.int32)
+    masks[0, 0, 0:3, 0:3] = 5
+    masks[0, 1, 5:8, 5:8] = 7
+    out = tl.stitch_z(masks, iou_threshold=0.25)
+    assert len({int(v) for v in np.unique(out) if v != 0}) == 2
+
+
+def test_stitch_z_single_slice_is_noop():
+    masks = np.zeros((2, 1, 4, 4), dtype=np.int32)
+    masks[0, 0, 1, 1] = 3
+    assert np.array_equal(tl.stitch_z(masks), masks)
+
+
+def test_track_axiswise_single_slice_tracks_time(monkeypatch):
+    masks = np.zeros((2, 1, 6, 6), dtype=np.int32)
+    masks[0, 0, 2:4, 0:2] = 1
+    masks[1, 0, 2:4, 2:4] = 1
+
+    def _fake_run(df, *, max_distance, max_frame_gap):
+        df = df.copy()
+        df["track_id"] = 0
+        return df
+
+    monkeypatch.setattr(tl, "_run_laptrack", _fake_run)
+    tracked = tl.track_axiswise(masks, max_distance=10.0, max_frame_gap=0)
+    assert tracked.shape == (2, 1, 6, 6)
+    assert set(np.unique(tracked)) == {0, 1}
+
+
+def test_track_axiswise_stitches_z_before_tracking(monkeypatch):
+    # (T=2, Z=2): an object spans both z-planes per frame, planes labelled
+    # separately. Stitch must merge them so the tracker sees ONE object/frame.
+    masks = np.zeros((2, 2, 8, 8), dtype=np.int32)
+    masks[0, 0, 1:4, 1:4] = 1
+    masks[0, 1, 1:4, 1:4] = 2
+    masks[1, 0, 1:4, 1:4] = 3
+    masks[1, 1, 1:4, 1:4] = 4
+
+    seen = {}
+
+    def _fake_run(df, *, max_distance, max_frame_gap):
+        for f in df["frame"].unique():
+            seen[int(f)] = int(df[df["frame"] == f]["label"].nunique())
+        df = df.copy()
+        df["track_id"] = 0
+        return df
+
+    monkeypatch.setattr(tl, "_run_laptrack", _fake_run)
+    tracked = tl.track_axiswise(masks, max_distance=10.0)
+    assert seen == {0: 1, 1: 1}  # one stitched object per frame, not two per-z
+    assert set(np.unique(tracked)) == {0, 1}
+
+
 def _two_frame_stack():
     """(T=2, Z=1, Y=6, X=6) with one object that moves +2 in x between frames."""
     masks = np.zeros((2, 1, 6, 6), dtype=np.int32)

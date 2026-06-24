@@ -25,8 +25,6 @@ from napari.layers import Labels
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QCheckBox,
-    QComboBox,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -54,11 +52,9 @@ from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 from cellflow.cellpose import joint as joint_mod
 from cellflow.cellpose.flow_following import FlowFollowingParams
+from cellflow.cellpose.shape import describe_axes, to_canonical_tzyx
 
 logger = logging.getLogger(__name__)
-
-_LAYOUT_OPTIONS = ["2D", "2D+t", "3D", "3D+t"]
-_DEFAULT_LAYOUT = "3D+t"
 
 
 # ---------------------------------------------------------------------------
@@ -105,15 +101,16 @@ def segment_channel(
     in_path: Path,
     channel: str,
     params,
-    layout: str,
     *,
     progress_cb=None,
     cancel_cb=None,
 ) -> np.ndarray:
-    """Load a raw stack and return native masks ``(T, Z, Y, X)`` for ``channel``."""
-    stack = cellpose_runner.to_tzyx(
-        np.asarray(tifffile.imread(str(in_path))), layout
-    )
+    """Load a raw stack and return per-plane native masks ``(T, Z, Y, X)``.
+
+    The input is canonicalised layout-free (:func:`to_canonical_tzyx`) — no
+    2D/2D+t/3D/3D+t declaration — and every plane is segmented individually.
+    """
+    stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(in_path))))
     if channel == "nucleus":
         return native_masks.run_nucleus_masks_stack(
             stack, params, progress_cb=progress_cb, cancel_cb=cancel_cb
@@ -129,9 +126,13 @@ def track_channel(
     max_distance: float,
     max_frame_gap: int,
 ) -> np.ndarray:
-    """Link an in-memory ``(T, Z, Y, X)`` mask stack across time (laptrack)."""
+    """Axis-by-axis linking of an in-memory mask stack: stitch z, then track t.
+
+    See :func:`track_laptrack.track_axiswise`. Single-slice input reduces to plain
+    time tracking.
+    """
     masks = _to_tzyx(masks_tzyx)
-    return track_laptrack.track_masks(
+    return track_laptrack.track_axiswise(
         masks, max_distance=max_distance, max_frame_gap=max_frame_gap
     )
 
@@ -163,8 +164,6 @@ def preview_channel_masks(
 def segment_track_joint(
     nuc_path: Path,
     cell_path: Path,
-    nuc_layout: str,
-    cell_layout: str,
     nuc_params,
     cell_params,
     flow_params: FlowFollowingParams,
@@ -174,30 +173,19 @@ def segment_track_joint(
     progress_cb=None,
     cancel_cb=None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load both channels and run the joint nucleus-anchored path.
+    """Load both channels (layout-free) and run the joint nucleus-anchored path.
 
     Returns ``(nucleus_tracked, cell_tracked)`` as ``(T, Z, Y, X)`` int32 stacks
     that share label ids (one cell per nucleus). The cell stack is tracked by
     inheriting the nucleus tracks, so it needs no separate tracker.
     """
-    nuc_stack = cellpose_runner.to_tzyx(
-        np.asarray(tifffile.imread(str(nuc_path))), nuc_layout
-    )
-    cell_stack = cellpose_runner.to_tzyx(
-        np.asarray(tifffile.imread(str(cell_path))), cell_layout
-    )
+    nuc_stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(nuc_path))))
+    cell_stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(cell_path))))
     return joint_mod.joint_segment_track(
         nuc_stack, cell_stack, nuc_params, cell_params, flow_params,
         max_distance=max_distance, max_frame_gap=max_frame_gap,
         progress_cb=progress_cb, cancel_cb=cancel_cb,
     )
-
-
-def _layout_combo() -> QComboBox:
-    combo = QComboBox()
-    combo.addItems(_LAYOUT_OPTIONS)
-    combo.setCurrentText(_DEFAULT_LAYOUT)
-    return combo
 
 
 def _make_status() -> QLabel:
@@ -352,50 +340,33 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         root.addWidget(self.progress_bar)
 
     def _build_nucleus_params_section(self) -> CollapsibleSection:
+        # No input-layout / 3D-mode / anisotropy: segmentation is layout-free and
+        # per-plane (the shorter leading axis is treated as z for tracking).
         body = QWidget(self)
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
-        self.nuc_layout_combo = _layout_combo()
-        self.nuc_3d_chk = QCheckBox("3D mode")
-        self.nuc_3d_chk.setChecked(True)
-        self.nuc_anisotropy_spin = _dslider(0.1, 20.0, 1.5, 0.1, 2)
         self.nuc_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
         self.nuc_min_size_spin = _islider(0, 100000, 15)
         self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
-        row = 0
-        add_section_pair_row(grid, row, "Input layout:", self.nuc_layout_combo); row += 1
         add_section_pair_row(
-            grid, row, "3D mode:", self.nuc_3d_chk, "Anisotropy:", self.nuc_anisotropy_spin
-        ); row += 1
-        add_section_pair_row(
-            grid, row, "Diameter:", self.nuc_diameter_spin, "Min size:", self.nuc_min_size_spin
-        ); row += 1
-        add_section_pair_row(grid, row, "Gamma:", self.nuc_gamma_spin)
-        self.nuc_layout_combo.currentTextChanged.connect(self._sync_nucleus_3d_enabled)
-        self._sync_nucleus_3d_enabled(self.nuc_layout_combo.currentText())
+            grid, 0, "Diameter:", self.nuc_diameter_spin, "Min size:", self.nuc_min_size_spin
+        )
+        add_section_pair_row(grid, 1, "Gamma:", self.nuc_gamma_spin)
         return CollapsibleSection("Nucleus parameters", body, expanded=False)
-
-    def _sync_nucleus_3d_enabled(self, layout: str) -> None:
-        has_z = cellpose_runner.layout_has_z(layout)
-        self.nuc_3d_chk.setEnabled(has_z)
-        self.nuc_anisotropy_spin.setEnabled(has_z)
 
     def _build_cell_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
-        self.cell_layout_combo = _layout_combo()
         self.cell_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
         self.cell_min_size_spin = _islider(0, 100000, 0)
         self.cell_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
-        row = 0
-        add_section_pair_row(grid, row, "Input layout:", self.cell_layout_combo); row += 1
         add_section_pair_row(
-            grid, row, "Diameter:", self.cell_diameter_spin, "Min size:", self.cell_min_size_spin
-        ); row += 1
-        add_section_pair_row(grid, row, "Gamma:", self.cell_gamma_spin)
+            grid, 0, "Diameter:", self.cell_diameter_spin, "Min size:", self.cell_min_size_spin
+        )
+        add_section_pair_row(grid, 1, "Gamma:", self.cell_gamma_spin)
         return CollapsibleSection("Cell parameters", body, expanded=False)
 
     def _build_joint_params_section(self) -> CollapsibleSection:
@@ -507,17 +478,13 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self._save_path_settings(self._SETTINGS_APP, self._standalone_fields())
 
     # ------------------------------------------------------------- params
-    def _channel_layout(self, channel: str) -> str:
-        combo = self.nuc_layout_combo if channel == "nucleus" else self.cell_layout_combo
-        return combo.currentText()
-
     def _build_nucleus_params(self) -> cellpose_runner.NucleusParams:
-        do_3d = self.nuc_3d_chk.isChecked() and cellpose_runner.layout_has_z(
-            self._channel_layout("nucleus")
-        )
+        # Standalone segments every plane individually: do_3d is always off
+        # (anisotropy is then unused), so true-3D nucleus segmentation is the
+        # app's domain, not the standalone's.
         return cellpose_runner.NucleusParams(
-            do_3d=do_3d,
-            anisotropy=float(self.nuc_anisotropy_spin.value()),
+            do_3d=False,
+            anisotropy=1.0,
             diameter=float(self.nuc_diameter_spin.value()),
             min_size=int(self.nuc_min_size_spin.value()),
             gamma=float(self.nuc_gamma_spin.value()),
@@ -559,7 +526,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._status(f"Missing input for {channel}.")
             return
         params = self._channel_params(channel)
-        layout = self._channel_layout(channel)
         self._cancel_requested = False
         progress_signal = self._progress_signal
         masks_name = _layer_name(channel, "masks")
@@ -577,7 +543,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 1, "Loading input...")
             return segment_channel(
-                in_path, channel, params, layout,
+                in_path, channel, params,
                 progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
                 cancel_cb=lambda: self._cancel_requested,
             )
@@ -631,8 +597,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         nuc_params = self._build_nucleus_params()
         cell_params = self._build_cell_params()
         flow_params = self._build_flow_params()
-        nuc_layout = self._channel_layout("nucleus")
-        cell_layout = self._channel_layout("cell")
         max_distance = float(self.track_max_dist_spin.value())
         max_frame_gap = int(self.track_gap_spin.value())
         self._cancel_requested = False
@@ -657,7 +621,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 4, "Loading inputs...")
             return segment_track_joint(
-                nuc_path, cell_path, nuc_layout, cell_layout,
+                nuc_path, cell_path,
                 nuc_params, cell_params, flow_params,
                 max_distance=max_distance, max_frame_gap=max_frame_gap,
                 progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
@@ -679,13 +643,11 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._status(f"Missing input for {channel}.")
             return
         params = self._channel_params(channel)
-        layout = self._channel_layout(channel)
         self._cancel_requested = False
         progress_signal = self._progress_signal
         try:
-            stack = cellpose_runner.to_tzyx(
-                np.asarray(tifffile.imread(str(in_path))), layout
-            )
+            raw = np.asarray(tifffile.imread(str(in_path)))
+            stack = to_canonical_tzyx(raw)
         except Exception as exc:
             self._status(f"Error: {exc}")
             logger.exception("preview load error", exc_info=exc)
@@ -694,13 +656,16 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self._add_image(_layer_name(channel, "image"), stack)
         t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
         preview_name = _layer_name(channel, "preview")
+        axes_desc = describe_axes(tuple(int(s) for s in raw.shape))
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
             self._add_labels(preview_name, result)
-            self._status(f"{channel.title()} preview (frame t={t}) → '{preview_name}'.")
+            self._status(
+                f"{channel.title()} preview (frame t={t}; {axes_desc}) → '{preview_name}'."
+            )
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
@@ -765,15 +730,11 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
     def get_state(self) -> dict:
         return {
             "nucleus": {
-                "layout": self.nuc_layout_combo.currentText(),
-                "do_3d": self.nuc_3d_chk.isChecked(),
-                "anisotropy": self.nuc_anisotropy_spin.value(),
                 "diameter": self.nuc_diameter_spin.value(),
                 "min_size": self.nuc_min_size_spin.value(),
                 "gamma": self.nuc_gamma_spin.value(),
             },
             "cell": {
-                "layout": self.cell_layout_combo.currentText(),
                 "diameter": self.cell_diameter_spin.value(),
                 "min_size": self.cell_min_size_spin.value(),
                 "gamma": self.cell_gamma_spin.value(),

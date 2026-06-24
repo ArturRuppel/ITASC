@@ -71,7 +71,7 @@ def joint_segment_track(
         nucleus_stack, nucleus_params, cancel_cb=cancel_cb,
     )
     _report(1, 4, "Tracking nuclei...")
-    nuc_tracked = track_laptrack.track_masks(
+    nuc_tracked = track_laptrack.track_axiswise(
         nuc_masks, max_distance=max_distance, max_frame_gap=max_frame_gap,
     ).astype(np.int32)
 

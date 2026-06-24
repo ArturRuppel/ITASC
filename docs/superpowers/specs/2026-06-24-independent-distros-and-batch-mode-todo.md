@@ -174,7 +174,21 @@ the app.
 
 ---
 
-## P3.5 — Drop input-format selection; segment per-frame, track axis-by-axis (medium)
+## P3.5 — Drop input-format selection; segment per-frame, track axis-by-axis (medium) — ✅ DONE
+
+**Implemented 2026-06-25.** Layout-free input via
+`cellflow/cellpose/shape.py:to_canonical_tzyx` (shorter leading axis = Z, longer
+= T; no 2D/2D+t/3D/3D+t picker, no 3D-mode/anisotropy). Axis-by-axis tracking via
+`track_laptrack.stitch_z` (IoU stitch through z) + `track_axiswise` (stitch z →
+track t); `joint.joint_segment_track` uses it too. The standalone widget's layout
+combos, 3D-mode and anisotropy are removed; the preview status shows the inferred
+T/Z. App's `cellpose_runner.to_tzyx`/`layout_has_z` + `CellposeWidget` keep the
+4-way layout for the integrated pipeline (true-3D stays the app's domain).
+Tests: `tests/cellpose/test_shape.py`, stitch/axiswise cases in
+`tests/cellpose/test_track_laptrack.py`, widget cases in
+`tests/napari/test_cellpose_segment_track_widget.py`. Original plan below.
+
+### (original) P3.5 — Drop input-format selection; segment per-frame, track axis-by-axis (medium)
 
 **Insight:** the standalone distro does **not** support Cellpose stitching or true
 3D mode — so it never needs to *know* the input layout (2D / 2D+t / 3D / 3D+t).
