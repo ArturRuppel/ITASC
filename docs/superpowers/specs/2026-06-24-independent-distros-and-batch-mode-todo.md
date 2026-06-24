@@ -174,6 +174,54 @@ the app.
 
 ---
 
+## P3.5 — Drop input-format selection; segment per-frame, track axis-by-axis (medium)
+
+**Insight:** the standalone distro does **not** support Cellpose stitching or true
+3D mode — so it never needs to *know* the input layout (2D / 2D+t / 3D / 3D+t).
+Segmenting "every frame individually" **is** what stitching reduces to anyway:
+treat the input as a flat stack of 2D planes and run native masks on each. That
+removes the whole format-declaration surface (the `layout` arg, `do_3d`,
+`anisotropy`, `cellpose_runner.to_tzyx(…, "2D+t")`, the `_to_tzyx` layout
+guessing) from the standalone — the user just points at a `.tif` and we segment
+its planes.
+
+**Tracking generalises to follow:** once every plane is segmented independently,
+tracking is "link labels along one axis, then the other." For 2D+t that is just
+the existing T-linking. For 3D+t it becomes two passes — e.g. link within Z to
+make each timepoint's planes into cohesive 3D objects, then link those objects
+across T (or T-first then Z). **The second axis needs care:** naive per-axis LAP
+can fragment a cell (a label cohesive in plane *k* drifting from plane *k+1*), so
+the cross-axis pass needs an overlap/centroid-consistency rule to keep objects
+whole, not just nearest-centroid.
+
+**Scope:** standalone Cellpose distro only — same hard constraint as P3. The app's
+`CellposeWidget`, divergence path, and `cellpose_runner.to_tzyx`/`do_3d` 3D mode
+stay exactly as they are (the app *does* use real 3D). This only simplifies what
+the **standalone** widget + its backend expose.
+
+### Tasks (TDD)
+- [ ] Backend: a layout-free `segment_planes(stack)` that flattens any input to a
+      stack of 2D planes, runs native masks per plane, and returns labels in the
+      same shape. Supersedes the standalone's reliance on `to_tzyx(…, layout)` /
+      `do_3d`. App's `native_masks` 3D nucleus path is untouched.
+- [ ] Widget: remove the format/layout picker and the `do_3d`/`anisotropy`
+      params from the standalone surface; the file pickers alone drive it.
+- [ ] Tracking: `track_axis_by_axis(labels)` — link along the fastest axis first,
+      then the slower one with an **overlap-consistency** merge so per-plane labels
+      stay one object. 2D+t collapses to today's single T-link.
+- [ ] Tests: per-plane segmentation on 2D / 3D / 3D+t inputs gives plane-wise
+      labels with no layout arg; axis-by-axis tracking keeps a synthetic object
+      cohesive across both axes; the app's 3D nucleus path is unchanged.
+
+**Risk:** medium — the per-frame segmentation simplification is easy and a clear
+win; the **two-axis tracking cohesion** is the real work (don't ship naive
+per-axis LAP). Keep it standalone-only so the app's genuine 3D handling is safe.
+
+**Cross-links:** removes the `layout`/`do_3d` surface that P3's widget still
+carries; P2's commit-to-`cell_labels.tif` still applies to the tracked output.
+
+---
+
 ## P4 — Flexible batch mode (hardest, bolted on top)
 
 **What:** Port napariTFM's `ExperimentsList`-at-top idea. One shared list of
@@ -221,5 +269,8 @@ experiments. Largest of the three; do last.
 - P3: Option A vs B for the distro/app seam; whether nucleus also gets native
       masks in the standalone distro (default: cell only — nucleus standalone use
       is served by `cellflow-tracking`).
+- P3.5: which axis to link first for 3D+t (Z-then-T vs T-then-Z), and the
+      cohesion rule for the second pass (IoU overlap vs centroid-graph) so per-plane
+      labels don't fragment into separate tracks.
 - P4: experiment granularity (position vs project) and headless-vs-in-app batch
       execution.
