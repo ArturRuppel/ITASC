@@ -52,6 +52,8 @@ from cellflow.napari.ui_style import (
 from cellflow.napari.widgets import CollapsibleSection
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
+from cellflow.cellpose import joint as joint_mod
+from cellflow.cellpose.flow_following import FlowFollowingParams
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +158,39 @@ def preview_channel_masks(
     else:
         out[t, z] = native_masks.run_cell_masks_frame(frame, z=z, params=params)
     return out
+
+
+def segment_track_joint(
+    nuc_path: Path,
+    cell_path: Path,
+    nuc_layout: str,
+    cell_layout: str,
+    nuc_params,
+    cell_params,
+    flow_params: FlowFollowingParams,
+    *,
+    max_distance: float,
+    max_frame_gap: int,
+    progress_cb=None,
+    cancel_cb=None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Load both channels and run the joint nucleus-anchored path.
+
+    Returns ``(nucleus_tracked, cell_tracked)`` as ``(T, Z, Y, X)`` int32 stacks
+    that share label ids (one cell per nucleus). The cell stack is tracked by
+    inheriting the nucleus tracks, so it needs no separate tracker.
+    """
+    nuc_stack = cellpose_runner.to_tzyx(
+        np.asarray(tifffile.imread(str(nuc_path))), nuc_layout
+    )
+    cell_stack = cellpose_runner.to_tzyx(
+        np.asarray(tifffile.imread(str(cell_path))), cell_layout
+    )
+    return joint_mod.joint_segment_track(
+        nuc_stack, cell_stack, nuc_params, cell_params, flow_params,
+        max_distance=max_distance, max_frame_gap=max_frame_gap,
+        progress_cb=progress_cb, cancel_cb=cancel_cb,
+    )
 
 
 def _layout_combo() -> QComboBox:
@@ -274,6 +309,28 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.tracking_section = self._build_tracking_params_section()
         root.addWidget(self.tracking_section)
 
+        # ── Joint row (nucleus-anchored cell; needs both inputs) ──
+        # When both channels are present, the cell is segmented by flowing its
+        # foreground along the Cellpose flow field onto the tracked nuclei (one
+        # cell per nucleus, sharing its id). This is an explicit action — the
+        # single-channel native-masks + laptrack path above is left untouched.
+        self.joint_params_btn = _tool_btn("⚙", "Joint parameters.", checkable=True)
+        self.joint_run_btn = _tool_btn(
+            "⧉", "Joint nucleus-anchored cell segmentation + tracking (needs both inputs)."
+        )
+        for b in (self.joint_params_btn, self.joint_run_btn):
+            stage_header_action_button(b, "cellpose")
+        self.joint_section = self._build_joint_params_section()
+        self.joint_section.set_header_visible(False)
+        self.joint_section.collapse()
+        self.joint_params_btn.toggled.connect(
+            lambda checked: self.joint_section._toggle.setChecked(checked)
+        )
+        root.addLayout(self._stage_row(
+            self._stage_label("Joint"), self.joint_params_btn, self.joint_run_btn,
+        ))
+        root.addWidget(self.joint_section)
+
         # ── Cell correction ──
         # Reuse the app's *basic* cell corrector — the ultrack/OverlapDB-free one
         # — bound to whatever Labels layer is active, so segment → track → correct
@@ -341,6 +398,23 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         add_section_pair_row(grid, row, "Gamma:", self.cell_gamma_spin)
         return CollapsibleSection("Cell parameters", body, expanded=False)
 
+    def _build_joint_params_section(self) -> CollapsibleSection:
+        body = QWidget(self)
+        grid = section_grid()
+        grid.setContentsMargins(8, 4, 4, 4)
+        body.setLayout(grid)
+        self.joint_fg_thr_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
+        self.joint_flow_weight_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
+        self.joint_radius_spin = _dslider(1.0, 200.0, 30.0, 1.0, 1)
+        row = 0
+        add_section_pair_row(
+            grid, row,
+            "FG threshold:", self.joint_fg_thr_spin,
+            "Flow weight:", self.joint_flow_weight_spin,
+        ); row += 1
+        add_section_pair_row(grid, row, "Max assign radius:", self.joint_radius_spin)
+        return CollapsibleSection("Joint parameters", body, expanded=False)
+
     def _build_tracking_params_section(self) -> CollapsibleSection:
         body = QWidget(self)
         grid = section_grid()
@@ -378,6 +452,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.cell_seg_btn.clicked.connect(lambda: self._on_action("cell", "seg"))
         self.nucleus_track_btn.clicked.connect(lambda: self._on_action("nucleus", "track"))
         self.cell_track_btn.clicked.connect(lambda: self._on_action("cell", "track"))
+        self.joint_run_btn.clicked.connect(self._on_joint_action)
 
     def _on_action(self, channel: str, kind: str) -> None:
         if self._running is not None:
@@ -389,6 +464,12 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._run_track(channel)
         else:
             self._preview_channel(channel)
+
+    def _on_joint_action(self) -> None:
+        if self._running is not None:
+            self._on_cancel()
+            return
+        self._run_joint()
 
     def _on_cancel(self) -> None:
         self._cancel_requested = True
@@ -447,6 +528,19 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             diameter=float(self.cell_diameter_spin.value()),
             min_size=int(self.cell_min_size_spin.value()),
             gamma=float(self.cell_gamma_spin.value()),
+        )
+
+    def _build_flow_params(self) -> FlowFollowingParams:
+        return FlowFollowingParams(
+            fg_threshold=float(self.joint_fg_thr_spin.value()),
+            flow_weight=float(self.joint_flow_weight_spin.value()),
+            max_assign_radius=float(self.joint_radius_spin.value()),
+        )
+
+    def _both_inputs(self) -> bool:
+        return (
+            self._nucleus_path is not None and self._nucleus_path.exists()
+            and self._cell_path is not None and self._cell_path.exists()
         )
 
     def _channel_input(self, channel: str) -> Path | None:
@@ -525,6 +619,57 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
         self._set_running(f"{channel}_track")
         self._status(f"Tracking {channel} masks (laptrack)...")
+        self._worker = _worker()
+
+    # --------------------------------------------------------------- run: joint
+    def _run_joint(self) -> None:
+        if not self._both_inputs():
+            self._status("Joint mode needs both a nucleus and a cell input.")
+            return
+        nuc_path = self._nucleus_path
+        cell_path = self._cell_path
+        nuc_params = self._build_nucleus_params()
+        cell_params = self._build_cell_params()
+        flow_params = self._build_flow_params()
+        nuc_layout = self._channel_layout("nucleus")
+        cell_layout = self._channel_layout("cell")
+        max_distance = float(self.track_max_dist_spin.value())
+        max_frame_gap = int(self.track_gap_spin.value())
+        self._cancel_requested = False
+        progress_signal = self._progress_signal
+        nuc_name = _layer_name("nucleus", "tracked")
+        cell_name = _layer_name("cell", "tracked")
+
+        def _done(result):
+            nuc_tracked, cell_tracked = result
+            self._worker = None
+            self._set_running(None)
+            self._clear_progress()
+            self._add_labels(nuc_name, nuc_tracked)
+            self._add_labels(cell_name, cell_tracked)
+            self._status(
+                f"Joint → '{nuc_name}' + '{cell_name}' (paired ids). Save from the layers."
+            )
+
+        @thread_worker(connect={
+            "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+        })
+        def _worker():
+            yield (0, 4, "Loading inputs...")
+            return segment_track_joint(
+                nuc_path, cell_path, nuc_layout, cell_layout,
+                nuc_params, cell_params, flow_params,
+                max_distance=max_distance, max_frame_gap=max_frame_gap,
+                progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
+                cancel_cb=lambda: self._cancel_requested,
+            )
+
+        self._set_running("joint")
+        self._status(
+            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            if not cellpose_runner.is_model_loaded()
+            else "Running joint segmentation..."
+        )
         self._worker = _worker()
 
     # ----------------------------------------------------------- run: preview
@@ -637,6 +782,11 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
                 "max_distance": self.track_max_dist_spin.value(),
                 "max_frame_gap": self.track_gap_spin.value(),
             },
+            "joint": {
+                "fg_threshold": self.joint_fg_thr_spin.value(),
+                "flow_weight": self.joint_flow_weight_spin.value(),
+                "max_assign_radius": self.joint_radius_spin.value(),
+            },
         }
 
     # -------------------------------------------------------- state helpers
@@ -672,9 +822,18 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         g = self.gate
         g.register(self.nucleus_params_btn, ControlClass.HARMLESS)
         g.register(self.cell_params_btn, ControlClass.HARMLESS)
+        g.register(self.joint_params_btn, ControlClass.HARMLESS)
         for btn in self._action_buttons():
             own = lambda b=btn: self._running is None or self._active_btn() is b
             g.register(btn, ControlClass.RUN_VIEWER, when=own)
+        # Joint also requires both inputs to be present.
+        g.register(
+            self.joint_run_btn, ControlClass.RUN_VIEWER,
+            when=lambda: (
+                (self._running is None or self._active_btn() is self.joint_run_btn)
+                and self._both_inputs()
+            ),
+        )
         g.recompute()
 
     def _btn_for_key(self):
@@ -685,6 +844,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             "cell_preview": self.cell_preview_btn,
             "cell_seg": self.cell_seg_btn,
             "cell_track": self.cell_track_btn,
+            "joint": self.joint_run_btn,
         }
 
     def _active_btn(self):
@@ -693,6 +853,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
     _DEFAULT_GLYPHS = {
         "nucleus_preview": "▷", "nucleus_seg": "▶", "nucleus_track": "⊳",
         "cell_preview": "▷", "cell_seg": "▶", "cell_track": "⊳",
+        "joint": "⧉",
     }
 
     def _set_running(self, key: str | None) -> None:

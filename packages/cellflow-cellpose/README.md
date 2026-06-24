@@ -41,6 +41,18 @@ so importing the package does not require them.
   tagged `[Nucleus]` / `[Cell]` (`… masks`, `… tracked`, `… preview`); save them
   via napari.
 
+  **Joint** (⧉) — enabled once *both* a nucleus and a cell input are set — runs a
+  nucleus-anchored cell segmentation instead of independent masks: it segments
+  and tracks the nuclei, then flows each cell-foreground pixel along Cellpose's
+  flow field (blended with a pull toward the nearest nucleus) and assigns it to a
+  nucleus. You get **one cell per nucleus, sharing the nucleus' track id** —
+  `[Nucleus] tracked` and `[Cell] tracked` are paired by construction (the cell
+  is tracked by inheriting the nucleus tracks, not a separate tracker). *Joint
+  parameters*: **FG threshold** (cell-foreground cutoff on the sigmoid), **Flow
+  weight** (Cellpose flow vs. pull-to-nucleus), **Max assign radius** (foreground
+  farther than this from any nucleus is left unassigned). The single-channel
+  Segment/Track path above is unchanged.
+
   The embedded **Correction** panel (the basic, ultrack-free cell corrector)
   edits whatever **Labels** layer is currently active — typically `[Cell] tracked`
   — in place: contour extend/carve, fill-holes and stranded-fragment cleanup. It

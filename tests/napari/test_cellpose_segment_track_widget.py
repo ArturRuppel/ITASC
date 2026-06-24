@@ -156,6 +156,88 @@ def test_widget_exposes_rows_actions_and_no_output_dir():
     w.deleteLater()
 
 
+def test_widget_exposes_joint_action_and_params():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    for name in ("joint_params_btn", "joint_run_btn"):
+        assert isinstance(getattr(w, name), QToolButton), name
+    assert w.joint_run_btn.text() == "⧉"
+    # The joint flow-following knobs are exposed (decision: fg_threshold is a knob).
+    params = w._build_flow_params()
+    assert params.fg_threshold == 0.5
+    assert params.flow_weight == 0.5
+    assert params.max_assign_radius == 30.0
+    w.deleteLater()
+
+
+def test_joint_button_disabled_until_both_inputs(tmp_path: Path):
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # Clear any paths restored from persisted QSettings so the test is deterministic.
+    w._nucleus_edit.setText("")
+    w._cell_edit.setText("")
+    w._apply_paths()
+    # No inputs → joint disabled.
+    assert w._both_inputs() is False
+    assert w.joint_run_btn.isEnabled() is False
+    # Only one input → still disabled.
+    nuc = tmp_path / "nuc.tif"
+    tifffile.imwrite(str(nuc), np.zeros((2, 4, 4), dtype=np.float32))
+    w._nucleus_edit.setText(str(nuc))
+    w._apply_paths()
+    assert w._both_inputs() is False
+    assert w.joint_run_btn.isEnabled() is False
+    # Both inputs → enabled.
+    cell = tmp_path / "cell.tif"
+    tifffile.imwrite(str(cell), np.zeros((2, 4, 4), dtype=np.float32))
+    w._cell_edit.setText(str(cell))
+    w._apply_paths()
+    assert w._both_inputs() is True
+    assert w.joint_run_btn.isEnabled() is True
+    w.deleteLater()
+
+
+def test_segment_track_joint_returns_paired_stacks(tmp_path: Path, monkeypatch):
+    """The widget's joint compute fn loads both stacks and pairs cell→nucleus ids."""
+    nuc = tmp_path / "nuc.tif"
+    cell = tmp_path / "cell.tif"
+    tifffile.imwrite(str(nuc), np.zeros((2, 8, 8), dtype=np.float32))
+    tifffile.imwrite(str(cell), np.zeros((2, 8, 8), dtype=np.float32))
+
+    captured = {}
+
+    def _fake_joint(nuc_stack, cell_stack, *a, **k):
+        captured["nuc_shape"] = nuc_stack.shape
+        captured["cell_shape"] = cell_stack.shape
+        tracked = np.zeros((2, 1, 8, 8), dtype=np.int32)
+        tracked[:, 0, 4, 4] = 6
+        return tracked, tracked.copy()
+
+    monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
+    nuc_out, cell_out = stw.segment_track_joint(
+        nuc, cell, "2D+t", "2D+t",
+        cellpose_runner.NucleusParams(
+            do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+        ),
+        cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0),
+        stw.FlowFollowingParams(),
+        max_distance=15.0, max_frame_gap=0,
+    )
+    # 2D+t input was canonicalised to (T, Z, Y, X) before joint compute.
+    assert captured["nuc_shape"] == (2, 1, 8, 8)
+    assert set(np.unique(cell_out)) == set(np.unique(nuc_out)) == {0, 6}
+
+
+def test_set_running_joint_swaps_glyph():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    w._set_running("joint")
+    assert w.joint_run_btn.text() == "✕"
+    w._set_running(None)
+    assert w.joint_run_btn.text() == "⧉"
+    w.deleteLater()
+
+
 def test_widget_has_no_output_dir_or_file_contract_in_source():
     src = Path(stw.__file__).read_text()
     # results are layers, so there is no flat-file output contract anymore.
