@@ -142,8 +142,9 @@ def test_set_running_swaps_glyph_to_cancel():
 # ── source/file contract ────────────────────────────────────────────────────
 def test_widget_uses_flat_output_contract():
     src = Path(stw.__file__).read_text()
-    assert "nucleus_masks.tif" in src and "cell_masks.tif" in src
-    assert "nucleus_tracked.tif" in src and "cell_tracked.tif" in src
+    # outputs are built flat from the channel name, in the chosen output dir.
+    assert "{channel}_masks.tif" in src
+    assert "{channel}_tracked.tif" in src
     # the standalone tool must NOT enforce the staged pipeline layout
     # (no staged-path string literals are built anywhere in the module).
     assert '"0_input"' not in src and "'0_input'" not in src

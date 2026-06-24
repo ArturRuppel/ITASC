@@ -48,34 +48,13 @@ from cellflow.napari.ui_style import (
     stage_header_label,
     status_label,
 )
-from cellflow.napari.widgets import (
-    CollapsibleSection,
-    PipelineFilesWidget,
-    make_pipeline_files_header,
-)
+from cellflow.napari.widgets import CollapsibleSection
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 
 logger = logging.getLogger(__name__)
 
 _LAYOUT_OPTIONS = ["2D", "2D+t", "3D", "3D+t"]
 _DEFAULT_LAYOUT = "3D+t"
-
-# Flat output contract (no staged subfolders).
-_PIPELINE_FILES = [
-    ("Native masks", [
-        ("nucleus_masks.tif", "Nucleus masks"),
-        ("cell_masks.tif", "Cell masks"),
-    ]),
-    ("Tracked labels", [
-        ("nucleus_tracked.tif", "Nucleus tracked"),
-        ("cell_tracked.tif", "Cell tracked"),
-    ]),
-]
-
-_REFERENCE_LAYER_NAMES = {
-    "nucleus": "Reference: Nucleus",
-    "cell": "Reference: Cell",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -209,21 +188,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._on_browse_output_dir, self._apply_paths,
         )
         root.addLayout(paths_col)
-
-        # ── Pipeline files (flat) ──
-        self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
-        self._pipeline_files_section = CollapsibleSection(
-            "Pipeline Files", self._files_widget, expanded=False,
-        )
-        (
-            self.pipeline_files_header,
-            self.pipeline_files_header_lbl,
-            self.pipeline_files_toggle_btn,
-        ) = make_pipeline_files_header(
-            self._pipeline_files_section, stage_key="cellpose", parent=self,
-        )
-        root.addWidget(self.pipeline_files_header)
-        root.addWidget(self._pipeline_files_section)
 
         # ── Nucleus row ──
         self.nucleus_params_btn = _tool_btn("⚙", "Nucleus parameters.", checkable=True)
@@ -378,7 +342,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self._cell_path = Path(cel) if cel else None
         self._output_dir = Path(out) if out else None
         self._save_standalone_settings()
-        self._files_widget.refresh(self._output_dir)
         self.gate.recompute()
 
     def _on_browse_nucleus(self) -> None:
@@ -451,7 +414,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._files_widget.refresh(out_dir)
             self._load_labels(f"{channel.title()} masks", result)
             self._status(f"{channel.title()} masks written → {Path(result).name}")
 
@@ -491,7 +453,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._files_widget.refresh(out_dir)
             self._load_labels(f"{channel.title()} tracked", result)
             self._status(f"{channel.title()} tracked → {Path(result).name}")
 
@@ -533,10 +494,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.viewer.add_labels(data.astype(np.int32), name=name)
 
     # ---------------------------------------------------------- public API
-    def refresh(self, pos_dir: Path | None = None) -> None:
-        # Standalone tool: no orchestrated pos_dir; refresh tracks the output dir.
-        self._files_widget.refresh(self._output_dir)
-
     def get_state(self) -> dict:
         return {
             "nucleus": {
