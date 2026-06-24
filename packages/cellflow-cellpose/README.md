@@ -4,7 +4,9 @@ Standalone **Cellpose segment + track** tool. It runs a local Cellpose-SAM model
 to produce **native masks** per channel, then links those masks across time with
 [`laptrack`](https://github.com/yfukai/laptrack) into tracked labels — a
 self-contained "segment then track" product that does not need the rest of the
-CellFlow pipeline.
+CellFlow pipeline. Every result is added to the napari viewer as a layer; **there
+is no output directory** — you save whichever layers you want via napari's own
+*Save Selected Layers*.
 
 > The integrated CellFlow app uses this distribution's Cellpose runner +
 > divergence maps for its in-app stage; those modules still ship here and are
@@ -31,15 +33,18 @@ so importing the package does not require them.
   explicit file pickers — point directly at your files, no enforced layout:
   - **Nucleus channel** — raw nucleus stack `.tif`
   - **Cell channel** — raw cell stack `.tif`
-  - **Output dir** — receives `{channel}_masks.tif` and `{channel}_tracked.tif`
 
-  Per channel: **Segment** runs Cellpose native masks; **Track** links them over
-  time with laptrack (max-distance / frame-gap in *Tracking parameters*).
+  Per channel: **Preview** (▷) runs native masks on the current frame so you can
+  tune diameter/min-size/gamma first; **Segment** (▶) runs Cellpose native masks
+  over the whole stack; **Track** (⊳) links them over time with laptrack
+  (max-distance / frame-gap in *Tracking parameters*). Results land as layers
+  tagged `[Nucleus]` / `[Cell]` (`… masks`, `… tracked`, `… preview`); save them
+  via napari.
 
-  After tracking, the embedded **Correction** panel (the basic, ultrack-free cell
-  corrector) edits the tracked **cell** labels in place — contour extend/carve,
-  fill-holes and stranded-fragment cleanup — and saves back to `cell_tracked.tif`.
-  It targets 2D+t (single-Z) cell labels.
+  The embedded **Correction** panel (the basic, ultrack-free cell corrector)
+  edits whatever **Labels** layer is currently active — typically `[Cell] tracked`
+  — in place: contour extend/carve, fill-holes and stranded-fragment cleanup. It
+  targets 2D+t (single-Z) labels; save the corrected layer via napari.
 
 - **Headless / scripting:**
 
@@ -57,6 +62,7 @@ so importing the package does not require them.
 
 - **Input:** any multi-dimensional `nucleus` / `cell` `.tif` (2D/2D+t/3D/3D+t),
   picked explicitly — there is no required `0_input/` layout.
-- **Output (flat, in the chosen dir):**
-  - `{channel}_masks.tif` — Cellpose native masks, `(T, Z, Y, X)` `int32`
-  - `{channel}_tracked.tif` — time-linked labels, stable id per track
+- **Output:** napari **layers**, not files. Masks/tracked/preview are added as
+  `int32` Labels layers tagged `[Nucleus]` / `[Cell]` (singleton-Z squeezed to
+  `(T, Y, X)` for 2D+t data); the user saves them with napari's *Save Selected
+  Layers*. The headless API above still returns plain `(T, Z, Y, X)` arrays.

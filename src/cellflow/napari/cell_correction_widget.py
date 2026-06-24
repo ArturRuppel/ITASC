@@ -88,6 +88,13 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
     cell_ref_path_provider, nucleus_ref_path_provider:
         Optional overrides for the cell / nucleus reference-image backdrops
         (default ``<pos_dir>/1_cellpose/*_foreground.tif``).  None → app default.
+    active_labels_layer_provider:
+        Optional zero-argument callable returning the napari **Labels** layer to
+        correct right now (or None when the active layer is not a Labels layer).
+        When given, the corrector runs in *active-layer mode*: it edits that
+        layer's data in place — no on-disk label file, no backdrop loading, no
+        layer hiding — and the user saves it via napari. Defaults to None →
+        unchanged disk-based app behaviour.
     parent:
         Optional Qt parent.
     """
@@ -101,6 +108,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         labels_path_provider: Callable[[], Path | None] | None = None,
         cell_ref_path_provider: Callable[[], Path | None] | None = None,
         nucleus_ref_path_provider: Callable[[], Path | None] | None = None,
+        active_labels_layer_provider: Callable[[], object] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -111,11 +119,17 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._labels_path_provider = labels_path_provider
         self._cell_ref_path_provider = cell_ref_path_provider
         self._nucleus_ref_path_provider = nucleus_ref_path_provider
+        self._active_labels_layer_provider = active_labels_layer_provider
+        self._active_bound_layer = None
         self._correction_view_state: LayerViewState | None = None
         self._correction_owned_layers: set[str] = set()
         self._correction_dirty: bool = False
         self._setup_ui()
         self._connect_signals()
+        # Active-layer mode has no on-disk target — saving is napari's job, so
+        # the in-widget disk-save button is hidden.
+        if self._active_labels_layer_provider is not None:
+            self.save_labels_btn.setVisible(False)
 
     # ------------------------------------------------------------------ #
     # pos_dir property — delegate to provider if available                #
@@ -363,12 +377,56 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         else:
             self.section.collapse()
 
+    def _active_layer_mode(self) -> bool:
+        """True when bound to the viewer's active Labels layer (standalone)."""
+        return self._active_labels_layer_provider is not None
+
     def _correction_data_available(self) -> bool:
-        """True when a tracked cell-label stack exists on disk to correct."""
+        """True when there is a cell-label stack to correct.
+
+        Active-layer mode: the provider yields a Labels layer (None otherwise).
+        Disk mode: a tracked cell-label file exists on disk.
+        """
+        if self._active_layer_mode():
+            return self._active_labels_layer_provider() is not None
         lp = self._cell_labels_path()
         return lp is not None and lp.exists()
 
+    def _toggle_active_layer_correction(self, active: bool) -> None:
+        """Bind/unbind the corrector to the viewer's active Labels layer.
+
+        Standalone mode: there is no on-disk label file — the corrector edits the
+        currently-active napari Labels layer in place and the user saves it via
+        napari. Activating does not capture/hide other layers or load backdrops;
+        deactivating loses nothing (edits already live in the layer), so there is
+        no unsaved-changes prompt.
+        """
+        if active:
+            layer = self._active_labels_layer_provider()
+            if layer is None:
+                self._correction_status(
+                    "Select a Labels layer to correct — the active layer is not one."
+                )
+                self._set_checked_without_signal(self.active_btn, False)
+                self._sync_correction_panel_visibility()
+                return
+            self._active_bound_layer = layer
+            self.viewer.layers.selection.active = layer
+            self.correction_widget.activate_layer(layer)
+            shape = tuple(np.asarray(layer.data).shape)
+            self._correction_status(f"Correcting '{layer.name}' {shape}.")
+            self._sync_correction_panel_visibility()
+            return
+        self._set_checked_without_signal(self.active_btn, False)
+        self.correction_widget.deactivate()
+        self._active_bound_layer = None
+        self._correction_dirty = False
+        self._sync_correction_panel_visibility()
+
     def _on_active_button_toggled(self, active: bool) -> None:
+        if self._active_layer_mode():
+            self._toggle_active_layer_correction(active)
+            return
         if active:
             if not self._correction_data_available():
                 self._correction_status("No cell labels available to correct.")
@@ -434,7 +492,13 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         return True
 
     def _correction_tracked_layer(self):
-        """Return the [Correction] Cell Labels layer, or None if absent."""
+        """Return the layer being corrected, or None if absent.
+
+        Active-layer mode: the bound active Labels layer. Disk mode: the
+        ``[Correction] Cell Labels`` layer loaded from disk.
+        """
+        if self._active_layer_mode():
+            return self._active_bound_layer
         if _TRACKED_CELL_LAYER in self.viewer.layers:
             return self.viewer.layers[_TRACKED_CELL_LAYER]
         return None
@@ -581,6 +645,11 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
     # ------------------------------------------------------------------ #
 
     def _on_save_labels(self) -> None:
+        if self._active_layer_mode():
+            self._correction_status(
+                "Save the layer via napari (File ▸ Save Selected Layers)."
+            )
+            return
         lp = self._cell_labels_path()
         if lp is None:
             self._correction_status("No project open."); return

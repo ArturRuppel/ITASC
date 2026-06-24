@@ -8,9 +8,10 @@ stacks, run Cellpose **native masks** (:mod:`cellflow.cellpose.native_masks`),
 then link them across time with **laptrack** (:mod:`cellflow.cellpose.track_laptrack`).
 
 Input is by explicit file picker — point directly at a multi-dimensional ``.tif``
-per channel and a flat output directory; there is no ``0_input/1_cellpose``
-layout to honour. Outputs are written flat as ``{channel}_masks.tif`` and
-``{channel}_tracked.tif``.
+per channel. **There is no output directory**: every result is added straight to
+the napari viewer as a layer (tagged ``[Nucleus]`` / ``[Cell]``), and the user
+saves whichever layers they want via napari's own *Save Selected Layers*. The
+embedded basic corrector edits whichever Labels layer is active.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from pathlib import Path
 import napari
 import numpy as np
 import tifffile
+from napari.layers import Labels
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
@@ -33,7 +35,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.core.tiff import imwrite_grayscale
 from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
@@ -59,64 +60,102 @@ _DEFAULT_LAYOUT = "3D+t"
 
 
 # ---------------------------------------------------------------------------
-# Qt-free compute steps (callable directly in tests; the worker just wraps them)
+# Array-shape helpers (canonical compute shape is (T, Z, Y, X))
 # ---------------------------------------------------------------------------
-def _normalize_tzyx_labels(arr: np.ndarray) -> np.ndarray:
-    """Left-pad a read-back label array to canonical ``(T, Z, Y, X)``."""
+def _to_tzyx(arr: np.ndarray) -> np.ndarray:
+    """Coerce a label/image array to canonical ``(T, Z, Y, X)``.
+
+    A 3-D array is read as ``(T, Y, X)`` and gains a singleton Z (the inverse of
+    :func:`_squeeze_z`, so a round-trip through a squeezed napari layer is exact);
+    a 2-D array becomes a single ``(1, 1, Y, X)`` frame.
+    """
     arr = np.asarray(arr)
-    if arr.ndim > 4:
-        raise ValueError(f"label stack must be <=4-D, got shape {arr.shape}")
-    while arr.ndim < 4:
-        arr = arr[np.newaxis]
+    if arr.ndim == 4:
+        return arr
+    if arr.ndim == 3:
+        return arr[:, np.newaxis]
+    if arr.ndim == 2:
+        return arr[np.newaxis, np.newaxis]
+    raise ValueError(f"expected a 2-D..4-D array, got shape {arr.shape}")
+
+
+def _squeeze_z(arr: np.ndarray) -> np.ndarray:
+    """Drop a singleton Z from ``(T, 1, Y, X)`` → ``(T, Y, X)`` for napari/corrector.
+
+    2D+t data (Z=1) displays without a spurious slider and matches the basic
+    corrector's 3-D ``(T, Y, X)`` expectation. True 3-D+t (Z>1) is left as-is.
+    """
+    arr = np.asarray(arr)
+    if arr.ndim == 4 and arr.shape[1] == 1:
+        return arr[:, 0]
     return arr
 
 
+def _layer_name(channel: str, kind: str) -> str:
+    """Channel-tagged layer name, e.g. ``[Nucleus] masks`` / ``[Cell] tracked``."""
+    return f"[{channel.title()}] {kind}"
+
+
+# ---------------------------------------------------------------------------
+# Qt-free compute steps (callable directly in tests; the worker just wraps them)
+# ---------------------------------------------------------------------------
 def segment_channel(
     in_path: Path,
-    out_dir: Path,
     channel: str,
     params,
     layout: str,
     *,
     progress_cb=None,
     cancel_cb=None,
-) -> Path:
-    """Load a raw stack, run native masks for ``channel``, write ``{channel}_masks.tif``."""
+) -> np.ndarray:
+    """Load a raw stack and return native masks ``(T, Z, Y, X)`` for ``channel``."""
     stack = cellpose_runner.to_tzyx(
         np.asarray(tifffile.imread(str(in_path))), layout
     )
     if channel == "nucleus":
-        masks = native_masks.run_nucleus_masks_stack(
+        return native_masks.run_nucleus_masks_stack(
             stack, params, progress_cb=progress_cb, cancel_cb=cancel_cb
         )
-    else:
-        masks = native_masks.run_cell_masks_stack(
-            stack, params, progress_cb=progress_cb, cancel_cb=cancel_cb
-        )
-    return native_masks.write_masks(masks, out_dir, channel)
+    return native_masks.run_cell_masks_stack(
+        stack, params, progress_cb=progress_cb, cancel_cb=cancel_cb
+    )
 
 
 def track_channel(
-    masks_path: Path,
-    out_dir: Path,
-    channel: str,
+    masks_tzyx: np.ndarray,
     *,
     max_distance: float,
     max_frame_gap: int,
-) -> Path:
-    """Link ``{channel}_masks.tif`` across time, write ``{channel}_tracked.tif``."""
-    masks = _normalize_tzyx_labels(tifffile.imread(str(masks_path)))
-    tracked = track_laptrack.track_masks(
+) -> np.ndarray:
+    """Link an in-memory ``(T, Z, Y, X)`` mask stack across time (laptrack)."""
+    masks = _to_tzyx(masks_tzyx)
+    return track_laptrack.track_masks(
         masks, max_distance=max_distance, max_frame_gap=max_frame_gap
     )
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{channel}_tracked.tif"
-    imwrite_grayscale(
-        path, tracked.astype(np.int32),
-        compression="zlib", metadata={"axes": "TZYX"},
-    )
-    return path
+
+
+def preview_channel_masks(
+    stack_tzyx: np.ndarray,
+    channel: str,
+    params,
+    t: int,
+    z: int,
+) -> np.ndarray:
+    """Native masks for a single current frame, embedded in a full ``(T, Z, Y, X)``.
+
+    All other frames are background, so the preview overlays exactly the frame
+    the user is looking at while keeping the layer's dims aligned with the input.
+    """
+    stack = _to_tzyx(stack_tzyx)
+    out = np.zeros(stack.shape, dtype=np.int32)
+    frame = stack[t]  # (Z, Y, X)
+    if channel == "nucleus" and getattr(params, "do_3d", False):
+        out[t] = native_masks.run_nucleus_masks_frame(frame, z=None, params=params)
+    elif channel == "nucleus":
+        out[t, z] = native_masks.run_nucleus_masks_frame(frame, z=z, params=params)
+    else:
+        out[t, z] = native_masks.run_cell_masks_frame(frame, z=z, params=params)
+    return out
 
 
 def _layout_combo() -> QComboBox:
@@ -144,7 +183,7 @@ def _make_progress() -> QProgressBar:
 
 
 class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
-    """Standalone segment+track: two channel rows, explicit file pickers."""
+    """Standalone segment+track: two channel rows, explicit file pickers, layers out."""
 
     _progress_signal = Signal(int, int, str)
     _SETTINGS_APP = "cellflow_cellpose_segment_track"
@@ -155,7 +194,6 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.gate = UiGate(self)
         self._nucleus_path: Path | None = None
         self._cell_path: Path | None = None
-        self._output_dir: Path | None = None
         self._running: str | None = None  # e.g. "nucleus_seg", "cell_track"
         self._worker = None
         self._cancel_requested = False
@@ -173,7 +211,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # ── Explicit input/output pickers (always shown — standalone only) ──
+        # ── Explicit input pickers (no output dir — results are layers) ──
         paths_col = QVBoxLayout()
         paths_col.setContentsMargins(0, 0, 0, 0)
         self._nucleus_edit = self._add_path_row(
@@ -184,17 +222,17 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             paths_col, "Cell channel", "raw cell stack (.tif)",
             self._on_browse_cell, self._apply_paths,
         )
-        self._output_dir_edit = self._add_path_row(
-            paths_col, "Output dir", "directory for masks + tracked labels",
-            self._on_browse_output_dir, self._apply_paths,
-        )
         root.addLayout(paths_col)
 
         # ── Nucleus row ──
         self.nucleus_params_btn = _tool_btn("⚙", "Nucleus parameters.", checkable=True)
+        self.nucleus_preview_btn = _tool_btn("▷", "Preview nucleus on the current frame.")
         self.nucleus_seg_btn = _tool_btn("▶", "Segment nucleus (native masks).")
         self.nucleus_track_btn = _tool_btn("⊳", "Track nucleus masks (laptrack).")
-        for b in (self.nucleus_params_btn, self.nucleus_seg_btn, self.nucleus_track_btn):
+        for b in (
+            self.nucleus_params_btn, self.nucleus_preview_btn,
+            self.nucleus_seg_btn, self.nucleus_track_btn,
+        ):
             stage_header_action_button(b, "cellpose")
         self.nucleus_section = self._build_nucleus_params_section()
         self.nucleus_section.set_header_visible(False)
@@ -204,15 +242,20 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         )
         root.addLayout(self._stage_row(
             self._stage_label("Nucleus"),
-            self.nucleus_params_btn, self.nucleus_seg_btn, self.nucleus_track_btn,
+            self.nucleus_params_btn, self.nucleus_preview_btn,
+            self.nucleus_seg_btn, self.nucleus_track_btn,
         ))
         root.addWidget(self.nucleus_section)
 
         # ── Cell row ──
         self.cell_params_btn = _tool_btn("⚙", "Cell parameters.", checkable=True)
+        self.cell_preview_btn = _tool_btn("▷", "Preview cell on the current frame/z-slice.")
         self.cell_seg_btn = _tool_btn("▶", "Segment cell (native masks).")
         self.cell_track_btn = _tool_btn("⊳", "Track cell masks (laptrack).")
-        for b in (self.cell_params_btn, self.cell_seg_btn, self.cell_track_btn):
+        for b in (
+            self.cell_params_btn, self.cell_preview_btn,
+            self.cell_seg_btn, self.cell_track_btn,
+        ):
             stage_header_action_button(b, "cellpose")
         self.cell_section = self._build_cell_params_section()
         self.cell_section.set_header_visible(False)
@@ -222,7 +265,8 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         )
         root.addLayout(self._stage_row(
             self._stage_label("Cell"),
-            self.cell_params_btn, self.cell_seg_btn, self.cell_track_btn,
+            self.cell_params_btn, self.cell_preview_btn,
+            self.cell_seg_btn, self.cell_track_btn,
         ))
         root.addWidget(self.cell_section)
 
@@ -232,13 +276,14 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
         # ── Cell correction ──
         # Reuse the app's *basic* cell corrector — the ultrack/OverlapDB-free one
-        # — pointed at the flat ``cell_tracked.tif`` this tool writes, so
-        # segment → track → correct is one surface. The widget brings its own
-        # "Correction" header + ⏻ activate button. Nucleus correction (the
+        # — bound to whatever Labels layer is active, so segment → track → correct
+        # is one surface with no on-disk handoff. The widget brings its own
+        # "Correction" header + ⏻ activate button; it edits the active layer in
+        # place and the user saves it via napari. Nucleus correction (the
         # candidate-DB workflow) is intentionally not shipped in this distro.
         self.cell_correction = CellCorrectionWidget(
             self.viewer,
-            labels_path_provider=self._cell_tracked_path,
+            active_labels_layer_provider=self._active_labels_layer,
             parent=self,
         )
         root.addWidget(self.cell_correction)
@@ -327,6 +372,8 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
     # -------------------------------------------------------------- signals
     def _connect_signals(self) -> None:
+        self.nucleus_preview_btn.clicked.connect(lambda: self._on_action("nucleus", "preview"))
+        self.cell_preview_btn.clicked.connect(lambda: self._on_action("cell", "preview"))
         self.nucleus_seg_btn.clicked.connect(lambda: self._on_action("nucleus", "seg"))
         self.cell_seg_btn.clicked.connect(lambda: self._on_action("cell", "seg"))
         self.nucleus_track_btn.clicked.connect(lambda: self._on_action("nucleus", "track"))
@@ -338,8 +385,10 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             return
         if kind == "seg":
             self._run_segment(channel)
-        else:
+        elif kind == "track":
             self._run_track(channel)
+        else:
+            self._preview_channel(channel)
 
     def _on_cancel(self) -> None:
         self._cancel_requested = True
@@ -351,10 +400,8 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
     def _apply_paths(self) -> None:
         nuc = self._nucleus_edit.text().strip()
         cel = self._cell_edit.text().strip()
-        out = self._output_dir_edit.text().strip()
         self._nucleus_path = Path(nuc) if nuc else None
         self._cell_path = Path(cel) if cel else None
-        self._output_dir = Path(out) if out else None
         self._save_standalone_settings()
         self.gate.recompute()
 
@@ -364,14 +411,10 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
     def _on_browse_cell(self) -> None:
         self._browse_file_into(self._cell_edit, "Select cell channel", self._apply_paths)
 
-    def _on_browse_output_dir(self) -> None:
-        self._browse_dir_into(self._output_dir_edit, "Select output directory", self._apply_paths)
-
     def _standalone_fields(self) -> dict:
         return {
             "nucleus": self._nucleus_edit,
             "cell": self._cell_edit,
-            "output_dir": self._output_dir_edit,
         }
 
     def _load_standalone_settings(self) -> None:
@@ -406,30 +449,33 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             gamma=float(self.cell_gamma_spin.value()),
         )
 
-    # --------------------------------------------------------------- run: seg
-    def _run_segment(self, channel: str) -> None:
-        in_path = self._nucleus_path if channel == "nucleus" else self._cell_path
-        out_dir = self._output_dir
-        if in_path is None or not in_path.exists():
-            self._status(f"Missing input for {channel}.")
-            return
-        if out_dir is None:
-            self._status("No output directory selected.")
-            return
-        params = (
+    def _channel_input(self, channel: str) -> Path | None:
+        return self._nucleus_path if channel == "nucleus" else self._cell_path
+
+    def _channel_params(self, channel: str):
+        return (
             self._build_nucleus_params() if channel == "nucleus"
             else self._build_cell_params()
         )
+
+    # --------------------------------------------------------------- run: seg
+    def _run_segment(self, channel: str) -> None:
+        in_path = self._channel_input(channel)
+        if in_path is None or not in_path.exists():
+            self._status(f"Missing input for {channel}.")
+            return
+        params = self._channel_params(channel)
         layout = self._channel_layout(channel)
         self._cancel_requested = False
         progress_signal = self._progress_signal
+        masks_name = _layer_name(channel, "masks")
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._load_labels(f"{channel.title()} masks", result)
-            self._status(f"{channel.title()} masks written → {Path(result).name}")
+            self._add_labels(masks_name, result)
+            self._status(f"{channel.title()} masks → '{masks_name}'. Save from the layer.")
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
@@ -437,7 +483,7 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 1, "Loading input...")
             return segment_channel(
-                in_path, out_dir, channel, params, layout,
+                in_path, channel, params, layout,
                 progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
                 cancel_cb=lambda: self._cancel_requested,
             )
@@ -452,23 +498,21 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
     # ------------------------------------------------------------- run: track
     def _run_track(self, channel: str) -> None:
-        out_dir = self._output_dir
-        if out_dir is None:
-            self._status("No output directory selected.")
+        masks_name = _layer_name(channel, "masks")
+        if masks_name not in self.viewer.layers:
+            self._status(f"No '{masks_name}' layer — segment first.")
             return
-        masks_path = out_dir / f"{channel}_masks.tif"
-        if not masks_path.exists():
-            self._status(f"No {channel}_masks.tif — segment first.")
-            return
+        masks = _to_tzyx(np.asarray(self.viewer.layers[masks_name].data))
         max_distance = float(self.track_max_dist_spin.value())
         max_frame_gap = int(self.track_gap_spin.value())
+        tracked_name = _layer_name(channel, "tracked")
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._load_labels(f"{channel.title()} tracked", result)
-            self._status(f"{channel.title()} tracked → {Path(result).name}")
+            self._add_labels(tracked_name, result)
+            self._status(f"{channel.title()} tracked → '{tracked_name}'. Save from the layer.")
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
@@ -476,17 +520,73 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 1, f"Tracking {channel} masks...")
             return track_channel(
-                masks_path, out_dir, channel,
-                max_distance=max_distance, max_frame_gap=max_frame_gap,
+                masks, max_distance=max_distance, max_frame_gap=max_frame_gap,
             )
 
         self._set_running(f"{channel}_track")
         self._status(f"Tracking {channel} masks (laptrack)...")
         self._worker = _worker()
 
-    def _cell_tracked_path(self) -> Path | None:
-        """Flat tracked-cell-labels file the embedded corrector loads/saves."""
-        return self._output_dir / "cell_tracked.tif" if self._output_dir else None
+    # ----------------------------------------------------------- run: preview
+    def _preview_channel(self, channel: str) -> None:
+        in_path = self._channel_input(channel)
+        if in_path is None or not in_path.exists():
+            self._status(f"Missing input for {channel}.")
+            return
+        params = self._channel_params(channel)
+        layout = self._channel_layout(channel)
+        self._cancel_requested = False
+        progress_signal = self._progress_signal
+        try:
+            stack = cellpose_runner.to_tzyx(
+                np.asarray(tifffile.imread(str(in_path))), layout
+            )
+        except Exception as exc:
+            self._status(f"Error: {exc}")
+            logger.exception("preview load error", exc_info=exc)
+            return
+        # Show the input so the previewed frame is visible underneath.
+        self._add_image(_layer_name(channel, "image"), stack)
+        t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
+        preview_name = _layer_name(channel, "preview")
+
+        def _done(result):
+            self._worker = None
+            self._set_running(None)
+            self._clear_progress()
+            self._add_labels(preview_name, result)
+            self._status(f"{channel.title()} preview (frame t={t}) → '{preview_name}'.")
+
+        @thread_worker(connect={
+            "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+        })
+        def _worker():
+            yield (0, 0, f"Previewing {channel} on {cellpose_runner.device_label()}...")
+            return preview_channel_masks(stack, channel, params, t, z)
+
+        self._set_running(f"{channel}_preview")
+        self._status(
+            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            if not cellpose_runner.is_model_loaded()
+            else f"Previewing {channel}..."
+        )
+        self._worker = _worker()
+
+    def _current_tz(self, n_t: int, n_z: int) -> tuple[int, int]:
+        """Current (t, z) from the viewer, clamped; z is 0 for single-slice data."""
+        step = getattr(getattr(self.viewer, "dims", None), "current_step", (0, 0))
+        t = int(step[0]) if len(step) >= 1 else 0
+        z = 0 if n_z <= 1 else (int(step[1]) if len(step) >= 2 else 0)
+        return min(max(t, 0), n_t - 1), min(max(z, 0), n_z - 1)
+
+    def _active_labels_layer(self):
+        """The viewer's active layer iff it is a Labels layer, else None.
+
+        The embedded corrector binds to this; returning None when the active
+        layer is not labels is what enforces the "must be a Labels layer" scope.
+        """
+        layer = getattr(getattr(self.viewer.layers, "selection", None), "active", None)
+        return layer if isinstance(layer, Labels) else None
 
     def _errored(self, exc) -> None:
         self._worker = None
@@ -498,18 +598,23 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._status(f"Error: {exc}")
             logger.exception("segment/track error", exc_info=exc)
 
-    def _load_labels(self, name: str, path) -> None:
-        try:
-            data = _normalize_tzyx_labels(tifffile.imread(str(path)))
-        except Exception:
-            return
+    # ------------------------------------------------------ layer output
+    def _add_labels(self, name: str, data) -> None:
+        arr = _squeeze_z(np.asarray(data)).astype(np.int32, copy=False)
+        self._show_in_viewer(name, arr, self.viewer.add_labels)
+
+    def _add_image(self, name: str, data) -> None:
+        arr = _squeeze_z(np.asarray(data))
+        self._show_in_viewer(name, arr, self.viewer.add_image)
+
+    def _show_in_viewer(self, name: str, data, adder) -> None:
         if name in self.viewer.layers:
             try:
                 self.viewer.layers[name].data = data
                 return
             except Exception:
                 self.viewer.layers.remove(self.viewer.layers[name])
-        self.viewer.add_labels(data.astype(np.int32), name=name)
+        adder(data, name=name)
 
     # ---------------------------------------------------------- public API
     def get_state(self) -> dict:
@@ -559,13 +664,12 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
     def _action_buttons(self):
         return (
-            self.nucleus_seg_btn, self.nucleus_track_btn,
-            self.cell_seg_btn, self.cell_track_btn,
+            self.nucleus_preview_btn, self.nucleus_seg_btn, self.nucleus_track_btn,
+            self.cell_preview_btn, self.cell_seg_btn, self.cell_track_btn,
         )
 
     def _register_gate_controls(self) -> None:
         g = self.gate
-        idle = lambda: self._running is None  # noqa: E731
         g.register(self.nucleus_params_btn, ControlClass.HARMLESS)
         g.register(self.cell_params_btn, ControlClass.HARMLESS)
         for btn in self._action_buttons():
@@ -573,22 +677,28 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             g.register(btn, ControlClass.RUN_VIEWER, when=own)
         g.recompute()
 
-    _GLYPH = {"seg": "▶", "track": "⊳"}
-
-    def _active_btn(self):
+    def _btn_for_key(self):
         return {
+            "nucleus_preview": self.nucleus_preview_btn,
             "nucleus_seg": self.nucleus_seg_btn,
             "nucleus_track": self.nucleus_track_btn,
+            "cell_preview": self.cell_preview_btn,
             "cell_seg": self.cell_seg_btn,
             "cell_track": self.cell_track_btn,
-        }.get(self._running)
+        }
+
+    def _active_btn(self):
+        return self._btn_for_key().get(self._running)
+
+    _DEFAULT_GLYPHS = {
+        "nucleus_preview": "▷", "nucleus_seg": "▶", "nucleus_track": "⊳",
+        "cell_preview": "▷", "cell_seg": "▶", "cell_track": "⊳",
+    }
 
     def _set_running(self, key: str | None) -> None:
         # restore all glyphs first
-        self.nucleus_seg_btn.setText("▶")
-        self.nucleus_track_btn.setText("⊳")
-        self.cell_seg_btn.setText("▶")
-        self.cell_track_btn.setText("⊳")
+        for k, btn in self._btn_for_key().items():
+            btn.setText(self._DEFAULT_GLYPHS[k])
         self._running = key
         if key is None:
             self._cancel_requested = False

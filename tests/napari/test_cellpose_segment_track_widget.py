@@ -1,4 +1,9 @@
-"""Tests for the standalone Cellpose segment+track widget + its compute steps."""
+"""Tests for the standalone Cellpose segment+track widget + its compute steps.
+
+The standalone tool is layer-based: no output directory, results are napari
+layers tagged ``[Nucleus]`` / ``[Cell]``, and the embedded corrector binds to the
+active Labels layer.
+"""
 from __future__ import annotations
 
 import os
@@ -16,6 +21,8 @@ from qtpy.QtWidgets import QApplication, QToolButton
 # A GUI QApplication must exist before napari (imported by the widget module) is
 # pulled in, or QWidget construction aborts headless. Create it up front.
 _APP = QApplication.instance() or QApplication([])
+
+import napari
 
 import cellflow.cellpose.cellpose_runner as cellpose_runner
 from cellflow.napari import cellpose_segment_track_widget as stw
@@ -74,26 +81,41 @@ def _model(monkeypatch):
     monkeypatch.setattr(cellpose_runner, "_MODEL", _Recorder())
 
 
+# ── shape helpers ────────────────────────────────────────────────────────────
+def test_to_tzyx_and_squeeze_z_roundtrip():
+    assert stw._to_tzyx(np.zeros((6, 6), np.int32)).shape == (1, 1, 6, 6)
+    assert stw._to_tzyx(np.zeros((3, 6, 6), np.int32)).shape == (3, 1, 6, 6)
+    assert stw._to_tzyx(np.zeros((2, 4, 6, 6), np.int32)).shape == (2, 4, 6, 6)
+    # squeeze drops only a singleton Z
+    assert stw._squeeze_z(np.zeros((2, 1, 6, 6), np.int32)).shape == (2, 6, 6)
+    assert stw._squeeze_z(np.zeros((2, 3, 6, 6), np.int32)).shape == (2, 3, 6, 6)
+    # (T, Y, X) -> (T, 1, Y, X) -> (T, Y, X) is exact
+    a = np.arange(2 * 6 * 6).reshape(2, 6, 6)
+    assert np.array_equal(stw._squeeze_z(stw._to_tzyx(a)), a)
+
+
+def test_layer_name_tags_channel():
+    assert stw._layer_name("nucleus", "masks") == "[Nucleus] masks"
+    assert stw._layer_name("cell", "tracked") == "[Cell] tracked"
+    assert stw._layer_name("cell", "preview") == "[Cell] preview"
+
+
 # ── compute steps (Qt-free) ─────────────────────────────────────────────────
-def test_segment_channel_writes_flat_masks(tmp_path: Path, _model):
+def test_segment_channel_returns_masks_array(tmp_path: Path, _model):
     raw = tmp_path / "nuc.tif"
     tifffile.imwrite(str(raw), np.zeros((2, 3, 8, 8), dtype=np.float32))
-    out = tmp_path / "out"
     params = cellpose_runner.NucleusParams(
         do_3d=True, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
     )
-    path = stw.segment_channel(raw, out, "nucleus", params, "3D+t")
-    assert path == out / "nucleus_masks.tif"
-    masks = stw._normalize_tzyx_labels(tifffile.imread(str(path)))
+    masks = stw.segment_channel(raw, "nucleus", params, "3D+t")
     assert masks.shape == (2, 3, 8, 8)
+    assert masks.dtype == np.int32
 
 
-def test_track_channel_writes_flat_tracked(tmp_path: Path, monkeypatch):
+def test_track_channel_links_in_memory_masks(monkeypatch):
     masks = np.zeros((2, 1, 6, 6), dtype=np.int32)
     masks[0, 0, 2:4, 0:2] = 1
     masks[1, 0, 2:4, 2:4] = 1
-    masks_path = tmp_path / "cell_masks.tif"
-    tifffile.imwrite(str(masks_path), masks, metadata={"axes": "TZYX"})
 
     import cellflow.cellpose.track_laptrack as tl
 
@@ -103,52 +125,59 @@ def test_track_channel_writes_flat_tracked(tmp_path: Path, monkeypatch):
         return df
 
     monkeypatch.setattr(tl, "_run_laptrack", _fake_run)
-    path = stw.track_channel(masks_path, tmp_path, "cell", max_distance=10.0, max_frame_gap=0)
-    assert path == tmp_path / "cell_tracked.tif"
-    tracked = stw._normalize_tzyx_labels(tifffile.imread(str(path)))
+    tracked = stw.track_channel(masks, max_distance=10.0, max_frame_gap=0)
+    assert tracked.shape == (2, 1, 6, 6)
     assert set(np.unique(tracked)) == {0, 1}
 
 
-def test_normalize_pads_to_tzyx():
-    assert stw._normalize_tzyx_labels(np.zeros((6, 6), np.int32)).shape == (1, 1, 6, 6)
-    assert stw._normalize_tzyx_labels(np.zeros((3, 6, 6), np.int32)).shape == (1, 3, 6, 6)
+def test_preview_channel_masks_populates_only_current_frame(_model):
+    stack = np.zeros((3, 1, 6, 6), dtype=np.float32)
+    params = cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    out = stw.preview_channel_masks(stack, "cell", params, t=1, z=0)
+    assert out.shape == (3, 1, 6, 6)
+    assert out[1].any()                       # current frame populated
+    assert not out[0].any() and not out[2].any()  # others stay background
 
 
 # ── widget construction ─────────────────────────────────────────────────────
-def test_widget_exposes_two_rows_and_actions():
+def test_widget_exposes_rows_actions_and_no_output_dir():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
     for name in (
-        "nucleus_params_btn", "nucleus_seg_btn", "nucleus_track_btn",
-        "cell_params_btn", "cell_seg_btn", "cell_track_btn",
+        "nucleus_params_btn", "nucleus_preview_btn", "nucleus_seg_btn", "nucleus_track_btn",
+        "cell_params_btn", "cell_preview_btn", "cell_seg_btn", "cell_track_btn",
     ):
         assert isinstance(getattr(w, name), QToolButton), name
-    # explicit file pickers exist (no staged layout).
-    assert w._nucleus_edit is not None and w._output_dir_edit is not None
-    assert w.nucleus_seg_btn.text() == "▶"
+    # only input pickers — the output dir is gone (results are layers).
+    assert w._nucleus_edit is not None and w._cell_edit is not None
+    assert not hasattr(w, "_output_dir_edit")
+    assert "output_dir" not in w._standalone_fields()
+    assert w.nucleus_seg_btn.text() == "▶" and w.nucleus_preview_btn.text() == "▷"
     w.deleteLater()
 
 
-def test_set_running_swaps_glyph_to_cancel():
+def test_widget_has_no_output_dir_or_file_contract_in_source():
+    src = Path(stw.__file__).read_text()
+    # results are layers, so there is no flat-file output contract anymore.
+    assert "_output_dir" not in src
+    assert "{channel}_masks.tif" not in src and "{channel}_tracked.tif" not in src
+    # layers are channel-tagged.
+    assert "[{channel.title()}] {kind}" in src
+
+
+def test_set_running_swaps_glyph_to_cancel_for_each_action():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    w._set_running("nucleus_seg")
-    assert w.nucleus_seg_btn.text() == "✕"
-    w._set_running(None)
-    assert w.nucleus_seg_btn.text() == "▶"
+    for key, btn, glyph in (
+        ("nucleus_preview", w.nucleus_preview_btn, "▷"),
+        ("cell_seg", w.cell_seg_btn, "▶"),
+        ("cell_track", w.cell_track_btn, "⊳"),
+    ):
+        w._set_running(key)
+        assert btn.text() == "✕"
+        w._set_running(None)
+        assert btn.text() == glyph
     w.deleteLater()
-
-
-# ── source/file contract ────────────────────────────────────────────────────
-def test_widget_uses_flat_output_contract():
-    src = Path(stw.__file__).read_text()
-    # outputs are built flat from the channel name, in the chosen output dir.
-    assert "{channel}_masks.tif" in src
-    assert "{channel}_tracked.tif" in src
-    # the standalone tool must NOT enforce the staged pipeline layout
-    # (no staged-path string literals are built anywhere in the module).
-    assert '"0_input"' not in src and "'0_input'" not in src
-    assert '"1_cellpose"' not in src and "'1_cellpose'" not in src
 
 
 def test_factory_returns_widget():
@@ -158,22 +187,59 @@ def test_factory_returns_widget():
     w.deleteLater()
 
 
-# ── embedded cell correction ────────────────────────────────────────────────
-def test_embeds_cell_corrector_targeting_flat_tracked(tmp_path: Path):
-    """The basic cell corrector is embedded and points at <out>/cell_tracked.tif."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
-
+# ── layer output ─────────────────────────────────────────────────────────────
+def test_add_labels_squeezes_singleton_z_and_tags():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    assert isinstance(w.cell_correction, CellCorrectionWidget)
-    # cleared output dir → the labels provider yields None (corrector stays idle).
-    w._output_dir_edit.setText("")
-    w._apply_paths()
-    assert w.cell_correction._cell_labels_path() is None
-    # point the tool at an output dir → corrector targets the flat tracked file.
-    w._output_dir_edit.setText(str(tmp_path))
-    w._apply_paths()
-    assert w.cell_correction._cell_labels_path() == tmp_path / "cell_tracked.tif"
+    name = stw._layer_name("nucleus", "masks")
+    w._add_labels(name, np.zeros((2, 1, 5, 5), dtype=np.int32))
+    assert name in w.viewer.layers
+    assert w.viewer.layers[name].data.shape == (2, 5, 5)  # Z=1 squeezed for napari
+    # re-adding updates in place rather than duplicating.
+    w._add_labels(name, np.ones((2, 1, 5, 5), dtype=np.int32))
+    assert w.viewer.layers[name].data.max() == 1
+    w.deleteLater()
+
+
+# ── embedded cell correction (active-layer scope) ────────────────────────────
+def test_corrector_binds_to_active_labels_layer_only():
+    """The provider yields the active layer iff it is a Labels layer."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+
+    # nothing active → no labels available to correct.
+    assert w._active_labels_layer() is None
+    assert w.cell_correction._active_layer_mode() is True
+    assert w.cell_correction._correction_data_available() is False
+
+    # a non-Labels active layer (e.g. an image) is rejected by the scope guard.
+    viewer.layers.selection.active = SimpleNamespace(name="[Cell] image")
+    assert w._active_labels_layer() is None
+    assert w.cell_correction._correction_data_available() is False
+
+    # a real Labels layer becomes the correction target.
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Cell] tracked")
+    viewer.layers.selection.active = labels
+    assert w._active_labels_layer() is labels
+    assert w.cell_correction._correction_data_available() is True
+    w.deleteLater()
+
+
+def test_corrector_activation_noops_without_labels_layer():
+    """Toggling active with no Labels layer selected stays inactive and warns."""
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    w.cell_correction.active_btn.setChecked(True)  # fires the toggle handler
+    assert w.cell_correction.active_btn.isChecked() is False
+    w.deleteLater()
+
+
+def test_corrector_save_button_hidden_in_active_layer_mode():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # no on-disk target in active-layer mode → the disk-save button is hidden.
+    assert w.cell_correction.save_labels_btn.isHidden() is True
     w.deleteLater()
 
 
@@ -183,6 +249,7 @@ def test_cell_corrector_default_paths_unchanged():
 
     QApplication.instance() or QApplication([])
     c = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: Path("/proj/pos1"))
+    assert c._active_layer_mode() is False
     assert c._cell_labels_path() == Path("/proj/pos1/3_cell/tracked_labels.tif")
     assert c._cell_foreground_path() == Path("/proj/pos1/1_cellpose/cell_foreground.tif")
     assert c._nuc_foreground_path() == Path("/proj/pos1/1_cellpose/nucleus_foreground.tif")
