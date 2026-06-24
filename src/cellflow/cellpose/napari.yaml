@@ -2,9 +2,9 @@ name: cellflow-cellpose
 display_name: CellFlow Cellpose
 contributions:
   commands:
-    - id: cellflow-cellpose.widget
-      title: "Cellpose"
-      python_name: cellflow.napari.cellpose_widget:make_cellpose_widget
+    - id: cellflow-cellpose.segment_track
+      title: "Cellpose Segment + Track"
+      python_name: cellflow.napari.cellpose_segment_track_widget:make_cellpose_segment_track_widget
   widgets:
-    - command: cellflow-cellpose.widget
-      display_name: "Cellpose"
+    - command: cellflow-cellpose.segment_track
+      display_name: "Cellpose Segment + Track"

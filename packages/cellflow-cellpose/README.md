@@ -1,56 +1,57 @@
 # cellflow-cellpose
 
-Independent CellFlow piece for the **Cellpose stage** — the shared upstream step
-that turns raw input stacks into the maps every downstream stage consumes. It
-runs a local Cellpose-SAM model to produce per-channel probability/flow (`prob`,
-`dp`) stacks, then builds divergence-based **foreground** and **contour** maps
-from them. Those foreground/contour `.tif` maps are the inputs to both nucleus
-tracking (`cellflow-tracking`) and cell segmentation (`cellflow-segmentation`).
+Standalone **Cellpose segment + track** tool. It runs a local Cellpose-SAM model
+to produce **native masks** per channel, then links those masks across time with
+[`laptrack`](https://github.com/yfukai/laptrack) into tracked labels — a
+self-contained "segment then track" product that does not need the rest of the
+CellFlow pipeline.
+
+> The integrated CellFlow app uses this distribution's Cellpose runner +
+> divergence maps for its in-app stage; those modules still ship here and are
+> imported directly by the orchestrator. This README covers the **standalone**
+> napari surface, which is the segment + track tool.
 
 ## Install
 
 ```bash
-pip install cellflow-cellpose             # divergence-map building from prob/dp
-pip install "cellflow-cellpose[cellpose]" # + the Cellpose-SAM model runner
+pip install cellflow-cellpose                       # package + Qt-free helpers
+pip install "cellflow-cellpose[cellpose]"           # + the Cellpose-SAM model
+pip install "cellflow-cellpose[cellpose,laptrack]"  # + the laptrack tracker
 ```
 
-This pulls in `cellflow-core`. Both install into the shared `cellflow.*`
-namespace (PEP 420), so `import cellflow.cellpose` works whether or not the full
-CellFlow orchestrator is present. The Cellpose model itself (`cellpose`, `torch`,
-`torchvision`) is the optional `[cellpose]` extra — it is imported lazily and is
-only needed to *generate* the `prob`/`dp` stacks. Building the foreground/contour
-maps from precomputed `prob`/`dp` does not require it.
+This pulls in `cellflow-core`. Everything installs into the shared `cellflow.*`
+namespace (PEP 420), so `import cellflow.cellpose` works with or without the full
+orchestrator. The model (`cellpose`, `torch`, `torchvision`) is the `[cellpose]`
+extra and `laptrack`/`pandas` are the `[laptrack]` extra — both imported lazily,
+so importing the package does not require them.
 
 ## Use
 
-- **napari plugin:** add the *Cellpose* widget. In standalone mode it exposes its
-  own input/output pickers:
+- **napari plugin:** add the *Cellpose Segment + Track* widget. It exposes
+  explicit file pickers — point directly at your files, no enforced layout:
   - **Nucleus channel** — raw nucleus stack `.tif`
   - **Cell channel** — raw cell stack `.tif`
-  - **Output dir** — receives the Cellpose `*_prob_3dt.tif` / `*_dp_3dt.tif`
-    stacks and the derived `*_foreground.tif` / `*_contours.tif` maps
+  - **Output dir** — receives `{channel}_masks.tif` and `{channel}_tracked.tif`
 
-  Preview/run Cellpose per channel, then build the divergence maps in the same
-  panel.
+  Per channel: **Segment** runs Cellpose native masks; **Track** links them over
+  time with laptrack (max-distance / frame-gap in *Tracking parameters*).
 
 - **Headless / scripting:**
 
   ```python
-  from cellflow.cellpose import build_divergence_maps
+  import tifffile
+  from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 
-  # From precomputed Cellpose prob/dp stacks → foreground + contour maps:
-  build_divergence_maps(
-      "out/nucleus_prob_3dt.tif",
-      "out/nucleus_dp_3dt.tif",
-      "out/nucleus_contours.tif",
-      "out/nucleus_foreground.tif",
-  )
+  stack = cellpose_runner.to_tzyx(tifffile.imread("cell_3dt.tif"), "2D+t")
+  params = cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+  masks = native_masks.run_cell_masks_stack(stack, params)       # (T, Z, Y, X)
+  tracked = track_laptrack.track_masks(masks, max_distance=15.0)  # tracked labels
   ```
 
 ## I/O contract
 
-- **Input:** raw 2D+t (or 3D+t) `nucleus` / `cell` stacks under `0_input/` (full
-  workflow) or any chosen files (standalone).
-- **Output (per channel):** `*_prob_3dt.tif`, `*_dp_3dt.tif` (Cellpose), and
-  `*_foreground.tif`, `*_contours.tif` (divergence maps). In the full workflow
-  these land in `1_cellpose/`; standalone they land in the chosen output dir.
+- **Input:** any multi-dimensional `nucleus` / `cell` `.tif` (2D/2D+t/3D/3D+t),
+  picked explicitly — there is no required `0_input/` layout.
+- **Output (flat, in the chosen dir):**
+  - `{channel}_masks.tif` — Cellpose native masks, `(T, Z, Y, X)` `int32`
+  - `{channel}_tracked.tif` — time-linked labels, stable id per track

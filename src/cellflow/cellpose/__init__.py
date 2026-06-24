@@ -1,19 +1,22 @@
-"""Cellpose stage — local Cellpose-SAM runner + divergence-based map building.
+"""Cellpose stage + standalone segment/track tool.
 
-This is the shared upstream stage of the CellFlow workflow: it turns raw
-``0_input`` stacks into the ``1_cellpose`` probability/flow maps (via Cellpose)
-and the divergence-derived foreground/contour maps that both nucleus tracking
-(``cellflow-tracking``) and cell segmentation (``cellflow-segmentation``)
-consume as ``.tif`` inputs.
+Two roles share this package:
 
-Shipped as the independently-installable ``cellflow-cellpose`` distribution; the
-Cellpose model itself is an optional ``[cellpose]`` extra (imported lazily by
-``cellpose_runner``), so importing this package — and running the divergence-map
-builder on precomputed prob/dp maps — does not require it.
+* **Integrated app** — the local Cellpose-SAM runner (``cellpose_runner``) and
+  the divergence-derived foreground/contour maps (``build_divergence_maps``) that
+  the orchestrator's in-app stage produces for nucleus tracking
+  (``cellflow-tracking``) and cell segmentation.
+* **Standalone ``cellflow-cellpose`` tool** — ``native_masks`` captures the
+  Cellpose native masks the runner otherwise discards, and ``track_laptrack``
+  links them across time, giving a self-contained "segment then track" product.
+
+The Cellpose model is the optional ``[cellpose]`` extra and ``laptrack`` is the
+``[laptrack]`` extra; both are imported lazily, so importing this package does
+not require either.
 """
 from __future__ import annotations
 
-from cellflow.cellpose import cellpose_runner
+from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 from cellflow.cellpose.divergence_maps import (
     DivergenceMapsReport,
     build_divergence_maps,
@@ -23,4 +26,6 @@ __all__ = [
     "DivergenceMapsReport",
     "build_divergence_maps",
     "cellpose_runner",
+    "native_masks",
+    "track_laptrack",
 ]

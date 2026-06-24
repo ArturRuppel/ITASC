@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "cellflow-cellpose"
 version = "0.2.0"
-description = "CellFlow Cellpose stage: local Cellpose-SAM runner + divergence-based foreground/contour maps (napari)"
+description = "CellFlow Cellpose: standalone Cellpose-SAM segment + laptrack tracking tool (napari)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "AGPL-3.0"}
@@ -22,14 +22,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The Cellpose-SAM model powers the probability/flow step (cellpose_runner); it
-# is imported lazily and only needed to *generate* the prob/dp maps. Building
-# the divergence-derived foreground/contour maps from precomputed prob/dp does
-# not require it.
+# The Cellpose-SAM model powers segmentation (native masks + the prob/dp maps);
+# it is imported lazily and only needed to *generate* masks/maps. Importing the
+# package — and the Qt-free tracking helpers — does not require it.
 cellpose = [
     "cellpose>=4.0",
     "torch",
     "torchvision",
+]
+# laptrack links the per-frame native masks into tracked labels. Imported lazily
+# inside track_laptrack.track_masks; install to enable the Track step.
+laptrack = [
+    "laptrack",
+    "pandas",
 ]
 
 [project.urls]
@@ -49,5 +54,10 @@ bypass-selection = true
 
 [tool.hatch.build.targets.wheel.force-include]
 "../../src/cellflow/cellpose" = "cellflow/cellpose"
+# The standalone surface is the segment+track widget (napari.yaml points here).
+"../../src/cellflow/napari/cellpose_segment_track_widget.py" = "cellflow/napari/cellpose_segment_track_widget.py"
+# cellpose_widget + divergence_maps_widget stay shipped (Qt-free of the model):
+# the integrated app imports them directly for its in-app Cellpose stage; they
+# are no longer the distro's standalone napari command but remain importable.
 "../../src/cellflow/napari/cellpose_widget.py" = "cellflow/napari/cellpose_widget.py"
 "../../src/cellflow/napari/divergence_maps_widget.py" = "cellflow/napari/divergence_maps_widget.py"
