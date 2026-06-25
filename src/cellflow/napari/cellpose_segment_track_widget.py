@@ -2,16 +2,31 @@
 
 This is the independently-shipped distribution's own surface — distinct from the
 app's :class:`~cellflow.napari.cellpose_widget.CellposeWidget`, which stays
-untouched and keeps emitting divergence maps for the integrated pipeline. Here
-the distro is repurposed into a self-contained product: pick raw nucleus/cell
-stacks, run Cellpose **native masks** (:mod:`cellflow.cellpose.native_masks`),
-then link them across time with **laptrack** (:mod:`cellflow.cellpose.track_laptrack`).
+untouched and keeps emitting divergence maps for the integrated pipeline.
 
-Input is by explicit file picker — point directly at a multi-dimensional ``.tif``
-per channel. **There is no output directory**: every result is added straight to
-the napari viewer as a layer (tagged ``[Nucleus]`` / ``[Cell]``), and the user
-saves whichever layers they want via napari's own *Save Selected Layers*. The
-embedded basic corrector edits whichever Labels layer is active.
+The tool works on **one or two channels**, with no nucleus/cell vocabulary:
+
+* **Channel 1** is the *anchor*. On its own it is segmented (Cellpose **native
+  masks**, :mod:`cellflow.cellpose.native_masks`) and tracked across time with
+  **laptrack** (:mod:`cellflow.cellpose.track_laptrack`) — the single-channel
+  segment + track product.
+* **Channel 2** is optional. When it is present the tool runs **joint** mode and
+  *only* joint mode: Channel 1 is segmented + tracked, then each Channel 2
+  foreground pixel is flowed along Cellpose's flow field onto the nearest
+  Channel-1 object (:mod:`cellflow.cellpose.flow_following`). You get one
+  Channel-2 object per Channel-1 object, sharing its track id. Channel 2 is never
+  segmented independently — there is no separate-masks alternative.
+
+Conventionally Channel 1 is the nucleus (a clean, separable anchor) and Channel 2
+the cell, but nothing here assumes that.
+
+Each channel's input is picked through its two pills — a multi-dimensional
+``.tif`` (browse pill) or an image already open in the viewer (load-from-layer
+pill); there is no path text field, and the active pill lights up to show which
+source is in play. **There is no output directory**: every result is added straight to
+the napari viewer as a layer (tagged ``[Channel 1]`` / ``[Channel 2]``), and the
+user saves whichever layers they want via napari's own *Save Selected Layers*.
+The embedded basic corrector edits whichever Labels layer is active.
 """
 from __future__ import annotations
 
@@ -21,11 +36,13 @@ from pathlib import Path
 import napari
 import numpy as np
 import tifffile
-from napari.layers import Labels
+from napari.layers import Image, Labels
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QSettings, Signal
 from qtpy.QtWidgets import (
+    QFileDialog,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QProgressBar,
     QSizePolicy,
@@ -33,7 +50,6 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari._widget_helpers import (
     dslider as _dslider,
     islider as _islider,
@@ -55,6 +71,14 @@ from cellflow.cellpose.flow_following import FlowFollowingParams
 from cellflow.cellpose.shape import describe_axes, to_canonical_tzyx
 
 logger = logging.getLogger(__name__)
+
+# User-facing channel labels (no nucleus/cell vocabulary). Channel 1 is the
+# anchor that is segmented + tracked; Channel 2 (optional) is flowed onto it.
+_CH1_LABEL = "Channel 1"
+_CH2_LABEL = "Channel 2"
+
+# File dialog filter for the .tif inputs each channel can take.
+_IMAGE_FILTER = "Images (*.tif *.tiff);;All files (*)"
 
 
 # ---------------------------------------------------------------------------
@@ -89,16 +113,28 @@ def _squeeze_z(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
-def _layer_name(channel: str, kind: str) -> str:
-    """Channel-tagged layer name, e.g. ``[Nucleus] masks`` / ``[Cell] tracked``."""
-    return f"[{channel.title()}] {kind}"
+def _layer_name(channel_label: str, kind: str) -> str:
+    """Channel-tagged layer name, e.g. ``[Channel 1] masks`` / ``[Channel 2] tracked``."""
+    return f"[{channel_label}] {kind}"
+
+
+def _coerce_stack(source) -> np.ndarray:
+    """Canonical ``(T, Z, Y, X)`` from either source a channel can have.
+
+    ``source`` is an in-memory array (a napari image layer's ``data``) or a
+    ``.tif`` path — so a channel reads identically whether it came from disk or
+    from a layer already open in the viewer.
+    """
+    if isinstance(source, np.ndarray):
+        return to_canonical_tzyx(source)
+    return to_canonical_tzyx(np.asarray(tifffile.imread(str(source))))
 
 
 # ---------------------------------------------------------------------------
 # Qt-free compute steps (callable directly in tests; the worker just wraps them)
 # ---------------------------------------------------------------------------
 def segment_channel(
-    in_path: Path,
+    source,
     channel: str,
     params,
     *,
@@ -107,10 +143,12 @@ def segment_channel(
 ) -> np.ndarray:
     """Load a raw stack and return per-plane native masks ``(T, Z, Y, X)``.
 
-    The input is canonicalised layout-free (:func:`to_canonical_tzyx`) — no
-    2D/2D+t/3D/3D+t declaration — and every plane is segmented individually.
+    ``source`` is a ``.tif`` path or an in-memory array (a viewer layer). It is
+    canonicalised layout-free (:func:`to_canonical_tzyx`) — no 2D/2D+t/3D/3D+t
+    declaration — and every plane is segmented individually. ``channel`` selects
+    the backend mask routine (the anchor uses ``"nucleus"``).
     """
-    stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(in_path))))
+    stack = _coerce_stack(source)
     if channel == "nucleus":
         return native_masks.run_nucleus_masks_stack(
             stack, params, progress_cb=progress_cb, cancel_cb=cancel_cb
@@ -162,10 +200,10 @@ def preview_channel_masks(
 
 
 def segment_track_joint(
-    nuc_path: Path,
-    cell_path: Path,
-    nuc_params,
-    cell_params,
+    ch1_source,
+    ch2_source,
+    ch1_params,
+    ch2_params,
     flow_params: FlowFollowingParams,
     *,
     max_distance: float,
@@ -173,19 +211,53 @@ def segment_track_joint(
     progress_cb=None,
     cancel_cb=None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Load both channels (layout-free) and run the joint nucleus-anchored path.
+    """Load both channels (layout-free) and run the joint anchor path.
 
-    Returns ``(nucleus_tracked, cell_tracked)`` as ``(T, Z, Y, X)`` int32 stacks
-    that share label ids (one cell per nucleus). The cell stack is tracked by
-    inheriting the nucleus tracks, so it needs no separate tracker.
+    Each ``*_source`` is a ``.tif`` path or an in-memory array (a viewer layer).
+    Channel 1 is the anchor (segmented + tracked); Channel 2 is flowed onto it.
+    Returns ``(ch1_tracked, ch2_tracked)`` as ``(T, Z, Y, X)`` int32 stacks that
+    share label ids (one Channel-2 object per Channel-1 object). The Channel-2
+    stack is tracked by inheriting the Channel-1 tracks, so it needs no tracker.
     """
-    nuc_stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(nuc_path))))
-    cell_stack = to_canonical_tzyx(np.asarray(tifffile.imread(str(cell_path))))
+    ch1_stack = _coerce_stack(ch1_source)
+    ch2_stack = _coerce_stack(ch2_source)
     return joint_mod.joint_segment_track(
-        nuc_stack, cell_stack, nuc_params, cell_params, flow_params,
+        ch1_stack, ch2_stack, ch1_params, ch2_params, flow_params,
         max_distance=max_distance, max_frame_gap=max_frame_gap,
         progress_cb=progress_cb, cancel_cb=cancel_cb,
     )
+
+
+def preview_joint(
+    ch1_source,
+    ch2_source,
+    ch1_params,
+    ch2_params,
+    flow_params: FlowFollowingParams,
+    t: int,
+    *,
+    max_distance: float,
+    max_frame_gap: int,
+    progress_cb=None,
+    cancel_cb=None,
+) -> np.ndarray:
+    """Joint Channel-2 result for a single current frame, embedded full-size.
+
+    Runs the joint anchor path on just frame ``t`` of both channels (tracking one
+    frame is a no-op) and embeds the Channel-2 result into an otherwise-background
+    ``(T, Z, Y, X)`` stack — so the preview overlays exactly the frame on screen,
+    letting the Channel-2 params be tuned before committing to the whole stack.
+    """
+    ch1 = _coerce_stack(ch1_source)
+    ch2 = _coerce_stack(ch2_source)
+    _, ch2_frame = joint_mod.joint_segment_track(
+        ch1[t:t + 1], ch2[t:t + 1], ch1_params, ch2_params, flow_params,
+        max_distance=max_distance, max_frame_gap=max_frame_gap,
+        progress_cb=progress_cb, cancel_cb=cancel_cb,
+    )
+    out = np.zeros(ch1.shape, dtype=np.int32)
+    out[t] = ch2_frame[0]
+    return out
 
 
 def _make_status() -> QLabel:
@@ -205,8 +277,8 @@ def _make_progress() -> QProgressBar:
     return bar
 
 
-class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
-    """Standalone segment+track: two channel rows, explicit file pickers, layers out."""
+class CellposeSegmentTrackWidget(QWidget):
+    """Standalone segment+track: Channel 1 anchors; a Channel 2 makes it joint."""
 
     _progress_signal = Signal(int, int, str)
     _SETTINGS_APP = "cellflow_cellpose_segment_track"
@@ -215,9 +287,15 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         super().__init__(parent)
         self.viewer = viewer
         self.gate = UiGate(self)
-        self._nucleus_path: Path | None = None
-        self._cell_path: Path | None = None
-        self._running: str | None = None  # e.g. "nucleus_seg", "cell_track"
+        self._ch1_path: Path | None = None
+        self._ch2_path: Path | None = None
+        # Set when a channel is sourced from a viewer image layer instead of a file.
+        # The stack holds the layer's data; the name is kept only for the tooltip.
+        self._ch1_stack: np.ndarray | None = None
+        self._ch2_stack: np.ndarray | None = None
+        self._ch1_layer_name: str | None = None
+        self._ch2_layer_name: str | None = None
+        self._running: str | None = None  # e.g. "ch1_seg", "ch1_track", "ch2_run"
         self._worker = None
         self._cancel_requested = False
 
@@ -234,98 +312,89 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # ── Explicit input pickers (no output dir — results are layers) ──
-        paths_col = QVBoxLayout()
-        paths_col.setContentsMargins(0, 0, 0, 0)
-        self._nucleus_edit = self._add_path_row(
-            paths_col, "Nucleus channel", "raw nucleus stack (.tif)",
-            self._on_browse_nucleus, self._apply_paths,
+        # ── Channel 1 row (anchor: segment + track) ──
+        # One row: the "Channel 1" pill, then its source pickers (browse / from
+        # layer) and its action buttons (params, preview, segment, track). There is
+        # no path text field — a channel's source is picked entirely through its two
+        # source pills, and the active one lights up.
+        self.ch1_folder_btn, self.ch1_layer_btn = self._make_source_buttons(
+            _CH1_LABEL, self._on_browse_ch1, self._on_load_layer_ch1,
         )
-        self._cell_edit = self._add_path_row(
-            paths_col, "Cell channel", "raw cell stack (.tif)",
-            self._on_browse_cell, self._apply_paths,
-        )
-        root.addLayout(paths_col)
-
-        # ── Nucleus row ──
-        self.nucleus_params_btn = _tool_btn("⚙", "Nucleus parameters.", checkable=True)
-        self.nucleus_preview_btn = _tool_btn("▷", "Preview nucleus on the current frame.")
-        self.nucleus_seg_btn = _tool_btn("▶", "Segment nucleus (native masks).")
-        self.nucleus_track_btn = _tool_btn("⊳", "Track nucleus masks (laptrack).")
+        self.ch1_params_btn = _tool_btn("⚙", "Channel 1 parameters.", checkable=True)
+        self.ch1_preview_btn = _tool_btn("▷", "Preview Channel 1 on the current frame.")
+        self.ch1_seg_btn = _tool_btn("▶", "Segment Channel 1 (native masks).")
+        self.ch1_track_btn = _tool_btn("⊳", "Track Channel 1 masks (laptrack).")
         for b in (
-            self.nucleus_params_btn, self.nucleus_preview_btn,
-            self.nucleus_seg_btn, self.nucleus_track_btn,
+            self.ch1_params_btn, self.ch1_preview_btn,
+            self.ch1_seg_btn, self.ch1_track_btn,
         ):
             stage_header_action_button(b, "cellpose")
-        self.nucleus_section = self._build_nucleus_params_section()
-        self.nucleus_section.set_header_visible(False)
-        self.nucleus_section.collapse()
-        self.nucleus_params_btn.toggled.connect(
-            lambda checked: self.nucleus_section._toggle.setChecked(checked)
+        self.ch1_section = self._build_ch1_params_section()
+        self.ch1_section.set_header_visible(False)
+        self.ch1_section.collapse()
+        self.ch1_params_btn.toggled.connect(
+            lambda checked: self.ch1_section._toggle.setChecked(checked)
+        )
+        ch1_label = self._stage_label("Channel 1")
+        ch1_label.setToolTip(
+            "Channel 1 — the anchor: segmented and tracked. Typically the nucleus."
         )
         root.addLayout(self._stage_row(
-            self._stage_label("Nucleus"),
-            self.nucleus_params_btn, self.nucleus_preview_btn,
-            self.nucleus_seg_btn, self.nucleus_track_btn,
+            ch1_label,
+            self.ch1_folder_btn, self.ch1_layer_btn,
+            self.ch1_params_btn, self.ch1_preview_btn,
+            self.ch1_seg_btn, self.ch1_track_btn,
         ))
-        root.addWidget(self.nucleus_section)
+        root.addWidget(self.ch1_section)
 
-        # ── Cell row ──
-        self.cell_params_btn = _tool_btn("⚙", "Cell parameters.", checkable=True)
-        self.cell_preview_btn = _tool_btn("▷", "Preview cell on the current frame/z-slice.")
-        self.cell_seg_btn = _tool_btn("▶", "Segment cell (native masks).")
-        self.cell_track_btn = _tool_btn("⊳", "Track cell masks (laptrack).")
-        for b in (
-            self.cell_params_btn, self.cell_preview_btn,
-            self.cell_seg_btn, self.cell_track_btn,
-        ):
+        # ── Channel 2 row (joint — the only mode for a second channel) ──
+        # Same single-row shape as Channel 1: the "Channel 2" pill, its source
+        # pickers, then its action buttons. A second channel is never segmented on
+        # its own — it is always flowed onto the tracked Channel 1 (one object per
+        # Channel-1 object, sharing its id). Preview (▷) runs that joint assignment
+        # on the current frame so the Channel-2 params can be tuned; Run (▶) commits
+        # it over the whole stack. Both need both inputs; Channel 1's own segment +
+        # track path is untouched.
+        self.ch2_folder_btn, self.ch2_layer_btn = self._make_source_buttons(
+            _CH2_LABEL, self._on_browse_ch2, self._on_load_layer_ch2,
+        )
+        self.ch2_params_btn = _tool_btn("⚙", "Channel 2 parameters.", checkable=True)
+        self.ch2_preview_btn = _tool_btn(
+            "▷",
+            "Preview the joint Channel-2 result on the current frame "
+            "(needs both channels).",
+        )
+        self.ch2_run_btn = _tool_btn(
+            "▶",
+            "Run joint: segment + track Channel 1, then flow Channel 2 onto it "
+            "(needs both channels).",
+        )
+        for b in (self.ch2_params_btn, self.ch2_preview_btn, self.ch2_run_btn):
             stage_header_action_button(b, "cellpose")
-        self.cell_section = self._build_cell_params_section()
-        self.cell_section.set_header_visible(False)
-        self.cell_section.collapse()
-        self.cell_params_btn.toggled.connect(
-            lambda checked: self.cell_section._toggle.setChecked(checked)
+        self.ch2_section = self._build_ch2_params_section()
+        self.ch2_section.set_header_visible(False)
+        self.ch2_section.collapse()
+        self.ch2_params_btn.toggled.connect(
+            lambda checked: self.ch2_section._toggle.setChecked(checked)
+        )
+        ch2_label = self._stage_label("Channel 2")
+        ch2_label.setToolTip(
+            "Channel 2 — optional. When set, runs joint mode: this channel is "
+            "flowed onto Channel 1 (never segmented on its own). Typically the cell."
         )
         root.addLayout(self._stage_row(
-            self._stage_label("Cell"),
-            self.cell_params_btn, self.cell_preview_btn,
-            self.cell_seg_btn, self.cell_track_btn,
+            ch2_label,
+            self.ch2_folder_btn, self.ch2_layer_btn,
+            self.ch2_params_btn, self.ch2_preview_btn, self.ch2_run_btn,
         ))
-        root.addWidget(self.cell_section)
-
-        # ── Tracking params (shared) ──
-        self.tracking_section = self._build_tracking_params_section()
-        root.addWidget(self.tracking_section)
-
-        # ── Joint row (nucleus-anchored cell; needs both inputs) ──
-        # When both channels are present, the cell is segmented by flowing its
-        # foreground along the Cellpose flow field onto the tracked nuclei (one
-        # cell per nucleus, sharing its id). This is an explicit action — the
-        # single-channel native-masks + laptrack path above is left untouched.
-        self.joint_params_btn = _tool_btn("⚙", "Joint parameters.", checkable=True)
-        self.joint_run_btn = _tool_btn(
-            "⧉", "Joint nucleus-anchored cell segmentation + tracking (needs both inputs)."
-        )
-        for b in (self.joint_params_btn, self.joint_run_btn):
-            stage_header_action_button(b, "cellpose")
-        self.joint_section = self._build_joint_params_section()
-        self.joint_section.set_header_visible(False)
-        self.joint_section.collapse()
-        self.joint_params_btn.toggled.connect(
-            lambda checked: self.joint_section._toggle.setChecked(checked)
-        )
-        root.addLayout(self._stage_row(
-            self._stage_label("Joint"), self.joint_params_btn, self.joint_run_btn,
-        ))
-        root.addWidget(self.joint_section)
+        root.addWidget(self.ch2_section)
 
         # ── Cell correction ──
         # Reuse the app's *basic* cell corrector — the ultrack/OverlapDB-free one
         # — bound to whatever Labels layer is active, so segment → track → correct
         # is one surface with no on-disk handoff. The widget brings its own
         # "Correction" header + ⏻ activate button; it edits the active layer in
-        # place and the user saves it via napari. Nucleus correction (the
-        # candidate-DB workflow) is intentionally not shipped in this distro.
+        # place and the user saves it via napari.
         self.cell_correction = CellCorrectionWidget(
             self.viewer,
             active_labels_layer_provider=self._active_labels_layer,
@@ -339,66 +408,76 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.progress_bar = _make_progress()
         root.addWidget(self.progress_bar)
 
-    def _build_nucleus_params_section(self) -> CollapsibleSection:
+    def _make_source_buttons(self, label, on_browse, on_load_layer):
+        """The two source pills for a channel → ``(folder_btn, layer_btn)``.
+
+        There is no path text field: a channel's source is picked entirely through
+        these two pills — browse (``…``) for a ``.tif`` file, or load-from-layer
+        (``⧉``) for an image already open in the viewer. They sit in the channel's
+        own stage row, right after its name pill. Both are checkable so the *active*
+        source lights up (and its tooltip names the file/layer); the glyphs match
+        the stage buttons' thin geometric family.
+        """
+        folder_btn = _tool_btn("…", f"Load {label} from a .tif file.", checkable=True)
+        layer_btn = _tool_btn(
+            "⧉", f"Load {label} from a napari image layer.", checkable=True
+        )
+        for b in (folder_btn, layer_btn):
+            stage_header_action_button(b, "cellpose")
+        folder_btn.clicked.connect(on_browse)
+        layer_btn.clicked.connect(on_load_layer)
+        return folder_btn, layer_btn
+
+    def _build_ch1_params_section(self) -> CollapsibleSection:
         # No input-layout / 3D-mode / anisotropy: segmentation is layout-free and
         # per-plane (the shorter leading axis is treated as z for tracking).
         body = QWidget(self)
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
-        self.nuc_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
-        self.nuc_min_size_spin = _islider(0, 100000, 15)
-        self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
+        self.ch1_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
+        self.ch1_min_size_spin = _islider(0, 100000, 15)
+        self.ch1_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
         add_section_pair_row(
-            grid, 0, "Diameter:", self.nuc_diameter_spin, "Min size:", self.nuc_min_size_spin
+            grid, 0, "Diameter:", self.ch1_diameter_spin, "Min size:", self.ch1_min_size_spin
         )
-        add_section_pair_row(grid, 1, "Gamma:", self.nuc_gamma_spin)
-        return CollapsibleSection("Nucleus parameters", body, expanded=False)
+        add_section_pair_row(grid, 1, "Gamma:", self.ch1_gamma_spin)
+        return CollapsibleSection("Channel 1 parameters", body, expanded=False)
 
-    def _build_cell_params_section(self) -> CollapsibleSection:
+    def _build_ch2_params_section(self) -> CollapsibleSection:
+        # Channel 2 has no independent segmentation, but its Cellpose flow field
+        # (diameter / gamma) and the flow-following knobs both shape how its
+        # foreground is assigned to Channel-1 objects, so both live here. The
+        # tracking knobs live here too: they tune the Channel-1 tracker that the
+        # joint anchor (and Channel 1's own Track action) runs.
         body = QWidget(self)
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
-        self.cell_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
-        self.cell_min_size_spin = _islider(0, 100000, 0)
-        self.cell_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
-        add_section_pair_row(
-            grid, 0, "Diameter:", self.cell_diameter_spin, "Min size:", self.cell_min_size_spin
-        )
-        add_section_pair_row(grid, 1, "Gamma:", self.cell_gamma_spin)
-        return CollapsibleSection("Cell parameters", body, expanded=False)
-
-    def _build_joint_params_section(self) -> CollapsibleSection:
-        body = QWidget(self)
-        grid = section_grid()
-        grid.setContentsMargins(8, 4, 4, 4)
-        body.setLayout(grid)
-        self.joint_fg_thr_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
-        self.joint_flow_weight_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
-        self.joint_radius_spin = _dslider(1.0, 200.0, 30.0, 1.0, 1)
-        row = 0
-        add_section_pair_row(
-            grid, row,
-            "FG threshold:", self.joint_fg_thr_spin,
-            "Flow weight:", self.joint_flow_weight_spin,
-        ); row += 1
-        add_section_pair_row(grid, row, "Max assign radius:", self.joint_radius_spin)
-        return CollapsibleSection("Joint parameters", body, expanded=False)
-
-    def _build_tracking_params_section(self) -> CollapsibleSection:
-        body = QWidget(self)
-        grid = section_grid()
-        grid.setContentsMargins(8, 4, 4, 4)
-        body.setLayout(grid)
+        self.ch2_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
+        self.ch2_min_size_spin = _islider(0, 100000, 0)
+        self.ch2_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
+        self.ch2_fg_thr_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
+        self.ch2_flow_weight_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
+        self.ch2_radius_spin = _dslider(1.0, 200.0, 30.0, 1.0, 1)
         self.track_max_dist_spin = _dslider(1.0, 200.0, 15.0, 1.0, 1)
         self.track_gap_spin = _islider(0, 10, 0)
         add_section_pair_row(
-            grid, 0,
+            grid, 0, "Diameter:", self.ch2_diameter_spin, "Min size:", self.ch2_min_size_spin
+        )
+        add_section_pair_row(grid, 1, "Gamma:", self.ch2_gamma_spin)
+        add_section_pair_row(
+            grid, 2,
+            "FG threshold:", self.ch2_fg_thr_spin,
+            "Flow weight:", self.ch2_flow_weight_spin,
+        )
+        add_section_pair_row(grid, 3, "Max assign radius:", self.ch2_radius_spin)
+        add_section_pair_row(
+            grid, 4,
             "Max distance:", self.track_max_dist_spin,
             "Max frame gap:", self.track_gap_spin,
         )
-        return CollapsibleSection("Tracking parameters", body, expanded=False)
+        return CollapsibleSection("Channel 2 & tracking parameters", body, expanded=False)
 
     @staticmethod
     def _stage_label(text: str) -> QLabel:
@@ -417,30 +496,31 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
 
     # -------------------------------------------------------------- signals
     def _connect_signals(self) -> None:
-        self.nucleus_preview_btn.clicked.connect(lambda: self._on_action("nucleus", "preview"))
-        self.cell_preview_btn.clicked.connect(lambda: self._on_action("cell", "preview"))
-        self.nucleus_seg_btn.clicked.connect(lambda: self._on_action("nucleus", "seg"))
-        self.cell_seg_btn.clicked.connect(lambda: self._on_action("cell", "seg"))
-        self.nucleus_track_btn.clicked.connect(lambda: self._on_action("nucleus", "track"))
-        self.cell_track_btn.clicked.connect(lambda: self._on_action("cell", "track"))
-        self.joint_run_btn.clicked.connect(self._on_joint_action)
+        self.ch1_preview_btn.clicked.connect(lambda: self._on_ch1("preview"))
+        self.ch1_seg_btn.clicked.connect(lambda: self._on_ch1("seg"))
+        self.ch1_track_btn.clicked.connect(lambda: self._on_ch1("track"))
+        self.ch2_preview_btn.clicked.connect(lambda: self._on_ch2("preview"))
+        self.ch2_run_btn.clicked.connect(lambda: self._on_ch2("run"))
 
-    def _on_action(self, channel: str, kind: str) -> None:
+    def _on_ch1(self, kind: str) -> None:
         if self._running is not None:
             self._on_cancel()
             return
         if kind == "seg":
-            self._run_segment(channel)
+            self._run_segment()
         elif kind == "track":
-            self._run_track(channel)
+            self._run_track()
         else:
-            self._preview_channel(channel)
+            self._preview()
 
-    def _on_joint_action(self) -> None:
+    def _on_ch2(self, kind: str) -> None:
         if self._running is not None:
             self._on_cancel()
             return
-        self._run_joint()
+        if kind == "preview":
+            self._preview_joint()
+        else:
+            self._run_joint()
 
     def _on_cancel(self) -> None:
         self._cancel_requested = True
@@ -449,93 +529,201 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             worker.quit()
 
     # ---------------------------------------------------------- path helpers
-    def _apply_paths(self) -> None:
-        nuc = self._nucleus_edit.text().strip()
-        cel = self._cell_edit.text().strip()
-        self._nucleus_path = Path(nuc) if nuc else None
-        self._cell_path = Path(cel) if cel else None
+    def _on_browse_ch1(self) -> None:
+        self._browse_channel(1)
+
+    def _on_browse_ch2(self) -> None:
+        self._browse_channel(2)
+
+    def _on_load_layer_ch1(self) -> None:
+        self._load_channel_from_layer(1)
+
+    def _on_load_layer_ch2(self) -> None:
+        self._load_channel_from_layer(2)
+
+    def _browse_channel(self, which: int) -> None:
+        """Pick a ``.tif`` as this channel's source (the browse pill)."""
+        label = _CH1_LABEL if which == 1 else _CH2_LABEL
+        path, _ = QFileDialog.getOpenFileName(
+            self, f"Select {label}", filter=_IMAGE_FILTER
+        )
+        if path:
+            self._set_channel_path(which, Path(path))
+            self._status(f"{label} ← file '{Path(path).name}'.")
+        else:
+            # Dialog cancelled — undo the pill's auto-toggle, keep prior source.
+            self._refresh_source_buttons(which)
+
+    def _load_channel_from_layer(self, which: int) -> None:
+        """Pick a viewer image layer as this channel's source (no file needed)."""
+        image_layers = [ly for ly in self.viewer.layers if isinstance(ly, Image)]
+        if not image_layers:
+            self._status("No image layers in the viewer to load from.")
+            self._refresh_source_buttons(which)
+            return
+        names = [ly.name for ly in image_layers]
+        active = getattr(getattr(self.viewer.layers, "selection", None), "active", None)
+        default = names.index(active.name) if active in image_layers else 0
+        label = _CH1_LABEL if which == 1 else _CH2_LABEL
+        name, ok = QInputDialog.getItem(
+            self, f"Load {label} from layer", "Image layer:", names, default, False,
+        )
+        if ok and name:
+            self._use_layer_as_channel(which, name)
+        else:
+            self._refresh_source_buttons(which)
+
+    def _use_layer_as_channel(self, which: int, layer_name: str) -> None:
+        """Source a channel from a named viewer layer's data (testable seam)."""
+        try:
+            layer = self.viewer.layers[layer_name]
+            stack = to_canonical_tzyx(np.asarray(layer.data))
+        except Exception as exc:
+            self._status(f"Cannot use layer '{layer_name}': {exc}")
+            self._refresh_source_buttons(which)
+            return
+        self._set_channel_stack(which, stack, layer_name)
+        label = _CH1_LABEL if which == 1 else _CH2_LABEL
+        self._status(f"{label} ← layer '{layer_name}'.")
+
+    def _set_channel_path(self, which: int, path: Path | None) -> None:
+        """Make a ``.tif`` path this channel's source (clears any layer source).
+
+        ``None`` clears the channel entirely. This is the single mutation point
+        for file-sourced channels, so it refreshes the pills, persists and regates.
+        """
+        if which == 1:
+            self._ch1_path = path
+            self._ch1_stack = None
+            self._ch1_layer_name = None
+        else:
+            self._ch2_path = path
+            self._ch2_stack = None
+            self._ch2_layer_name = None
+        self._after_source_change(which)
+
+    def _set_channel_stack(self, which: int, stack, layer_name: str | None = None) -> None:
+        """Make a viewer layer's data this channel's source (clears any file path)."""
+        if which == 1:
+            self._ch1_stack = stack
+            self._ch1_layer_name = layer_name
+            if stack is not None:
+                self._ch1_path = None
+        else:
+            self._ch2_stack = stack
+            self._ch2_layer_name = layer_name
+            if stack is not None:
+                self._ch2_path = None
+        self._after_source_change(which)
+
+    def _after_source_change(self, which: int) -> None:
+        self._refresh_source_buttons(which)
         self._save_standalone_settings()
         self.gate.recompute()
 
-    def _on_browse_nucleus(self) -> None:
-        self._browse_file_into(self._nucleus_edit, "Select nucleus channel", self._apply_paths)
+    def _refresh_source_buttons(self, which: int) -> None:
+        """Mirror the channel's active source into its two pills (checked + tooltip)."""
+        if which == 1:
+            folder_btn, layer_btn = self.ch1_folder_btn, self.ch1_layer_btn
+            path, stack, lname = self._ch1_path, self._ch1_stack, self._ch1_layer_name
+            label = _CH1_LABEL
+        else:
+            folder_btn, layer_btn = self.ch2_folder_btn, self.ch2_layer_btn
+            path, stack, lname = self._ch2_path, self._ch2_stack, self._ch2_layer_name
+            label = _CH2_LABEL
+        folder_btn.setChecked(path is not None)
+        layer_btn.setChecked(stack is not None)
+        folder_btn.setToolTip(
+            f"{label} ← file: {path.name}" if path is not None
+            else f"Load {label} from a .tif file."
+        )
+        layer_btn.setToolTip(
+            f"{label} ← layer: {lname}" if stack is not None
+            else f"Load {label} from a napari image layer."
+        )
 
-    def _on_browse_cell(self) -> None:
-        self._browse_file_into(self._cell_edit, "Select cell channel", self._apply_paths)
+    def _channel_source(self, which: int):
+        """A channel's active input: an in-memory array (layer) or a Path, else None."""
+        stack = self._ch1_stack if which == 1 else self._ch2_stack
+        if stack is not None:
+            return stack
+        path = self._ch1_path if which == 1 else self._ch2_path
+        if path is not None and path.exists():
+            return path
+        return None
 
-    def _standalone_fields(self) -> dict:
-        return {
-            "nucleus": self._nucleus_edit,
-            "cell": self._cell_edit,
-        }
+    def _channel_present(self, which: int) -> bool:
+        return self._channel_source(which) is not None
 
     def _load_standalone_settings(self) -> None:
-        self._load_path_settings(self._SETTINGS_APP, self._standalone_fields())
-        if any(e.text().strip() for e in self._standalone_fields().values()):
-            self._apply_paths()
+        # Restore only real, still-present file paths. Layer sources are session-
+        # bound (never persisted), so a channel either comes back as its saved
+        # .tif or starts empty.
+        s = QSettings("cellflow", self._SETTINGS_APP)
+        for which, key in ((1, "channel1"), (2, "channel2")):
+            value = s.value(key, "", type=str)
+            if value and Path(value).exists():
+                if which == 1:
+                    self._ch1_path = Path(value)
+                else:
+                    self._ch2_path = Path(value)
+            self._refresh_source_buttons(which)
+        self.gate.recompute()
 
     def _save_standalone_settings(self) -> None:
-        self._save_path_settings(self._SETTINGS_APP, self._standalone_fields())
+        # Layer-sourced channels are session-bound, so persist only real file paths
+        # (a layer would reload as a meaningless, backing-less source).
+        s = QSettings("cellflow", self._SETTINGS_APP)
+        s.setValue("channel1", str(self._ch1_path) if self._ch1_path else "")
+        s.setValue("channel2", str(self._ch2_path) if self._ch2_path else "")
 
     # ------------------------------------------------------------- params
-    def _build_nucleus_params(self) -> cellpose_runner.NucleusParams:
+    def _build_ch1_params(self) -> cellpose_runner.NucleusParams:
+        # The anchor uses the nucleus mask routine (clean, separable objects).
         # Standalone segments every plane individually: do_3d is always off
-        # (anisotropy is then unused), so true-3D nucleus segmentation is the
-        # app's domain, not the standalone's.
+        # (anisotropy then unused) — true-3D segmentation is the app's domain.
         return cellpose_runner.NucleusParams(
             do_3d=False,
             anisotropy=1.0,
-            diameter=float(self.nuc_diameter_spin.value()),
-            min_size=int(self.nuc_min_size_spin.value()),
-            gamma=float(self.nuc_gamma_spin.value()),
+            diameter=float(self.ch1_diameter_spin.value()),
+            min_size=int(self.ch1_min_size_spin.value()),
+            gamma=float(self.ch1_gamma_spin.value()),
         )
 
-    def _build_cell_params(self) -> cellpose_runner.CellParams:
+    def _build_ch2_params(self) -> cellpose_runner.CellParams:
         return cellpose_runner.CellParams(
-            diameter=float(self.cell_diameter_spin.value()),
-            min_size=int(self.cell_min_size_spin.value()),
-            gamma=float(self.cell_gamma_spin.value()),
+            diameter=float(self.ch2_diameter_spin.value()),
+            min_size=int(self.ch2_min_size_spin.value()),
+            gamma=float(self.ch2_gamma_spin.value()),
         )
 
     def _build_flow_params(self) -> FlowFollowingParams:
         return FlowFollowingParams(
-            fg_threshold=float(self.joint_fg_thr_spin.value()),
-            flow_weight=float(self.joint_flow_weight_spin.value()),
-            max_assign_radius=float(self.joint_radius_spin.value()),
+            fg_threshold=float(self.ch2_fg_thr_spin.value()),
+            flow_weight=float(self.ch2_flow_weight_spin.value()),
+            max_assign_radius=float(self.ch2_radius_spin.value()),
         )
 
     def _both_inputs(self) -> bool:
-        return (
-            self._nucleus_path is not None and self._nucleus_path.exists()
-            and self._cell_path is not None and self._cell_path.exists()
-        )
-
-    def _channel_input(self, channel: str) -> Path | None:
-        return self._nucleus_path if channel == "nucleus" else self._cell_path
-
-    def _channel_params(self, channel: str):
-        return (
-            self._build_nucleus_params() if channel == "nucleus"
-            else self._build_cell_params()
-        )
+        return self._channel_present(1) and self._channel_present(2)
 
     # --------------------------------------------------------------- run: seg
-    def _run_segment(self, channel: str) -> None:
-        in_path = self._channel_input(channel)
-        if in_path is None or not in_path.exists():
-            self._status(f"Missing input for {channel}.")
+    def _run_segment(self) -> None:
+        source = self._channel_source(1)
+        if source is None:
+            self._status("Missing Channel 1 input.")
             return
-        params = self._channel_params(channel)
+        params = self._build_ch1_params()
         self._cancel_requested = False
         progress_signal = self._progress_signal
-        masks_name = _layer_name(channel, "masks")
+        masks_name = _layer_name(_CH1_LABEL, "masks")
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
             self._add_labels(masks_name, result)
-            self._status(f"{channel.title()} masks → '{masks_name}'. Save from the layer.")
+            self._status(f"Channel 1 masks → '{masks_name}'. Save from the layer.")
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
@@ -543,76 +731,76 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 1, "Loading input...")
             return segment_channel(
-                in_path, channel, params,
+                source, "nucleus", params,
                 progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
                 cancel_cb=lambda: self._cancel_requested,
             )
 
-        self._set_running(f"{channel}_seg")
+        self._set_running("ch1_seg")
         self._status(
             f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
-            else f"Segmenting {channel}..."
+            else "Segmenting Channel 1..."
         )
         self._worker = _worker()
 
     # ------------------------------------------------------------- run: track
-    def _run_track(self, channel: str) -> None:
-        masks_name = _layer_name(channel, "masks")
+    def _run_track(self) -> None:
+        masks_name = _layer_name(_CH1_LABEL, "masks")
         if masks_name not in self.viewer.layers:
             self._status(f"No '{masks_name}' layer — segment first.")
             return
         masks = _to_tzyx(np.asarray(self.viewer.layers[masks_name].data))
         max_distance = float(self.track_max_dist_spin.value())
         max_frame_gap = int(self.track_gap_spin.value())
-        tracked_name = _layer_name(channel, "tracked")
+        tracked_name = _layer_name(_CH1_LABEL, "tracked")
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
             self._add_labels(tracked_name, result)
-            self._status(f"{channel.title()} tracked → '{tracked_name}'. Save from the layer.")
+            self._status(f"Channel 1 tracked → '{tracked_name}'. Save from the layer.")
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
         })
         def _worker():
-            yield (0, 1, f"Tracking {channel} masks...")
+            yield (0, 1, "Tracking Channel 1 masks...")
             return track_channel(
                 masks, max_distance=max_distance, max_frame_gap=max_frame_gap,
             )
 
-        self._set_running(f"{channel}_track")
-        self._status(f"Tracking {channel} masks (laptrack)...")
+        self._set_running("ch1_track")
+        self._status("Tracking Channel 1 masks (laptrack)...")
         self._worker = _worker()
 
     # --------------------------------------------------------------- run: joint
     def _run_joint(self) -> None:
         if not self._both_inputs():
-            self._status("Joint mode needs both a nucleus and a cell input.")
+            self._status("Joint mode needs both Channel 1 and Channel 2 inputs.")
             return
-        nuc_path = self._nucleus_path
-        cell_path = self._cell_path
-        nuc_params = self._build_nucleus_params()
-        cell_params = self._build_cell_params()
+        ch1_source = self._channel_source(1)
+        ch2_source = self._channel_source(2)
+        ch1_params = self._build_ch1_params()
+        ch2_params = self._build_ch2_params()
         flow_params = self._build_flow_params()
         max_distance = float(self.track_max_dist_spin.value())
         max_frame_gap = int(self.track_gap_spin.value())
         self._cancel_requested = False
         progress_signal = self._progress_signal
-        nuc_name = _layer_name("nucleus", "tracked")
-        cell_name = _layer_name("cell", "tracked")
+        ch1_name = _layer_name(_CH1_LABEL, "tracked")
+        ch2_name = _layer_name(_CH2_LABEL, "tracked")
 
         def _done(result):
-            nuc_tracked, cell_tracked = result
+            ch1_tracked, ch2_tracked = result
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(nuc_name, nuc_tracked)
-            self._add_labels(cell_name, cell_tracked)
+            self._add_labels(ch1_name, ch1_tracked)
+            self._add_labels(ch2_name, ch2_tracked)
             self._status(
-                f"Joint → '{nuc_name}' + '{cell_name}' (paired ids). Save from the layers."
+                f"Joint → '{ch1_name}' + '{ch2_name}' (paired ids). Save from the layers."
             )
 
         @thread_worker(connect={
@@ -621,14 +809,14 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         def _worker():
             yield (0, 4, "Loading inputs...")
             return segment_track_joint(
-                nuc_path, cell_path,
-                nuc_params, cell_params, flow_params,
+                ch1_source, ch2_source,
+                ch1_params, ch2_params, flow_params,
                 max_distance=max_distance, max_frame_gap=max_frame_gap,
                 progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
                 cancel_cb=lambda: self._cancel_requested,
             )
 
-        self._set_running("joint")
+        self._set_running("ch2_run")
         self._status(
             f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
@@ -636,26 +824,88 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         )
         self._worker = _worker()
 
-    # ----------------------------------------------------------- run: preview
-    def _preview_channel(self, channel: str) -> None:
-        in_path = self._channel_input(channel)
-        if in_path is None or not in_path.exists():
-            self._status(f"Missing input for {channel}.")
+    # ------------------------------------------------------- preview: joint
+    def _preview_joint(self) -> None:
+        if not self._both_inputs():
+            self._status("Joint preview needs both Channel 1 and Channel 2 inputs.")
             return
-        params = self._channel_params(channel)
+        ch1_source = self._channel_source(1)
+        ch2_source = self._channel_source(2)
+        ch1_params = self._build_ch1_params()
+        ch2_params = self._build_ch2_params()
+        flow_params = self._build_flow_params()
+        max_distance = float(self.track_max_dist_spin.value())
+        max_frame_gap = int(self.track_gap_spin.value())
         self._cancel_requested = False
         progress_signal = self._progress_signal
         try:
-            raw = np.asarray(tifffile.imread(str(in_path)))
+            ch1_stack = to_canonical_tzyx(
+                ch1_source if isinstance(ch1_source, np.ndarray)
+                else np.asarray(tifffile.imread(str(ch1_source)))
+            )
+            ch2_stack = to_canonical_tzyx(
+                ch2_source if isinstance(ch2_source, np.ndarray)
+                else np.asarray(tifffile.imread(str(ch2_source)))
+            )
+        except Exception as exc:
+            self._status(f"Error: {exc}")
+            logger.exception("joint preview load error", exc_info=exc)
+            return
+        # Show Channel 2 underneath so the previewed assignment is visible.
+        self._add_image(_layer_name(_CH2_LABEL, "image"), ch2_stack)
+        t, _z = self._current_tz(int(ch1_stack.shape[0]), int(ch1_stack.shape[1]))
+        preview_name = _layer_name(_CH2_LABEL, "preview")
+
+        def _done(result):
+            self._worker = None
+            self._set_running(None)
+            self._clear_progress()
+            self._add_labels(preview_name, result)
+            self._status(
+                f"Channel 2 joint preview (frame t={t}) → '{preview_name}'."
+            )
+
+        @thread_worker(connect={
+            "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+        })
+        def _worker():
+            yield (0, 4, "Previewing joint...")
+            return preview_joint(
+                ch1_stack, ch2_stack, ch1_params, ch2_params, flow_params, t,
+                max_distance=max_distance, max_frame_gap=max_frame_gap,
+                progress_cb=lambda d, tot, m: progress_signal.emit(int(d), int(tot), str(m)),
+                cancel_cb=lambda: self._cancel_requested,
+            )
+
+        self._set_running("ch2_preview")
+        self._status(
+            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            if not cellpose_runner.is_model_loaded()
+            else "Previewing joint..."
+        )
+        self._worker = _worker()
+
+    # ----------------------------------------------------------- run: preview
+    def _preview(self) -> None:
+        source = self._channel_source(1)
+        if source is None:
+            self._status("Missing Channel 1 input.")
+            return
+        params = self._build_ch1_params()
+        self._cancel_requested = False
+        try:
+            raw = source if isinstance(source, np.ndarray) else np.asarray(
+                tifffile.imread(str(source))
+            )
             stack = to_canonical_tzyx(raw)
         except Exception as exc:
             self._status(f"Error: {exc}")
             logger.exception("preview load error", exc_info=exc)
             return
         # Show the input so the previewed frame is visible underneath.
-        self._add_image(_layer_name(channel, "image"), stack)
+        self._add_image(_layer_name(_CH1_LABEL, "image"), stack)
         t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
-        preview_name = _layer_name(channel, "preview")
+        preview_name = _layer_name(_CH1_LABEL, "preview")
         axes_desc = describe_axes(tuple(int(s) for s in raw.shape))
 
         def _done(result):
@@ -664,21 +914,21 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
             self._clear_progress()
             self._add_labels(preview_name, result)
             self._status(
-                f"{channel.title()} preview (frame t={t}; {axes_desc}) → '{preview_name}'."
+                f"Channel 1 preview (frame t={t}; {axes_desc}) → '{preview_name}'."
             )
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
         })
         def _worker():
-            yield (0, 0, f"Previewing {channel} on {cellpose_runner.device_label()}...")
-            return preview_channel_masks(stack, channel, params, t, z)
+            yield (0, 0, f"Previewing Channel 1 on {cellpose_runner.device_label()}...")
+            return preview_channel_masks(stack, "nucleus", params, t, z)
 
-        self._set_running(f"{channel}_preview")
+        self._set_running("ch1_preview")
         self._status(
             f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
-            else f"Previewing {channel}..."
+            else "Previewing Channel 1..."
         )
         self._worker = _worker()
 
@@ -729,24 +979,22 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
     # ---------------------------------------------------------- public API
     def get_state(self) -> dict:
         return {
-            "nucleus": {
-                "diameter": self.nuc_diameter_spin.value(),
-                "min_size": self.nuc_min_size_spin.value(),
-                "gamma": self.nuc_gamma_spin.value(),
+            "channel1": {
+                "diameter": self.ch1_diameter_spin.value(),
+                "min_size": self.ch1_min_size_spin.value(),
+                "gamma": self.ch1_gamma_spin.value(),
             },
-            "cell": {
-                "diameter": self.cell_diameter_spin.value(),
-                "min_size": self.cell_min_size_spin.value(),
-                "gamma": self.cell_gamma_spin.value(),
+            "channel2": {
+                "diameter": self.ch2_diameter_spin.value(),
+                "min_size": self.ch2_min_size_spin.value(),
+                "gamma": self.ch2_gamma_spin.value(),
+                "fg_threshold": self.ch2_fg_thr_spin.value(),
+                "flow_weight": self.ch2_flow_weight_spin.value(),
+                "max_assign_radius": self.ch2_radius_spin.value(),
             },
             "tracking": {
                 "max_distance": self.track_max_dist_spin.value(),
                 "max_frame_gap": self.track_gap_spin.value(),
-            },
-            "joint": {
-                "fg_threshold": self.joint_fg_thr_spin.value(),
-                "flow_weight": self.joint_flow_weight_spin.value(),
-                "max_assign_radius": self.joint_radius_spin.value(),
             },
         }
 
@@ -774,47 +1022,45 @@ class CellposeSegmentTrackWidget(StandalonePathsMixin, QWidget):
         self.progress_bar.setVisible(False)
 
     def _action_buttons(self):
-        return (
-            self.nucleus_preview_btn, self.nucleus_seg_btn, self.nucleus_track_btn,
-            self.cell_preview_btn, self.cell_seg_btn, self.cell_track_btn,
-        )
+        return (self.ch1_preview_btn, self.ch1_seg_btn, self.ch1_track_btn)
+
+    def _joint_buttons(self):
+        return (self.ch2_preview_btn, self.ch2_run_btn)
 
     def _register_gate_controls(self) -> None:
         g = self.gate
-        g.register(self.nucleus_params_btn, ControlClass.HARMLESS)
-        g.register(self.cell_params_btn, ControlClass.HARMLESS)
-        g.register(self.joint_params_btn, ControlClass.HARMLESS)
+        g.register(self.ch1_params_btn, ControlClass.HARMLESS)
+        g.register(self.ch2_params_btn, ControlClass.HARMLESS)
         for btn in self._action_buttons():
             own = lambda b=btn: self._running is None or self._active_btn() is b
             g.register(btn, ControlClass.RUN_VIEWER, when=own)
-        # Joint also requires both inputs to be present.
-        g.register(
-            self.joint_run_btn, ControlClass.RUN_VIEWER,
-            when=lambda: (
-                (self._running is None or self._active_btn() is self.joint_run_btn)
-                and self._both_inputs()
-            ),
-        )
+        # Channel 2's actions (preview + run) are joint-only: both require both
+        # inputs to be present.
+        for btn in self._joint_buttons():
+            g.register(
+                btn, ControlClass.RUN_VIEWER,
+                when=lambda b=btn: (
+                    (self._running is None or self._active_btn() is b)
+                    and self._both_inputs()
+                ),
+            )
         g.recompute()
 
     def _btn_for_key(self):
         return {
-            "nucleus_preview": self.nucleus_preview_btn,
-            "nucleus_seg": self.nucleus_seg_btn,
-            "nucleus_track": self.nucleus_track_btn,
-            "cell_preview": self.cell_preview_btn,
-            "cell_seg": self.cell_seg_btn,
-            "cell_track": self.cell_track_btn,
-            "joint": self.joint_run_btn,
+            "ch1_preview": self.ch1_preview_btn,
+            "ch1_seg": self.ch1_seg_btn,
+            "ch1_track": self.ch1_track_btn,
+            "ch2_preview": self.ch2_preview_btn,
+            "ch2_run": self.ch2_run_btn,
         }
 
     def _active_btn(self):
         return self._btn_for_key().get(self._running)
 
     _DEFAULT_GLYPHS = {
-        "nucleus_preview": "▷", "nucleus_seg": "▶", "nucleus_track": "⊳",
-        "cell_preview": "▷", "cell_seg": "▶", "cell_track": "⊳",
-        "joint": "⧉",
+        "ch1_preview": "▷", "ch1_seg": "▶", "ch1_track": "⊳",
+        "ch2_preview": "▷", "ch2_run": "▶",
     }
 
     def _set_running(self, key: str | None) -> None:

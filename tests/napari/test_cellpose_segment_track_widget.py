@@ -1,8 +1,9 @@
 """Tests for the standalone Cellpose segment+track widget + its compute steps.
 
 The standalone tool is layer-based: no output directory, results are napari
-layers tagged ``[Nucleus]`` / ``[Cell]``, and the embedded corrector binds to the
-active Labels layer.
+layers tagged ``[Channel 1]`` / ``[Channel 2]``, and the embedded corrector binds
+to the active Labels layer. Channel 1 is the anchor (segment + track); a Channel
+2 makes the run joint (the only mode with a second channel).
 """
 from __future__ import annotations
 
@@ -95,9 +96,9 @@ def test_to_tzyx_and_squeeze_z_roundtrip():
 
 
 def test_layer_name_tags_channel():
-    assert stw._layer_name("nucleus", "masks") == "[Nucleus] masks"
-    assert stw._layer_name("cell", "tracked") == "[Cell] tracked"
-    assert stw._layer_name("cell", "preview") == "[Cell] preview"
+    assert stw._layer_name("Channel 1", "masks") == "[Channel 1] masks"
+    assert stw._layer_name("Channel 2", "tracked") == "[Channel 2] tracked"
+    assert stw._layer_name("Channel 1", "preview") == "[Channel 1] preview"
 
 
 # ── compute steps (Qt-free) ─────────────────────────────────────────────────
@@ -145,25 +146,43 @@ def test_preview_channel_masks_populates_only_current_frame(_model):
 def test_widget_exposes_rows_actions_and_no_output_dir():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # Channel 1 (anchor) has the full segment + track row; Channel 2 has its
+    # params + a joint preview + run (no independent segmentation).
     for name in (
-        "nucleus_params_btn", "nucleus_preview_btn", "nucleus_seg_btn", "nucleus_track_btn",
-        "cell_params_btn", "cell_preview_btn", "cell_seg_btn", "cell_track_btn",
+        "ch1_params_btn", "ch1_preview_btn", "ch1_seg_btn", "ch1_track_btn",
+        "ch2_params_btn", "ch2_preview_btn", "ch2_run_btn",
     ):
         assert isinstance(getattr(w, name), QToolButton), name
-    # only input pickers — the output dir is gone (results are layers).
-    assert w._nucleus_edit is not None and w._cell_edit is not None
+    # each channel row has a folder + load-from-layer button.
+    for name in ("ch1_folder_btn", "ch1_layer_btn", "ch2_folder_btn", "ch2_layer_btn"):
+        assert isinstance(getattr(w, name), QToolButton), name
+    # the nucleus/cell vocabulary is gone — no independent Channel-2 seg/track, and
+    # the old single ⧉ joint button has been split into preview + run.
+    for gone in (
+        "cell_seg_btn", "cell_track_btn", "cell_preview_btn", "nucleus_seg_btn",
+        "joint_run_btn",
+    ):
+        assert not hasattr(w, gone), gone
+    # no path text field and no output dir — a channel's source is its two pills,
+    # which are checkable so the active source lights up.
+    assert not hasattr(w, "_ch1_edit") and not hasattr(w, "_ch2_edit")
     assert not hasattr(w, "_output_dir_edit")
-    assert "output_dir" not in w._standalone_fields()
-    assert w.nucleus_seg_btn.text() == "▶" and w.nucleus_preview_btn.text() == "▷"
+    assert not hasattr(w, "_standalone_fields")
+    assert w.ch1_folder_btn.isCheckable() and w.ch1_layer_btn.isCheckable()
+    assert w.ch1_seg_btn.text() == "▶" and w.ch1_preview_btn.text() == "▷"
+    assert w.ch2_run_btn.text() == "▶" and w.ch2_preview_btn.text() == "▷"
     w.deleteLater()
 
 
 def test_widget_exposes_joint_action_and_params():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    for name in ("joint_params_btn", "joint_run_btn"):
+    # Channel 2's params button + its joint preview/run (joint is Channel 2's only
+    # mode — there is no standalone "joint_params_btn" anymore).
+    for name in ("ch2_params_btn", "ch2_preview_btn", "ch2_run_btn"):
         assert isinstance(getattr(w, name), QToolButton), name
-    assert w.joint_run_btn.text() == "⧉"
+    assert not hasattr(w, "joint_params_btn")
+    assert w.ch2_preview_btn.text() == "▷" and w.ch2_run_btn.text() == "▶"
     # The joint flow-following knobs are exposed (decision: fg_threshold is a knob).
     params = w._build_flow_params()
     assert params.fg_threshold == 0.5
@@ -176,48 +195,90 @@ def test_joint_button_disabled_until_both_inputs(tmp_path: Path):
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
     # Clear any paths restored from persisted QSettings so the test is deterministic.
-    w._nucleus_edit.setText("")
-    w._cell_edit.setText("")
-    w._apply_paths()
-    # No inputs → joint disabled.
+    w._set_channel_path(1, None)
+    w._set_channel_path(2, None)
+    # No inputs → joint preview + run disabled.
     assert w._both_inputs() is False
-    assert w.joint_run_btn.isEnabled() is False
-    # Only one input → still disabled.
-    nuc = tmp_path / "nuc.tif"
-    tifffile.imwrite(str(nuc), np.zeros((2, 4, 4), dtype=np.float32))
-    w._nucleus_edit.setText(str(nuc))
-    w._apply_paths()
+    assert w.ch2_run_btn.isEnabled() is False
+    assert w.ch2_preview_btn.isEnabled() is False
+    # Only Channel 1 → still disabled (a second channel is required for joint).
+    ch1 = tmp_path / "ch1.tif"
+    tifffile.imwrite(str(ch1), np.zeros((2, 4, 4), dtype=np.float32))
+    w._set_channel_path(1, ch1)
+    assert w.ch1_folder_btn.isChecked() is True  # browse pill lit for the file source
     assert w._both_inputs() is False
-    assert w.joint_run_btn.isEnabled() is False
-    # Both inputs → enabled.
-    cell = tmp_path / "cell.tif"
-    tifffile.imwrite(str(cell), np.zeros((2, 4, 4), dtype=np.float32))
-    w._cell_edit.setText(str(cell))
-    w._apply_paths()
+    assert w.ch2_run_btn.isEnabled() is False
+    assert w.ch2_preview_btn.isEnabled() is False
+    # Both channels → enabled.
+    ch2 = tmp_path / "ch2.tif"
+    tifffile.imwrite(str(ch2), np.zeros((2, 4, 4), dtype=np.float32))
+    w._set_channel_path(2, ch2)
     assert w._both_inputs() is True
-    assert w.joint_run_btn.isEnabled() is True
+    assert w.ch2_run_btn.isEnabled() is True
+    assert w.ch2_preview_btn.isEnabled() is True
+    w.deleteLater()
+
+
+def test_load_channel_from_layer_sources_in_memory_stack():
+    """Load-from-layer sets a canonicalised in-memory stack and drops file mode."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w._set_channel_path(1, None)
+    w._set_channel_path(2, None)
+    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="raw nuclei")
+    w._use_layer_as_channel(1, "raw nuclei")
+    assert w._ch1_stack is not None and w._ch1_stack.shape == (2, 1, 8, 8)
+    assert w._ch1_path is None
+    assert w._ch1_layer_name == "raw nuclei"
+    assert w._channel_present(1) is True
+    # the layer pill is lit (active source), the browse pill is not.
+    assert w.ch1_layer_btn.isChecked() is True
+    assert w.ch1_folder_btn.isChecked() is False
+    # choosing a file switches the channel back out of layer mode.
+    w._set_channel_path(1, Path("/some/file.tif"))
+    assert w._ch1_stack is None
+    assert w.ch1_folder_btn.isChecked() is True
+    assert w.ch1_layer_btn.isChecked() is False
+    w.deleteLater()
+
+
+def test_joint_enabled_with_layer_sourced_channels():
+    """Both channels sourced from layers (no files) still enable joint."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w._set_channel_path(1, None)
+    w._set_channel_path(2, None)
+    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="n")
+    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="c")
+    w._use_layer_as_channel(1, "n")
+    w._use_layer_as_channel(2, "c")
+    assert w._both_inputs() is True
+    assert w.ch2_run_btn.isEnabled() is True
+    assert w.ch2_preview_btn.isEnabled() is True
     w.deleteLater()
 
 
 def test_segment_track_joint_returns_paired_stacks(tmp_path: Path, monkeypatch):
-    """The widget's joint compute fn loads both stacks and pairs cell→nucleus ids."""
-    nuc = tmp_path / "nuc.tif"
-    cell = tmp_path / "cell.tif"
-    tifffile.imwrite(str(nuc), np.zeros((2, 8, 8), dtype=np.float32))
-    tifffile.imwrite(str(cell), np.zeros((2, 8, 8), dtype=np.float32))
+    """The widget's joint compute fn loads both stacks and pairs ch2→ch1 ids."""
+    ch1 = tmp_path / "ch1.tif"
+    ch2 = tmp_path / "ch2.tif"
+    tifffile.imwrite(str(ch1), np.zeros((2, 8, 8), dtype=np.float32))
+    tifffile.imwrite(str(ch2), np.zeros((2, 8, 8), dtype=np.float32))
 
     captured = {}
 
-    def _fake_joint(nuc_stack, cell_stack, *a, **k):
-        captured["nuc_shape"] = nuc_stack.shape
-        captured["cell_shape"] = cell_stack.shape
+    def _fake_joint(ch1_stack, ch2_stack, *a, **k):
+        captured["ch1_shape"] = ch1_stack.shape
+        captured["ch2_shape"] = ch2_stack.shape
         tracked = np.zeros((2, 1, 8, 8), dtype=np.int32)
         tracked[:, 0, 4, 4] = 6
         return tracked, tracked.copy()
 
     monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
-    nuc_out, cell_out = stw.segment_track_joint(
-        nuc, cell,
+    ch1_out, ch2_out = stw.segment_track_joint(
+        ch1, ch2,
         cellpose_runner.NucleusParams(
             do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
         ),
@@ -226,17 +287,57 @@ def test_segment_track_joint_returns_paired_stacks(tmp_path: Path, monkeypatch):
         max_distance=15.0, max_frame_gap=0,
     )
     # 2D+t input was canonicalised to (T, Z, Y, X) before joint compute.
-    assert captured["nuc_shape"] == (2, 1, 8, 8)
-    assert set(np.unique(cell_out)) == set(np.unique(nuc_out)) == {0, 6}
+    assert captured["ch1_shape"] == (2, 1, 8, 8)
+    assert set(np.unique(ch2_out)) == set(np.unique(ch1_out)) == {0, 6}
 
 
-def test_set_running_joint_swaps_glyph():
+def test_segment_channel_accepts_in_memory_array(_model):
+    """A channel can be sourced from a viewer layer's array, not just a .tif."""
+    arr = np.zeros((2, 8, 8), dtype=np.float32)  # e.g. a napari image layer's data
+    params = cellpose_runner.NucleusParams(
+        do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+    )
+    masks = stw.segment_channel(arr, "nucleus", params)
+    assert masks.shape == (2, 1, 8, 8)
+
+
+def test_preview_joint_embeds_only_current_frame(monkeypatch):
+    """preview_joint runs the joint on one frame and embeds it full-size."""
+    ch1 = np.zeros((3, 1, 6, 6), dtype=np.float32)
+    ch2 = np.zeros((3, 1, 6, 6), dtype=np.float32)
+
+    def _fake_joint(ch1_s, ch2_s, *a, **k):
+        assert ch1_s.shape[0] == 1 and ch2_s.shape[0] == 1  # single frame fed in
+        lab = np.zeros((1, 1, 6, 6), dtype=np.int32)
+        lab[0, 0, 2, 2] = 5
+        return lab, lab.copy()
+
+    monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
+    out = stw.preview_joint(
+        ch1, ch2,
+        cellpose_runner.NucleusParams(
+            do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+        ),
+        cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0),
+        stw.FlowFollowingParams(), t=1,
+        max_distance=15.0, max_frame_gap=0,
+    )
+    assert out.shape == (3, 1, 6, 6)
+    assert out[1].any()                       # current frame populated
+    assert not out[0].any() and not out[2].any()  # others stay background
+
+
+def test_set_running_ch2_actions_swap_glyph():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    w._set_running("joint")
-    assert w.joint_run_btn.text() == "✕"
-    w._set_running(None)
-    assert w.joint_run_btn.text() == "⧉"
+    for key, btn, glyph in (
+        ("ch2_preview", w.ch2_preview_btn, "▷"),
+        ("ch2_run", w.ch2_run_btn, "▶"),
+    ):
+        w._set_running(key)
+        assert btn.text() == "✕"
+        w._set_running(None)
+        assert btn.text() == glyph
     w.deleteLater()
 
 
@@ -248,8 +349,8 @@ def test_widget_has_no_layout_or_3d_mode_controls():
         "nuc_layout_combo", "cell_layout_combo", "nuc_3d_chk", "nuc_anisotropy_spin",
     ):
         assert not hasattr(w, attr), attr
-    # Nucleus segmentation is always per-plane in the standalone.
-    assert w._build_nucleus_params().do_3d is False
+    # The anchor (Channel 1) is always segmented per-plane in the standalone.
+    assert w._build_ch1_params().do_3d is False
     w.deleteLater()
 
 
@@ -258,8 +359,8 @@ def test_widget_has_no_output_dir_or_file_contract_in_source():
     # results are layers, so there is no flat-file output contract anymore.
     assert "_output_dir" not in src
     assert "{channel}_masks.tif" not in src and "{channel}_tracked.tif" not in src
-    # layers are channel-tagged.
-    assert "[{channel.title()}] {kind}" in src
+    # layers are channel-tagged via the labelled helper.
+    assert 'f"[{channel_label}] {kind}"' in src
     # the 4-way layout picker is gone (segmentation is layout-free per-plane).
     assert "_layout_combo" not in src
     assert "_LAYOUT_OPTIONS" not in src
@@ -270,9 +371,9 @@ def test_set_running_swaps_glyph_to_cancel_for_each_action():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
     for key, btn, glyph in (
-        ("nucleus_preview", w.nucleus_preview_btn, "▷"),
-        ("cell_seg", w.cell_seg_btn, "▶"),
-        ("cell_track", w.cell_track_btn, "⊳"),
+        ("ch1_preview", w.ch1_preview_btn, "▷"),
+        ("ch1_seg", w.ch1_seg_btn, "▶"),
+        ("ch1_track", w.ch1_track_btn, "⊳"),
     ):
         w._set_running(key)
         assert btn.text() == "✕"
@@ -292,7 +393,7 @@ def test_factory_returns_widget():
 def test_add_labels_squeezes_singleton_z_and_tags():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    name = stw._layer_name("nucleus", "masks")
+    name = stw._layer_name("Channel 1", "masks")
     w._add_labels(name, np.zeros((2, 1, 5, 5), dtype=np.int32))
     assert name in w.viewer.layers
     assert w.viewer.layers[name].data.shape == (2, 5, 5)  # Z=1 squeezed for napari
