@@ -777,6 +777,20 @@ class CellposeSegmentTrackWidget(QWidget):
         st["prob"][t] = prob
         st["flow"][t] = flow
         self._push_stream_layers()
+        self._show_frame(t)
+
+    def _show_frame(self, t: int) -> None:
+        """Move the viewer's frame slider to ``t`` so the just-streamed frame shows.
+
+        Only the leading (time) axis is touched; any remaining slider positions
+        (e.g. Z) are preserved. napari clamps out-of-range values itself.
+        """
+        dims = getattr(self.viewer, "dims", None)
+        step = list(getattr(dims, "current_step", ()) or ())
+        if not step:
+            return
+        step[0] = int(t)
+        dims.current_step = tuple(step)
 
     def _push_stream_layers(self) -> None:
         st = self._stream

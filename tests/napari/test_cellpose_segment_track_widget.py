@@ -328,6 +328,33 @@ def test_segment_streaming_fills_masks_prob_flow_layers():
     w.deleteLater()
 
 
+def test_segment_streaming_advances_frame_slider():
+    """Each streamed frame drives the viewer's time slider to that frame."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0)
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    T, Z, Y, X = 3, 1, 5, 5
+    w._stream = {
+        "masks": np.zeros((T, Z, Y, X), np.int32),
+        "prob": np.zeros((T, Z, Y, X), np.float32),
+        "flow": np.zeros((T, Z, Y, X, 3), np.uint8),
+        "masks_name": "[Channel 1] masks",
+        "prob_name": "[Channel 1] prob",
+        "flow_name": "[Channel 1] flow",
+    }
+    frame = lambda t: (t, np.ones((Z, Y, X), np.int32),
+                       np.zeros((Z, Y, X), np.float32),
+                       np.zeros((Z, Y, X, 3), np.uint8))
+    w._on_seg_frame(frame(2))
+    assert viewer.dims.current_step[0] == 2
+    # other slider axes are preserved
+    assert viewer.dims.current_step[1] == 0
+    w._on_seg_frame(frame(1))
+    assert viewer.dims.current_step[0] == 1
+    w.deleteLater()
+
+
 def test_source_pill_darkens_when_bound_layer_removed():
     """The pill is a status light: it unlits + releases the channel on removal."""
     QApplication.instance() or QApplication([])
