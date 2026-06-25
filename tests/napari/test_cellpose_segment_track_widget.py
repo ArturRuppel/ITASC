@@ -456,3 +456,84 @@ def test_cell_corrector_default_paths_unchanged():
     assert c._cell_foreground_path() == Path("/proj/pos1/1_cellpose/cell_foreground.tif")
     assert c._nuc_foreground_path() == Path("/proj/pos1/1_cellpose/nucleus_foreground.tif")
     c.deleteLater()
+
+
+class _FakeLabelsLayer:
+    """Minimal stand-in for a napari Labels layer for retrack tests."""
+
+    def __init__(self, data, name="cells"):
+        self.data = np.asarray(data)
+        self.name = name
+
+    def refresh(self):
+        pass
+
+
+def test_full_editing_unlocks_toolkit_and_retracker():
+    """The standalone corrector runs full DB-free editing + the Q/E retracker."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    w = CellCorrectionWidget(
+        _FakeViewer(), active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    # contour_only dropped → spawn / erase / merge / swap / split + Delete are live.
+    assert w.correction_widget._contour_only is False
+    assert isinstance(w.retrack_back_btn, QToolButton)
+    assert isinstance(w.retrack_fwd_btn, QToolButton)
+    assert hasattr(w, "retrack_max_dist_spin")
+    w.deleteLater()
+
+
+def test_app_corrector_stays_contour_only_without_full_editing():
+    """The integrated app's corrector (no full_editing) is unchanged."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    w = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: None)
+    assert w.correction_widget._contour_only is True
+    assert not hasattr(w, "retrack_back_btn")
+    assert not hasattr(w, "retrack_max_dist_spin")
+    w.deleteLater()
+
+
+def test_full_editing_retrack_propagates_ids_on_bound_layer():
+    """Q/E retrack re-links the bound layer's later frames to the current one."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    # One cell drifting +2 x per frame, with garbled per-frame ids.
+    stack = np.zeros((3, 30, 30), dtype=np.int32)
+    stack[0, 10:14, 2:6] = 1
+    stack[1, 10:14, 4:8] = 50
+    stack[2, 10:14, 6:10] = 77
+    layer = _FakeLabelsLayer(stack)
+    w._active_bound_layer = layer
+    viewer.dims.current_step = (0, 0)
+    w._on_retrack("forward")
+    out = layer.data
+    assert int(out[0, 11, 3]) == 1   # anchor frame kept
+    assert int(out[1, 11, 5]) == 1   # propagated
+    assert int(out[2, 11, 7]) == 1
+    assert w._correction_dirty is True
+    w.deleteLater()
+
+
+def test_full_editing_retrack_needs_multiframe_stack():
+    """Retrack refuses a single 2-D frame (nothing to link)."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    w._active_bound_layer = _FakeLabelsLayer(np.zeros((8, 8), dtype=np.int32))
+    viewer.dims.current_step = (0, 0)
+    w._on_retrack("forward")  # no raise; reports via status
+    assert "time-first" in w.correction_status_lbl.text().lower()
+    w.deleteLater()

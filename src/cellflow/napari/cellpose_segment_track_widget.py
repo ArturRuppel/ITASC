@@ -26,7 +26,9 @@ pill); there is no path text field, and the active pill lights up to show which
 source is in play. **There is no output directory**: every result is added straight to
 the napari viewer as a layer (tagged ``[Channel 1]`` / ``[Channel 2]``), and the
 user saves whichever layers they want via napari's own *Save Selected Layers*.
-The embedded basic corrector edits whichever Labels layer is active.
+The embedded corrector edits whichever Labels layer is active, with the full
+DB-free toolkit — select / spawn / erase / merge / swap / split (mouse + Delete),
+fill-holes / fragment cleanup, and a greedy retracker on Q/E.
 """
 from __future__ import annotations
 
@@ -390,14 +392,17 @@ class CellposeSegmentTrackWidget(QWidget):
         root.addWidget(self.ch2_section)
 
         # ── Cell correction ──
-        # Reuse the app's *basic* cell corrector — the ultrack/OverlapDB-free one
-        # — bound to whatever Labels layer is active, so segment → track → correct
-        # is one surface with no on-disk handoff. The widget brings its own
-        # "Correction" header + ⏻ activate button; it edits the active layer in
-        # place and the user saves it via napari.
+        # Reuse the app's cell corrector — the ultrack/OverlapDB-free one — bound
+        # to whatever Labels layer is active, so segment → track → correct is one
+        # surface with no on-disk handoff. ``full_editing`` unlocks the complete
+        # DB-free toolkit (spawn / erase / merge / swap / split + Q/E retrack) that
+        # the app keeps contour-only. The widget brings its own "Correction"
+        # header + ⏻ activate button; it edits the active layer in place and the
+        # user saves it via napari.
         self.cell_correction = CellCorrectionWidget(
             self.viewer,
             active_labels_layer_provider=self._active_labels_layer,
+            full_editing=True,
             parent=self,
         )
         root.addWidget(self.cell_correction)

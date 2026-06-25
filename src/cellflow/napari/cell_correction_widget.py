@@ -44,7 +44,10 @@ from cellflow.napari.ui_style import (
     stage_header_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
-from cellflow.napari._widget_helpers import islider as _islider
+from cellflow.napari._widget_helpers import (
+    dslider as _dslider,
+    islider as _islider,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +112,16 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         cell_ref_path_provider: Callable[[], Path | None] | None = None,
         nucleus_ref_path_provider: Callable[[], Path | None] | None = None,
         active_labels_layer_provider: Callable[[], object] | None = None,
+        full_editing: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        # Opt-in (standalone segment+track only): unlock the full DB-free editing
+        # toolkit — spawn / erase / merge / swap / split (mouse + Delete), plus a
+        # greedy retracker on Q/E. The integrated app never passes this, so its
+        # contour-only cell corrector is byte-for-byte unchanged.
+        self._full_editing = full_editing
         self._pos_dir_provider = pos_dir_provider
         self._local_pos_dir: Path | None = None
         self._files_widget_refresh = files_widget_refresh_callback or (lambda _pd: None)
@@ -121,6 +130,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._nucleus_ref_path_provider = nucleus_ref_path_provider
         self._active_labels_layer_provider = active_labels_layer_provider
         self._active_bound_layer = None
+        self._retrack_keys_layer = None
         self._correction_view_state: LayerViewState | None = None
         self._correction_owned_layers: set[str] = set()
         self._correction_dirty: bool = False
@@ -198,6 +208,16 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             "🧹",
             "Remove disconnected same-label fragments (honours the Scope selector).",
         )
+        # Retracker (standalone full-editing only): re-link every later frame to
+        # the current one by greedy geometric similarity (area + centroid IoU -
+        # distance). DB-free — there is no validation/locking, just re-linking.
+        if self._full_editing:
+            self.retrack_back_btn = _tool_btn(
+                "↶", "Retrack labels backward from the current frame (Q)."
+            )
+            self.retrack_fwd_btn = _tool_btn(
+                "↷", "Retrack labels forward from the current frame (E)."
+            )
 
         # ── Scope selector (always visible in the active panel) ───────
         # Scope drives Fill Holes / Remove Stranded Fragments, so it lives
@@ -230,6 +250,17 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             tooltip="Max hole size (pixels) for the Fill Holes operation.",
         )
         add_block_pair_row(g, 0, "Hole radius:", self.hole_radius_spin)
+        if self._full_editing:
+            # Cell radius backs middle-click spawning; max dist gates retrack
+            # matches. The spawn spinbox lives inside the inner widget (created
+            # below) and is relocated here once it exists.
+            self.retrack_max_dist_spin = _dslider(
+                0, 500, 50.0, 1.0, 1,
+                tooltip="Max centroid distance (px) for a retrack (Q/E) match.",
+            )
+            add_block_pair_row(
+                g, 1, "Retrack max dist:", self.retrack_max_dist_spin
+            )
         params_lay.addLayout(g)
 
         self.correction_params_section = CollapsibleSection(
@@ -243,9 +274,12 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         group_lay.addWidget(self.correction_params_section)
 
         # ── Inline CorrectionWidget ───────────────────────────────────
-        # Cell labels are tied to the nuclei: restrict to contour edits only
-        # (select + Shift-left extend + Shift-right carve), border highlight,
-        # and no spawn-radius control.
+        # App default: cell labels are tied to the nuclei, so restrict to contour
+        # edits only (select + Shift-left extend + Shift-right carve), border
+        # highlight, no spawn-radius control.
+        # ``full_editing`` (standalone segment+track only) drops ``contour_only``
+        # so the whole DB-free toolkit is live — spawn / erase / merge / swap /
+        # split (mouse + Delete) — and the shortcuts panel auto-lists them.
         self.correction_widget = CorrectionWidget(
             self.viewer,
             show_activate_btn=False,
@@ -253,7 +287,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             inspector_first=True,
             show_cleanup=False,
             show_spawn_controls=False,
-            contour_only=True,
+            contour_only=not self._full_editing,
             highlight_style="border",
         )
         # Inline contour edits (extend / carve / split) flow through the inner
@@ -264,17 +298,27 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # The outline view is driven from the toolbar ``outline_btn`` toggle now,
         # so hide the embedded checkbox and keep the two in sync.
         self.correction_widget._outline_btn.setVisible(False)
+        if self._full_editing:
+            # Relocate the inner widget's spawn-radius spinbox into our params
+            # panel (it is created but unparented to a layout when
+            # show_spawn_controls=False), so middle-click spawn size is tunable.
+            cell_radius_grid = block_grid(horizontal_spacing=12)
+            add_block_pair_row(
+                cell_radius_grid, 0, "Cell radius:",
+                self.correction_widget._cell_radius_spin,
+            )
+            params_lay.addLayout(cell_radius_grid)
 
         # Thin vertical icon toolbar (nucleus styling: enlarged glyphs, ruled
         # groups, no pill) shown to the left of the editing surface.
-        self.toolbar = build_correction_toolbar(
-            self,
-            [
-                (self.outline_btn,),
-                (self.save_labels_btn,),
-                (self.fill_holes_btn, self.cleanup_btn),
-            ],
-        )
+        toolbar_groups = [
+            (self.outline_btn,),
+            (self.save_labels_btn,),
+            (self.fill_holes_btn, self.cleanup_btn),
+        ]
+        if self._full_editing:
+            toolbar_groups.append((self.retrack_back_btn, self.retrack_fwd_btn))
+        self.toolbar = build_correction_toolbar(self, toolbar_groups)
         self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
         self.correction_shortcuts_section = CollapsibleSection(
@@ -358,6 +402,9 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self.active_btn.toggled.connect(self._on_active_button_toggled)
         self.params_btn.toggled.connect(self._on_params_button_toggled)
         self.shortcuts_btn.toggled.connect(self._on_shortcuts_button_toggled)
+        if self._full_editing:
+            self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
+            self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
@@ -413,11 +460,13 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self._active_bound_layer = layer
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
+            self._bind_retrack_keys(layer)
             shape = tuple(np.asarray(layer.data).shape)
             self._correction_status(f"Correcting '{layer.name}' {shape}.")
             self._sync_correction_panel_visibility()
             return
         self._set_checked_without_signal(self.active_btn, False)
+        self._unbind_retrack_keys()
         self.correction_widget.deactivate()
         self._active_bound_layer = None
         self._correction_dirty = False
@@ -743,3 +792,85 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             )
         else:
             self._correction_status("No stranded fragments found.")
+
+    # ------------------------------------------------------------------ #
+    # Retracker (standalone full-editing only) — DB-free                  #
+    # ------------------------------------------------------------------ #
+
+    def _bind_retrack_keys(self, layer) -> None:
+        """Bind the Q/E retrack hotkeys on the active layer (full-editing only).
+
+        Layer-level keymap entries take precedence over napari's defaults, so
+        Q/E reliably drive the retracker while correction is active. The inner
+        CorrectionWidget already binds Delete (erase) when not contour-only.
+        """
+        if not self._full_editing:
+            return
+        self._unbind_retrack_keys()
+        for key, slot in (
+            ("Q", self._on_retrack_backward),
+            ("E", self._on_retrack_forward),
+        ):
+            def handler(_layer, _slot=slot):
+                _slot()
+
+            layer.bind_key(key, handler, overwrite=True)
+        self._retrack_keys_layer = layer
+
+    def _unbind_retrack_keys(self) -> None:
+        layer = self._retrack_keys_layer
+        if layer is None:
+            return
+        for key in ("Q", "E"):
+            try:
+                layer.bind_key(key, None)
+            except Exception:
+                pass
+        self._retrack_keys_layer = None
+
+    def _on_retrack_forward(self) -> None:
+        self._on_retrack("forward")
+
+    def _on_retrack_backward(self) -> None:
+        self._on_retrack("backward")
+
+    def _on_retrack(self, direction: str) -> None:
+        """Re-link the tracked stack from the current frame outward (DB-free).
+
+        Greedy geometric similarity to the already-retracked neighbour toward the
+        current frame; no validation/locking, so it is the pure standalone case
+        of the nucleus widget's Q/E retracker.
+        """
+        from cellflow.cellpose.retrack import retrack_stack
+
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No labels layer to retrack."); return
+        data = np.asarray(layer.data)
+        if data.ndim != 3 or data.shape[0] < 2:
+            self._correction_status(
+                "Retrack needs a 3D time-first stack (>= 2 frames)."
+            )
+            return
+        t0 = self._current_t()
+        if direction == "forward" and t0 >= data.shape[0] - 1:
+            self._correction_status("Already at the last frame."); return
+        if direction == "backward" and t0 <= 0:
+            self._correction_status("Already at the first frame."); return
+        try:
+            out = retrack_stack(
+                data,
+                start_frame=t0,
+                direction=direction,
+                max_dist_px=float(self.retrack_max_dist_spin.value()),
+            )
+        except ValueError as exc:
+            self._correction_status(str(exc)); return
+        layer.data = out
+        layer.refresh()
+        self._correction_dirty = True
+        if self.correction_widget._selected_label:
+            self.correction_widget._update_highlight(
+                t0, self.correction_widget._selected_label,
+            )
+        self._correction_status(f"Retracked {direction} from t={t0}. Unsaved.")

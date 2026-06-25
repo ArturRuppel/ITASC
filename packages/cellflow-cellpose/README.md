@@ -72,10 +72,17 @@ so importing the package does not require them.
   the assignment; **Max distance / Max frame gap** tune the Channel-1 tracker that
   both the joint anchor and Channel 1's own Track action run.
 
-  The embedded **Correction** panel (the basic, ultrack-free cell corrector)
+  The embedded **Correction** panel (the ultrack/OverlapDB-free cell corrector)
   edits whatever **Labels** layer is currently active — typically `[Channel 2]
-  tracked` — in place: contour extend/carve, fill-holes and stranded-fragment
-  cleanup. It targets 2D+t (single-Z) labels; save the corrected layer via napari.
+  tracked` — in place, with the full DB-free toolkit: **select** (left-click),
+  **spawn** (middle-click empty space), **erase** (middle-click a cell or
+  `Delete`), **merge** (`Ctrl`+left), **swap / attach to track** (`Ctrl`+right),
+  **grow / link the selected track** (`Ctrl`+middle), **draw / split** (`Shift`+
+  left / right-drag), plus **fill-holes** and **stranded-fragment cleanup** and
+  `Ctrl+Z` undo. A built-in **retracker** re-links the tracks from the current
+  frame outward by geometric similarity — **`E`** forward, **`Q`** backward (the
+  *Retrack max dist* parameter gates a match). It targets 2D+t (single-Z) labels;
+  save the corrected layer via napari.
 
 - **Headless / scripting:**
 
