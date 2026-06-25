@@ -37,8 +37,11 @@ so importing the package does not require them.
 ## Use
 
 - **napari plugin:** add the *Cellpose Segment + Track* widget. Each channel
-  takes its input from **either** a file (`…` browse button) **or** an image
-  already open in the viewer (`⧉` load-from-layer button) — **no layout to declare**:
+  takes its input from the **active image layer**: select an image in the viewer
+  and click the channel's `⧉` pill to bind it — there is no file loading and
+  **no layout to declare**. That pill then doubles as a status light: it stays lit
+  while its bound layer is in the viewer and goes dark (releasing the channel) when
+  the layer is removed.
   - **Channel 1** — the anchor stack (typically the nucleus)
   - **Channel 2** — optional second stack (typically the cell)
 
@@ -47,14 +50,27 @@ so importing the package does not require them.
   last two axes are `Y, X`; of the remaining leading axes the **shorter is `Z`**
   and the longer is **time** (the preview status shows the inferred `T`/`Z`).
 
-  **Channel 1** carries the single-channel pipeline: **Preview** (▷) runs native
-  masks on the current frame so you can tune diameter/min-size/gamma first;
-  **Segment** (▶) runs Cellpose native masks over the whole stack; **Track** (⊳)
-  links them **axis-by-axis** — it stitches the `z` axis by overlap (so an object
-  spanning planes becomes one), then tracks time by motion with laptrack
-  (max-distance / frame-gap, in the *Channel 2 & tracking parameters* section).
-  Results land as layers tagged `[Channel 1]` (`… masks`, `… tracked`,
-  `… preview`); save them via napari.
+  **Channel 1** carries the single-channel pipeline and surfaces three maps from a
+  single Cellpose pass — the **native masks**, the **sigmoid probability map** and
+  the **flow** (HSV-coloured by direction). **Preview** (▷) runs them on the
+  **current frame only** so you can tune diameter / min-size / gamma and the
+  **Prob threshold** (a `[0, 1]` cutoff read in the prob-map image's own space,
+  `0.5` = Cellpose's default; reversed through the inverse sigmoid to the raw
+  `cellprob` Cellpose thresholds — lower finds more and larger masks, higher is
+  stricter), the **Flow error tolerance** (Cellpose's `flow_threshold`, relabelled
+  so its direction reads right — it is the per-mask flow-error budget, so *higher
+  is more permissive*; `0.4` default, `0` disables the QC and keeps every mask;
+  this, not Prob threshold, is usually the knob that gates how many masks survive)
+  and **Iterations** (`niter` flow steps, `0` = auto) against what you see;
+  **Segment**
+  (▶) runs the whole stack and **streams** each frame into the viewer as it is
+  computed, so the masks/prob/flow layers fill in live instead of appearing only
+  at the end. **Track** (⊳) links the masks **axis-by-axis** — it stitches the `z`
+  axis by overlap (so an object spanning planes becomes one), then tracks time by
+  motion with laptrack (max-distance / frame-gap, in the *Channel 2 & tracking
+  parameters* section). Results land as layers tagged `[Channel 1]` (`… masks`,
+  `… prob`, `… flow`, `… tracked`, and `… preview` / `… prob preview` /
+  `… flow preview`); save whichever you want via napari.
 
   **Channel 2** is never segmented on its own — it is always run *jointly*. Once a
   second channel is set its two actions mirror Channel 1's: **Preview** (▷) runs
@@ -98,12 +114,12 @@ so importing the package does not require them.
 
 ## I/O contract
 
-- **Input:** any 2-D..4-D source per channel — a `.tif` (folder button) or an
-  image layer already open in the viewer (load-from-layer button). There is no
-  required `0_input/` layout and **no layout to declare**. Every plane is
-  segmented individually; for tracking the shorter leading axis is read as `Z`,
-  the longer as time. Channel 1 is required; Channel 2 is optional (and turns the
-  run into joint mode).
+- **Input:** any 2-D..4-D image layer per channel, bound from the **active layer**
+  via the channel's `⧉` pill (there is no file loading). There is no required
+  `0_input/` layout and **no layout to declare**. Every plane is segmented
+  individually; for tracking the shorter leading axis is read as `Z`, the longer
+  as time. Channel 1 is required; Channel 2 is optional (and turns the run into
+  joint mode). The headless API below still reads `.tif` files directly.
 - **Output:** napari **layers**, not files. Masks/tracked/preview are added as
   `int32` Labels layers tagged `[Channel 1]` / `[Channel 2]` (singleton-Z squeezed
   to `(T, Y, X)` for 2D+t data); the user saves them with napari's *Save Selected

@@ -22,7 +22,6 @@ import numpy as np
 from cellflow.core.tiff import imwrite_grayscale
 from cellflow.cellpose import cellpose_runner
 from cellflow.cellpose.cellpose_runner import (
-    CancelledError,
     CellParams,
     NucleusParams,
     _apply_gamma,
@@ -36,9 +35,62 @@ __all__ = [
     "run_cell_masks_frame",
     "run_nucleus_masks_stack",
     "run_cell_masks_stack",
+    "run_nucleus_maps_frame",
+    "iter_nucleus_maps_stack",
     "write_masks",
     "offset_slice_labels",
 ]
+
+
+def _niter_kwarg(niter: int) -> int | None:
+    """``0`` means auto — pass ``None`` so Cellpose derives niter from the diameter."""
+    return None if int(niter) == 0 else int(niter)
+
+
+def _sigmoid(x: np.ndarray) -> np.ndarray:
+    """Map Cellpose's cellprob logits to a ``[0, 1]`` probability map."""
+    return 1.0 / (1.0 + np.exp(-np.asarray(x, dtype=np.float32)))
+
+
+def _flow_to_rgb(dp: np.ndarray) -> np.ndarray:
+    """HSV→RGB visualization of a ``(2, Y, X)`` flow field → ``(Y, X, 3)`` uint8.
+
+    Hue encodes flow direction (the colour wheel Cellpose users recognise) and
+    value encodes magnitude (per-frame normalised), so touching objects pulled
+    apart by their flows are visible. Saturation is fixed at 1.
+    """
+    dp = np.asarray(dp, dtype=np.float32)
+    dy, dx = dp[0], dp[1]
+    hue = (np.arctan2(dy, dx) + np.pi) / (2.0 * np.pi)  # [0, 1)
+    mag = np.hypot(dy, dx)
+    mmax = float(mag.max()) if mag.size else 0.0
+    val = mag / mmax if mmax > 0.0 else np.zeros_like(mag)
+    h6 = hue * 6.0
+    i = np.floor(h6).astype(np.int32) % 6
+    f = h6 - np.floor(h6)
+    p = np.zeros_like(val)         # saturation 1 → p = v*(1-s) = 0
+    q = val * (1.0 - f)
+    tt = val * f
+    conds = [i == 0, i == 1, i == 2, i == 3, i == 4, i == 5]
+    r = np.select(conds, [val, q, p, p, tt, val])
+    g = np.select(conds, [tt, val, val, q, p, p])
+    b = np.select(conds, [p, p, tt, val, val, q])
+    rgb = np.stack([r, g, b], axis=-1)
+    return (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _eval_maps(img: np.ndarray, **eval_kwargs):
+    """Run ``model.eval`` once and keep masks **and** the maps it would discard.
+
+    Returns ``(masks int32, prob (sigmoid of cellprob) float32, dp float32)`` —
+    the labelled masks, the probability map and the raw flow field — from a single
+    forward pass, so no channel is segmented twice to surface its intermediates.
+    """
+    model = cellpose_runner.get_model()
+    masks, flows, _styles = model.eval(img, normalize=_NORMALIZE, **eval_kwargs)
+    dp = np.asarray(flows[1], dtype=np.float32)
+    cellprob = np.asarray(flows[2], dtype=np.float32)
+    return np.asarray(masks, dtype=np.int32), _sigmoid(cellprob), dp
 
 
 def offset_slice_labels(slices: list[np.ndarray]) -> np.ndarray:
@@ -79,6 +131,7 @@ def run_nucleus_masks_frame(
     an integer ``z`` runs 2D on ``frame[z]`` and returns labels ``(Y, X)``.
     """
     diameter = _diameter_kwarg(params.diameter)
+    niter = _niter_kwarg(params.niter)
     if z is None:
         volume = _apply_gamma(frame, params.gamma)
         return _eval_masks(
@@ -88,9 +141,83 @@ def run_nucleus_masks_frame(
             diameter=diameter,
             anisotropy=params.anisotropy,
             min_size=params.min_size,
+            cellprob_threshold=params.cellprob_threshold,
+            flow_threshold=params.flow_threshold,
+            niter=niter,
         )
     slice_2d = _apply_gamma(frame[z], params.gamma)
-    return _eval_masks(slice_2d, diameter=diameter, min_size=params.min_size)
+    return _eval_masks(
+        slice_2d,
+        diameter=diameter,
+        min_size=params.min_size,
+        cellprob_threshold=params.cellprob_threshold,
+        flow_threshold=params.flow_threshold,
+        niter=niter,
+    )
+
+
+def run_nucleus_maps_frame(
+    frame: np.ndarray,
+    z: int,
+    params: NucleusParams,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Native masks **+ sigmoid prob map + RGB flow** for one 2D z-slice.
+
+    A single ``model.eval`` pass yields ``(masks (Y, X) int32, prob (Y, X)
+    float32, flow_rgb (Y, X, 3) uint8)`` — the labels plus the two intermediates
+    (probability and flow) the standalone tool surfaces so Channel 1 can be tuned.
+    The standalone anchor is always per-plane 2D, so ``z`` is an integer slice.
+    """
+    diameter = _diameter_kwarg(params.diameter)
+    slice_2d = _apply_gamma(frame[z], params.gamma)
+    masks, prob, dp = _eval_maps(
+        slice_2d,
+        diameter=diameter,
+        min_size=params.min_size,
+        cellprob_threshold=params.cellprob_threshold,
+        flow_threshold=params.flow_threshold,
+        niter=_niter_kwarg(params.niter),
+    )
+    return masks, prob, _flow_to_rgb(dp)
+
+
+def iter_nucleus_maps_stack(
+    stack: np.ndarray,
+    params: NucleusParams,
+    *,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
+):
+    """Yield per-frame ``(t, masks, prob, flow_rgb)`` so results stream into a viewer.
+
+    For a ``(T, Z, Y, X)`` input each yield carries one time-frame: ``masks`` and
+    ``prob`` are ``(Z, Y, X)`` and ``flow_rgb`` is ``(Z, Y, X, 3)`` uint8, with
+    per-frame-unique mask labels (:func:`offset_slice_labels`). Always per-plane 2D
+    (the standalone anchor never runs do_3d). A caller can drop each frame into a
+    napari layer as it arrives instead of waiting for the whole stack.
+    """
+    stack = np.asarray(stack)
+    if stack.ndim != 4:
+        raise ValueError(f"expected (T, Z, Y, X), got shape {stack.shape}")
+    T, Z = stack.shape[:2]
+    for t in range(T):
+        _check_cancel(cancel_cb)
+        mask_slices: list[np.ndarray] = []
+        prob_slices: list[np.ndarray] = []
+        flow_slices: list[np.ndarray] = []
+        for z in range(Z):
+            if progress_cb is not None:
+                progress_cb(t, T, f"Channel 1 maps: frame {t + 1}/{T}, z {z + 1}/{Z}...")
+            m, p, f = run_nucleus_maps_frame(stack[t], z=z, params=params)
+            mask_slices.append(m)
+            prob_slices.append(p)
+            flow_slices.append(f)
+        masks = offset_slice_labels(mask_slices)
+        prob = np.stack(prob_slices, axis=0).astype(np.float32)
+        flow = np.stack(flow_slices, axis=0)
+        if progress_cb is not None:
+            progress_cb(t + 1, T, f"Channel 1 maps: frame {t + 1}/{T}...")
+        yield t, masks, prob, flow
 
 
 def run_cell_masks_frame(

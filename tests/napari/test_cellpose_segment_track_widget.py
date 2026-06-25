@@ -73,11 +73,22 @@ class _FakeViewer:
 
 @pytest.fixture
 def _model(monkeypatch):
-    """Cache a fake Cellpose model returning a full-frame labelled mask."""
+    """Cache a fake Cellpose model returning a full-frame mask + flows.
+
+    Flows (dp at index 1, cellprob at index 2) are emitted so the masks+prob+flow
+    capture path runs; the cellprob is left at 0 so its sigmoid is a flat 0.5.
+    """
     class _Recorder:
         def eval(self, img, **kwargs):
             arr = np.asarray(img, dtype=np.float32)
-            return np.ones(arr.shape, dtype=np.int32), (None, None, None), None
+            masks = np.ones(arr.shape, dtype=np.int32)
+            n = 3 if arr.ndim == 3 else 2
+            flows = (
+                None,
+                np.zeros((n, *arr.shape), np.float32),
+                np.zeros(arr.shape, np.float32),
+            )
+            return masks, flows, None
 
     monkeypatch.setattr(cellpose_runner, "_MODEL", _Recorder())
 
@@ -142,6 +153,38 @@ def test_preview_channel_masks_populates_only_current_frame(_model):
     assert not out[0].any() and not out[2].any()  # others stay background
 
 
+def test_preview_channel_maps_returns_masks_prob_flow_current_frame(_model):
+    stack = np.zeros((3, 1, 6, 6), dtype=np.float32)
+    params = cellpose_runner.NucleusParams(
+        do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+    )
+    masks, prob, flow = stw.preview_channel_maps(stack, params, t=1, z=0)
+    assert masks.shape == (3, 1, 6, 6) and masks.dtype == np.int32
+    assert prob.shape == (3, 1, 6, 6) and prob.dtype == np.float32
+    assert flow.shape == (3, 1, 6, 6, 3) and flow.dtype == np.uint8
+    # only the current frame is populated; sigmoid(0) == 0.5 there, 0 elsewhere.
+    assert masks[1].any() and not masks[0].any() and not masks[2].any()
+    np.testing.assert_allclose(prob[1], 0.5)
+    assert not prob[0].any() and not prob[2].any()
+
+
+def test_prob_threshold_is_inverse_sigmoid_of_prob_map():
+    # The [0, 1] cutoff is read in the prob-map image's own space (sigmoid(cellprob))
+    # and reversed by the inverse sigmoid (logit) to the raw cellprob Cellpose
+    # thresholds. 0.5 -> 0.0 (Cellpose's default); exact reverse of the display.
+    import math
+
+    assert stw._prob_to_cellprob(0.5) == 0.0
+    for p in (0.2, 0.7, 0.9):
+        assert abs(stw._prob_to_cellprob(p) - math.log(p / (1 - p))) < 1e-6
+    # round-trips through the prob-map sigmoid; symmetric about 0.5; finite at ends.
+    from cellflow.cellpose.native_masks import _sigmoid
+
+    assert abs(float(_sigmoid(stw._prob_to_cellprob(0.3))) - 0.3) < 1e-6
+    assert abs(stw._prob_to_cellprob(0.1) + stw._prob_to_cellprob(0.9)) < 1e-6
+    assert math.isfinite(stw._prob_to_cellprob(0.0)) and math.isfinite(stw._prob_to_cellprob(1.0))
+
+
 # ── widget construction ─────────────────────────────────────────────────────
 def test_widget_exposes_rows_actions_and_no_output_dir():
     QApplication.instance() or QApplication([])
@@ -153,8 +196,8 @@ def test_widget_exposes_rows_actions_and_no_output_dir():
         "ch2_params_btn", "ch2_preview_btn", "ch2_run_btn",
     ):
         assert isinstance(getattr(w, name), QToolButton), name
-    # each channel row has a folder + load-from-layer button.
-    for name in ("ch1_folder_btn", "ch1_layer_btn", "ch2_folder_btn", "ch2_layer_btn"):
+    # each channel row has a single load-from-active-layer pill (no file button).
+    for name in ("ch1_layer_btn", "ch2_layer_btn"):
         assert isinstance(getattr(w, name), QToolButton), name
     # the nucleus/cell vocabulary is gone — no independent Channel-2 seg/track, and
     # the old single ⧉ joint button has been split into preview + run.
@@ -163,12 +206,13 @@ def test_widget_exposes_rows_actions_and_no_output_dir():
         "joint_run_btn",
     ):
         assert not hasattr(w, gone), gone
-    # no path text field and no output dir — a channel's source is its two pills,
-    # which are checkable so the active source lights up.
+    # file loading is gone: no browse pill, no path text field, no output dir —
+    # a channel's source is its single layer pill, which lights to show its binding.
+    assert not hasattr(w, "ch1_folder_btn") and not hasattr(w, "ch2_folder_btn")
     assert not hasattr(w, "_ch1_edit") and not hasattr(w, "_ch2_edit")
     assert not hasattr(w, "_output_dir_edit")
     assert not hasattr(w, "_standalone_fields")
-    assert w.ch1_folder_btn.isCheckable() and w.ch1_layer_btn.isCheckable()
+    assert w.ch1_layer_btn.isCheckable() and w.ch2_layer_btn.isCheckable()
     assert w.ch1_seg_btn.text() == "▶" and w.ch1_preview_btn.text() == "▷"
     assert w.ch2_run_btn.text() == "▶" and w.ch2_preview_btn.text() == "▷"
     w.deleteLater()
@@ -191,69 +235,146 @@ def test_widget_exposes_joint_action_and_params():
     w.deleteLater()
 
 
-def test_joint_button_disabled_until_both_inputs(tmp_path: Path):
+def test_joint_button_disabled_until_both_inputs():
     QApplication.instance() or QApplication([])
-    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
-    # Clear any paths restored from persisted QSettings so the test is deterministic.
-    w._set_channel_path(1, None)
-    w._set_channel_path(2, None)
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
     # No inputs → joint preview + run disabled.
     assert w._both_inputs() is False
     assert w.ch2_run_btn.isEnabled() is False
     assert w.ch2_preview_btn.isEnabled() is False
     # Only Channel 1 → still disabled (a second channel is required for joint).
-    ch1 = tmp_path / "ch1.tif"
-    tifffile.imwrite(str(ch1), np.zeros((2, 4, 4), dtype=np.float32))
-    w._set_channel_path(1, ch1)
-    assert w.ch1_folder_btn.isChecked() is True  # browse pill lit for the file source
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert w.ch1_layer_btn.isChecked() is True  # pill lit for the bound layer
     assert w._both_inputs() is False
     assert w.ch2_run_btn.isEnabled() is False
     assert w.ch2_preview_btn.isEnabled() is False
     # Both channels → enabled.
-    ch2 = tmp_path / "ch2.tif"
-    tifffile.imwrite(str(ch2), np.zeros((2, 4, 4), dtype=np.float32))
-    w._set_channel_path(2, ch2)
+    ch2 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch2")
+    w._set_channel_layer(2, ch2)
     assert w._both_inputs() is True
     assert w.ch2_run_btn.isEnabled() is True
     assert w.ch2_preview_btn.isEnabled() is True
     w.deleteLater()
 
 
-def test_load_channel_from_layer_sources_in_memory_stack():
-    """Load-from-layer sets a canonicalised in-memory stack and drops file mode."""
+def test_bind_channel_to_layer_sources_canonical_stack():
+    """Binding a channel reads the layer's data as a canonical (T, Z, Y, X) stack."""
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
     w = stw.CellposeSegmentTrackWidget(viewer)
-    w._set_channel_path(1, None)
-    w._set_channel_path(2, None)
-    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="raw nuclei")
-    w._use_layer_as_channel(1, "raw nuclei")
-    assert w._ch1_stack is not None and w._ch1_stack.shape == (2, 1, 8, 8)
-    assert w._ch1_path is None
-    assert w._ch1_layer_name == "raw nuclei"
+    raw = viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="raw nuclei")
+    w._set_channel_layer(1, raw)
+    assert w._ch1_layer is raw
     assert w._channel_present(1) is True
-    # the layer pill is lit (active source), the browse pill is not.
+    assert w._channel_source(1).shape == (2, 1, 8, 8)  # canonicalised on read
+    # the pill is lit while the layer is bound + present.
     assert w.ch1_layer_btn.isChecked() is True
-    assert w.ch1_folder_btn.isChecked() is False
-    # choosing a file switches the channel back out of layer mode.
-    w._set_channel_path(1, Path("/some/file.tif"))
-    assert w._ch1_stack is None
-    assert w.ch1_folder_btn.isChecked() is True
+    w.deleteLater()
+
+
+def test_ch1_params_expose_prob_threshold_default_is_cellpose_default():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    assert isinstance(w.ch1_prob_thr_spin, QToolButton) is False  # it is a slider
+    assert w.ch1_prob_thr_spin.value() == 0.5
+    # default 0.5 -> logit 0.0 keeps Channel-1 segmentation at Cellpose's default.
+    assert w._build_ch1_params().cellprob_threshold == 0.0
+    assert "prob_threshold" in w.get_state()["channel1"]
+    w.deleteLater()
+
+
+def test_ch1_params_expose_flow_threshold_and_niter():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # defaults match Cellpose: flow_threshold 0.4, niter 0 (== auto).
+    assert w.ch1_flow_thr_spin.value() == 0.4
+    assert w.ch1_niter_spin.value() == 0
+    params = w._build_ch1_params()
+    assert params.flow_threshold == 0.4
+    assert params.niter == 0
+    state = w.get_state()["channel1"]
+    assert "flow_threshold" in state and "niter" in state
+    w.deleteLater()
+
+
+def test_segment_streaming_fills_masks_prob_flow_layers():
+    """The streaming handler writes each frame into three [Channel 1] layers."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    T, Z, Y, X = 2, 1, 5, 5
+    w._stream = {
+        "masks": np.zeros((T, Z, Y, X), np.int32),
+        "prob": np.zeros((T, Z, Y, X), np.float32),
+        "flow": np.zeros((T, Z, Y, X, 3), np.uint8),
+        "masks_name": "[Channel 1] masks",
+        "prob_name": "[Channel 1] prob",
+        "flow_name": "[Channel 1] flow",
+    }
+    # stream frame 0 only → its slice is filled, frame 1 stays background.
+    masks0 = np.ones((Z, Y, X), np.int32)
+    prob0 = np.full((Z, Y, X), 0.5, np.float32)
+    flow0 = np.full((Z, Y, X, 3), 7, np.uint8)
+    w._on_seg_frame((0, masks0, prob0, flow0))
+    for name in ("[Channel 1] masks", "[Channel 1] prob", "[Channel 1] flow"):
+        assert name in viewer.layers, name
+    # singleton Z squeezed for display: labels/prob -> (T, Y, X), flow -> (T, Y, X, 3).
+    assert viewer.layers["[Channel 1] masks"].data.shape == (T, Y, X)
+    assert viewer.layers["[Channel 1] flow"].data.shape == (T, Y, X, 3)
+    assert viewer.layers["[Channel 1] masks"].data[0].any()
+    assert not viewer.layers["[Channel 1] masks"].data[1].any()
+    w.deleteLater()
+
+
+def test_source_pill_darkens_when_bound_layer_removed():
+    """The pill is a status light: it unlits + releases the channel on removal."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    raw = viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="raw")
+    w._set_channel_layer(1, raw)
+    assert w.ch1_layer_btn.isChecked() is True and w._channel_present(1) is True
+    # remove the layer from the viewer → the pill goes dark, the binding is dropped.
+    viewer.layers.remove(raw)
+    w._on_layers_changed()
     assert w.ch1_layer_btn.isChecked() is False
+    assert w._ch1_layer is None
+    assert w._channel_present(1) is False
+    w.deleteLater()
+
+
+def test_bind_active_layer_rejects_non_image():
+    """Binding pulls the active layer and rejects anything that is not an Image."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    # active layer is a Labels (not an image) → channel stays empty + a status hint.
+    viewer.layers.selection.active = napari.layers.Labels(
+        np.zeros((2, 5, 5), dtype=np.int32), name="lab"
+    )
+    w._bind_active_layer(1)
+    assert w._channel_present(1) is False
+    assert "image layer" in w.status_lbl.text().lower()
+    # active layer is an Image → bound.
+    img = napari.layers.Image(np.zeros((2, 8, 8), dtype=np.float32), name="img")
+    viewer.layers["img"] = img
+    viewer.layers.selection.active = img
+    w._bind_active_layer(1)
+    assert w._ch1_layer is img and w._channel_present(1) is True
     w.deleteLater()
 
 
 def test_joint_enabled_with_layer_sourced_channels():
-    """Both channels sourced from layers (no files) still enable joint."""
+    """Both channels sourced from layers still enable joint."""
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
     w = stw.CellposeSegmentTrackWidget(viewer)
-    w._set_channel_path(1, None)
-    w._set_channel_path(2, None)
-    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="n")
-    viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="c")
-    w._use_layer_as_channel(1, "n")
-    w._use_layer_as_channel(2, "c")
+    n = viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="n")
+    c = viewer.add_image(np.zeros((2, 8, 8), dtype=np.float32), name="c")
+    w._set_channel_layer(1, n)
+    w._set_channel_layer(2, c)
     assert w._both_inputs() is True
     assert w.ch2_run_btn.isEnabled() is True
     assert w.ch2_preview_btn.isEnabled() is True

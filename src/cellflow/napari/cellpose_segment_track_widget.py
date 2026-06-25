@@ -20,12 +20,14 @@ The tool works on **one or two channels**, with no nucleus/cell vocabulary:
 Conventionally Channel 1 is the nucleus (a clean, separable anchor) and Channel 2
 the cell, but nothing here assumes that.
 
-Each channel's input is picked through its two pills — a multi-dimensional
-``.tif`` (browse pill) or an image already open in the viewer (load-from-layer
-pill); there is no path text field, and the active pill lights up to show which
-source is in play. **There is no output directory**: every result is added straight to
-the napari viewer as a layer (tagged ``[Channel 1]`` / ``[Channel 2]``), and the
-user saves whichever layers they want via napari's own *Save Selected Layers*.
+Each channel's input is the **active image layer**: select an image in the viewer
+and click the channel's source pill (``⧉``) to bind it — there is no file loading
+and no path text field. That pill then doubles as a **live status light**: it
+stays lit while its bound layer is present in the viewer and goes dark (releasing
+the channel) the moment that layer is removed. **There is no output directory**:
+every result is added straight to the napari viewer as a layer (tagged
+``[Channel 1]`` / ``[Channel 2]``), and the user saves whichever layers they want
+via napari's own *Save Selected Layers*.
 The embedded corrector edits whichever Labels layer is active, with the full
 DB-free toolkit — select / spawn / erase / merge / swap / split (mouse + Delete),
 fill-holes / fragment cleanup, and a greedy retracker on Q/E.
@@ -33,18 +35,15 @@ fill-holes / fragment cleanup, and a greedy retracker on Q/E.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
 import napari
 import numpy as np
 import tifffile
 from napari.layers import Image, Labels
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import QSettings, Signal
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
-    QFileDialog,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QProgressBar,
     QSizePolicy,
@@ -70,7 +69,7 @@ from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 from cellflow.cellpose import joint as joint_mod
 from cellflow.cellpose.flow_following import FlowFollowingParams
-from cellflow.cellpose.shape import describe_axes, to_canonical_tzyx
+from cellflow.cellpose.shape import to_canonical_tzyx
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +77,6 @@ logger = logging.getLogger(__name__)
 # anchor that is segmented + tracked; Channel 2 (optional) is flowed onto it.
 _CH1_LABEL = "Channel 1"
 _CH2_LABEL = "Channel 2"
-
-# File dialog filter for the .tif inputs each channel can take.
-_IMAGE_FILTER = "Images (*.tif *.tiff);;All files (*)"
 
 
 # ---------------------------------------------------------------------------
@@ -107,12 +103,26 @@ def _squeeze_z(arr: np.ndarray) -> np.ndarray:
     """Drop a singleton Z from ``(T, 1, Y, X)`` → ``(T, Y, X)`` for napari/corrector.
 
     2D+t data (Z=1) displays without a spurious slider and matches the basic
-    corrector's 3-D ``(T, Y, X)`` expectation. True 3-D+t (Z>1) is left as-is.
+    corrector's 3-D ``(T, Y, X)`` expectation. True 3-D+t (Z>1) is left as-is. An
+    RGB map keeps its trailing channel axis: ``(T, 1, Y, X, 3)`` → ``(T, Y, X, 3)``.
     """
     arr = np.asarray(arr)
-    if arr.ndim == 4 and arr.shape[1] == 1:
+    if arr.ndim >= 4 and arr.shape[1] == 1:
         return arr[:, 0]
     return arr
+
+
+def _prob_to_cellprob(p: float) -> float:
+    """Reverse the sigmoid that produced the displayed prob map → ``cellprob_threshold``.
+
+    The prob-map layer shows ``sigmoid(cellprob)``; Cellpose thresholds the raw
+    pre-sigmoid ``cellprob``. So the ``[0, 1]`` cutoff ``p`` maps back by the inverse
+    sigmoid (logit), ``log(p / (1 - p))`` — the slider then reads in the same space
+    as the prob-map image. ``0.5 → 0.0`` (Cellpose's default); ``p`` is clamped off
+    the open ends to keep the logit finite.
+    """
+    p = min(max(float(p), 1e-4), 1.0 - 1e-4)
+    return float(np.log(p / (1.0 - p)))
 
 
 def _layer_name(channel_label: str, kind: str) -> str:
@@ -201,6 +211,31 @@ def preview_channel_masks(
     return out
 
 
+def preview_channel_maps(
+    stack_tzyx: np.ndarray,
+    params,
+    t: int,
+    z: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Channel-1 masks + sigmoid prob + RGB flow for one current frame, full-size.
+
+    Runs a single Cellpose eval on frame ``t`` (slice ``z``) and embeds each of the
+    three maps into an otherwise-background ``(T, Z, Y, X)`` stack (flow keeps a
+    trailing RGB axis), so each previewed layer overlays exactly the frame on
+    screen while staying dim-aligned with the input.
+    """
+    stack = _to_tzyx(stack_tzyx)
+    T, Z, Y, X = (int(s) for s in stack.shape)
+    masks = np.zeros((T, Z, Y, X), dtype=np.int32)
+    prob = np.zeros((T, Z, Y, X), dtype=np.float32)
+    flow = np.zeros((T, Z, Y, X, 3), dtype=np.uint8)
+    m, p, f = native_masks.run_nucleus_maps_frame(stack[t], z=z, params=params)
+    masks[t, z] = m
+    prob[t, z] = p
+    flow[t, z] = f
+    return masks, prob, flow
+
+
 def segment_track_joint(
     ch1_source,
     ch2_source,
@@ -283,29 +318,28 @@ class CellposeSegmentTrackWidget(QWidget):
     """Standalone segment+track: Channel 1 anchors; a Channel 2 makes it joint."""
 
     _progress_signal = Signal(int, int, str)
-    _SETTINGS_APP = "cellflow_cellpose_segment_track"
 
     def __init__(self, viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
         self.gate = UiGate(self)
-        self._ch1_path: Path | None = None
-        self._ch2_path: Path | None = None
-        # Set when a channel is sourced from a viewer image layer instead of a file.
-        # The stack holds the layer's data; the name is kept only for the tooltip.
-        self._ch1_stack: np.ndarray | None = None
-        self._ch2_stack: np.ndarray | None = None
-        self._ch1_layer_name: str | None = None
-        self._ch2_layer_name: str | None = None
+        # Each channel is bound to a live viewer image layer (its only source).
+        # The reference is what the source pill's status light tracks: when the
+        # layer leaves the viewer the binding is dropped and the pill goes dark.
+        self._ch1_layer = None
+        self._ch2_layer = None
         self._running: str | None = None  # e.g. "ch1_seg", "ch1_track", "ch2_run"
         self._worker = None
         self._cancel_requested = False
+        # Live accumulators for the streaming Channel-1 segmentation: each frame
+        # the worker yields is written here and pushed to the viewer (None = idle).
+        self._stream: dict | None = None
 
         self._setup_ui()
         self._connect_signals()
         self._register_gate_controls()
         self._progress_signal.connect(self._progress)
-        self._load_standalone_settings()
+        self._connect_layer_events()
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -315,13 +349,11 @@ class CellposeSegmentTrackWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Channel 1 row (anchor: segment + track) ──
-        # One row: the "Channel 1" pill, then its source pickers (browse / from
-        # layer) and its action buttons (params, preview, segment, track). There is
-        # no path text field — a channel's source is picked entirely through its two
-        # source pills, and the active one lights up.
-        self.ch1_folder_btn, self.ch1_layer_btn = self._make_source_buttons(
-            _CH1_LABEL, self._on_browse_ch1, self._on_load_layer_ch1,
-        )
+        # One row: the "Channel 1" pill, then its source pill (load from the active
+        # image layer) and its action buttons (params, preview, segment, track).
+        # There is no file loading and no path text field — the source pill binds
+        # whatever image layer is active and then acts as a status light for it.
+        self.ch1_layer_btn = self._make_source_button(_CH1_LABEL, self._on_load_layer_ch1)
         self.ch1_params_btn = _tool_btn("⚙", "Channel 1 parameters.", checkable=True)
         self.ch1_preview_btn = _tool_btn("▷", "Preview Channel 1 on the current frame.")
         self.ch1_seg_btn = _tool_btn("▶", "Segment Channel 1 (native masks).")
@@ -343,7 +375,7 @@ class CellposeSegmentTrackWidget(QWidget):
         )
         root.addLayout(self._stage_row(
             ch1_label,
-            self.ch1_folder_btn, self.ch1_layer_btn,
+            self.ch1_layer_btn,
             self.ch1_params_btn, self.ch1_preview_btn,
             self.ch1_seg_btn, self.ch1_track_btn,
         ))
@@ -357,9 +389,7 @@ class CellposeSegmentTrackWidget(QWidget):
         # on the current frame so the Channel-2 params can be tuned; Run (▶) commits
         # it over the whole stack. Both need both inputs; Channel 1's own segment +
         # track path is untouched.
-        self.ch2_folder_btn, self.ch2_layer_btn = self._make_source_buttons(
-            _CH2_LABEL, self._on_browse_ch2, self._on_load_layer_ch2,
-        )
+        self.ch2_layer_btn = self._make_source_button(_CH2_LABEL, self._on_load_layer_ch2)
         self.ch2_params_btn = _tool_btn("⚙", "Channel 2 parameters.", checkable=True)
         self.ch2_preview_btn = _tool_btn(
             "▷",
@@ -386,7 +416,7 @@ class CellposeSegmentTrackWidget(QWidget):
         )
         root.addLayout(self._stage_row(
             ch2_label,
-            self.ch2_folder_btn, self.ch2_layer_btn,
+            self.ch2_layer_btn,
             self.ch2_params_btn, self.ch2_preview_btn, self.ch2_run_btn,
         ))
         root.addWidget(self.ch2_section)
@@ -413,25 +443,21 @@ class CellposeSegmentTrackWidget(QWidget):
         self.progress_bar = _make_progress()
         root.addWidget(self.progress_bar)
 
-    def _make_source_buttons(self, label, on_browse, on_load_layer):
-        """The two source pills for a channel → ``(folder_btn, layer_btn)``.
+    def _make_source_button(self, label, on_load_layer):
+        """The single source pill for a channel → ``layer_btn``.
 
-        There is no path text field: a channel's source is picked entirely through
-        these two pills — browse (``…``) for a ``.tif`` file, or load-from-layer
-        (``⧉``) for an image already open in the viewer. They sit in the channel's
-        own stage row, right after its name pill. Both are checkable so the *active*
-        source lights up (and its tooltip names the file/layer); the glyphs match
-        the stage buttons' thin geometric family.
+        There is no file loading and no path text field: a channel's source is the
+        **active image layer**, bound by clicking this pill (``⧉``). It is checkable
+        and doubles as a status light — checked while its bound layer is present in
+        the viewer, unchecked once that layer is gone. The glyph matches the stage
+        buttons' thin geometric family.
         """
-        folder_btn = _tool_btn("…", f"Load {label} from a .tif file.", checkable=True)
         layer_btn = _tool_btn(
-            "⧉", f"Load {label} from a napari image layer.", checkable=True
+            "⧉", f"Load {label} from the active image layer.", checkable=True
         )
-        for b in (folder_btn, layer_btn):
-            stage_header_action_button(b, "cellpose")
-        folder_btn.clicked.connect(on_browse)
+        stage_header_action_button(layer_btn, "cellpose")
         layer_btn.clicked.connect(on_load_layer)
-        return folder_btn, layer_btn
+        return layer_btn
 
     def _build_ch1_params_section(self) -> CollapsibleSection:
         # No input-layout / 3D-mode / anisotropy: segmentation is layout-free and
@@ -443,10 +469,26 @@ class CellposeSegmentTrackWidget(QWidget):
         self.ch1_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
         self.ch1_min_size_spin = _islider(0, 100000, 15)
         self.ch1_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
+        # Prob threshold: a [0, 1] cutoff read in the prob-map image's own space
+        # (0.5 == Cellpose's default), reversed through the inverse sigmoid to the
+        # raw cellprob Cellpose thresholds. See _prob_to_cellprob.
+        self.ch1_prob_thr_spin = _dslider(0.0, 1.0, 0.5, 0.05, 2)
+        # "Flow error tolerance" is Cellpose's flow_threshold, relabelled so its
+        # direction reads right: it is the per-mask flow-error budget, so HIGHER is
+        # more permissive (0.4 default; 0 disables the QC, keeping every mask).
+        # Iterations (niter): flow-dynamics steps, 0 = auto.
+        self.ch1_flow_thr_spin = _dslider(0.0, 3.0, 0.4, 0.1, 2)
+        self.ch1_niter_spin = _islider(0, 2000, 0)
         add_section_pair_row(
             grid, 0, "Diameter:", self.ch1_diameter_spin, "Min size:", self.ch1_min_size_spin
         )
-        add_section_pair_row(grid, 1, "Gamma:", self.ch1_gamma_spin)
+        add_section_pair_row(
+            grid, 1, "Gamma:", self.ch1_gamma_spin, "Prob threshold:", self.ch1_prob_thr_spin
+        )
+        add_section_pair_row(
+            grid, 2,
+            "Flow error tolerance:", self.ch1_flow_thr_spin, "Iterations:", self.ch1_niter_spin
+        )
         return CollapsibleSection("Channel 1 parameters", body, expanded=False)
 
     def _build_ch2_params_section(self) -> CollapsibleSection:
@@ -533,154 +575,103 @@ class CellposeSegmentTrackWidget(QWidget):
         if worker is not None and hasattr(worker, "quit"):
             worker.quit()
 
-    # ---------------------------------------------------------- path helpers
-    def _on_browse_ch1(self) -> None:
-        self._browse_channel(1)
-
-    def _on_browse_ch2(self) -> None:
-        self._browse_channel(2)
-
+    # ------------------------------------------------------- source helpers
     def _on_load_layer_ch1(self) -> None:
-        self._load_channel_from_layer(1)
+        self._bind_active_layer(1)
 
     def _on_load_layer_ch2(self) -> None:
-        self._load_channel_from_layer(2)
+        self._bind_active_layer(2)
 
-    def _browse_channel(self, which: int) -> None:
-        """Pick a ``.tif`` as this channel's source (the browse pill)."""
-        label = _CH1_LABEL if which == 1 else _CH2_LABEL
-        path, _ = QFileDialog.getOpenFileName(
-            self, f"Select {label}", filter=_IMAGE_FILTER
-        )
-        if path:
-            self._set_channel_path(which, Path(path))
-            self._status(f"{label} ← file '{Path(path).name}'.")
-        else:
-            # Dialog cancelled — undo the pill's auto-toggle, keep prior source.
-            self._refresh_source_buttons(which)
+    def _bind_active_layer(self, which: int) -> None:
+        """Bind the viewer's active image layer as this channel's source.
 
-    def _load_channel_from_layer(self, which: int) -> None:
-        """Pick a viewer image layer as this channel's source (no file needed)."""
-        image_layers = [ly for ly in self.viewer.layers if isinstance(ly, Image)]
-        if not image_layers:
-            self._status("No image layers in the viewer to load from.")
-            self._refresh_source_buttons(which)
-            return
-        names = [ly.name for ly in image_layers]
+        The active layer must be an :class:`~napari.layers.Image`; anything else
+        (or nothing selected) leaves the channel untouched and just reports why.
+        """
         active = getattr(getattr(self.viewer.layers, "selection", None), "active", None)
-        default = names.index(active.name) if active in image_layers else 0
-        label = _CH1_LABEL if which == 1 else _CH2_LABEL
-        name, ok = QInputDialog.getItem(
-            self, f"Load {label} from layer", "Image layer:", names, default, False,
-        )
-        if ok and name:
-            self._use_layer_as_channel(which, name)
-        else:
-            self._refresh_source_buttons(which)
-
-    def _use_layer_as_channel(self, which: int, layer_name: str) -> None:
-        """Source a channel from a named viewer layer's data (testable seam)."""
-        try:
-            layer = self.viewer.layers[layer_name]
-            stack = to_canonical_tzyx(np.asarray(layer.data))
-        except Exception as exc:
-            self._status(f"Cannot use layer '{layer_name}': {exc}")
+        if not isinstance(active, Image):
+            self._status("Select an image layer in the viewer, then click the pill.")
             self._refresh_source_buttons(which)
             return
-        self._set_channel_stack(which, stack, layer_name)
-        label = _CH1_LABEL if which == 1 else _CH2_LABEL
-        self._status(f"{label} ← layer '{layer_name}'.")
+        self._set_channel_layer(which, active)
 
-    def _set_channel_path(self, which: int, path: Path | None) -> None:
-        """Make a ``.tif`` path this channel's source (clears any layer source).
+    def _set_channel_layer(self, which: int, layer) -> None:
+        """Make ``layer`` this channel's source (testable seam), then re-gate.
 
-        ``None`` clears the channel entirely. This is the single mutation point
-        for file-sourced channels, so it refreshes the pills, persists and regates.
+        ``None`` clears the channel. The pill's status light and the run buttons
+        follow from the binding via :meth:`_refresh_source_buttons` / the gate.
         """
         if which == 1:
-            self._ch1_path = path
-            self._ch1_stack = None
-            self._ch1_layer_name = None
+            self._ch1_layer = layer
         else:
-            self._ch2_path = path
-            self._ch2_stack = None
-            self._ch2_layer_name = None
-        self._after_source_change(which)
-
-    def _set_channel_stack(self, which: int, stack, layer_name: str | None = None) -> None:
-        """Make a viewer layer's data this channel's source (clears any file path)."""
-        if which == 1:
-            self._ch1_stack = stack
-            self._ch1_layer_name = layer_name
-            if stack is not None:
-                self._ch1_path = None
-        else:
-            self._ch2_stack = stack
-            self._ch2_layer_name = layer_name
-            if stack is not None:
-                self._ch2_path = None
-        self._after_source_change(which)
-
-    def _after_source_change(self, which: int) -> None:
+            self._ch2_layer = layer
         self._refresh_source_buttons(which)
-        self._save_standalone_settings()
         self.gate.recompute()
+        if layer is not None:
+            label = _CH1_LABEL if which == 1 else _CH2_LABEL
+            self._status(f"{label} ← layer '{layer.name}'.")
 
     def _refresh_source_buttons(self, which: int) -> None:
-        """Mirror the channel's active source into its two pills (checked + tooltip)."""
+        """Mirror the channel's bound layer into its pill (status light + tooltip)."""
         if which == 1:
-            folder_btn, layer_btn = self.ch1_folder_btn, self.ch1_layer_btn
-            path, stack, lname = self._ch1_path, self._ch1_stack, self._ch1_layer_name
-            label = _CH1_LABEL
+            layer_btn, layer, label = self.ch1_layer_btn, self._ch1_layer, _CH1_LABEL
         else:
-            folder_btn, layer_btn = self.ch2_folder_btn, self.ch2_layer_btn
-            path, stack, lname = self._ch2_path, self._ch2_stack, self._ch2_layer_name
-            label = _CH2_LABEL
-        folder_btn.setChecked(path is not None)
-        layer_btn.setChecked(stack is not None)
-        folder_btn.setToolTip(
-            f"{label} ← file: {path.name}" if path is not None
-            else f"Load {label} from a .tif file."
-        )
+            layer_btn, layer, label = self.ch2_layer_btn, self._ch2_layer, _CH2_LABEL
+        present = self._channel_present(which)
+        layer_btn.setChecked(present)
         layer_btn.setToolTip(
-            f"{label} ← layer: {lname}" if stack is not None
-            else f"Load {label} from a napari image layer."
+            f"{label} ← layer: {layer.name} (click to rebind; unlit if it is removed)"
+            if present else f"Load {label} from the active image layer."
         )
 
+    def _connect_layer_events(self) -> None:
+        """Track viewer layer add/remove so a pill darkens when its layer leaves."""
+        events = getattr(getattr(self.viewer.layers, "events", None), "removed", None)
+        if events is not None:
+            events.connect(self._on_layers_changed)
+        inserted = getattr(getattr(self.viewer.layers, "events", None), "inserted", None)
+        if inserted is not None:
+            inserted.connect(self._on_layers_changed)
+        # Reflect whatever is already bound (nothing, at construction).
+        self._on_layers_changed()
+
+    def _on_layers_changed(self, event=None) -> None:
+        """Drop any binding whose layer has left the viewer, then refresh pills."""
+        for which in (1, 2):
+            layer = self._ch1_layer if which == 1 else self._ch2_layer
+            if layer is not None and not self._layer_in_viewer(layer):
+                if which == 1:
+                    self._ch1_layer = None
+                else:
+                    self._ch2_layer = None
+            self._refresh_source_buttons(which)
+        self.gate.recompute()
+
+    def _layer_in_viewer(self, layer) -> bool:
+        """Whether ``layer`` is still present in the viewer (identity, not name)."""
+        if layer is None:
+            return False
+        layers = self.viewer.layers
+        try:
+            if layer in layers:  # napari LayerList: identity membership
+                return True
+        except TypeError:
+            pass
+        try:  # dict-like fakes are keyed by name
+            return layers[layer.name] is layer
+        except (KeyError, TypeError):
+            return False
+
     def _channel_source(self, which: int):
-        """A channel's active input: an in-memory array (layer) or a Path, else None."""
-        stack = self._ch1_stack if which == 1 else self._ch2_stack
-        if stack is not None:
-            return stack
-        path = self._ch1_path if which == 1 else self._ch2_path
-        if path is not None and path.exists():
-            return path
+        """A channel's input as a canonical ``(T, Z, Y, X)`` array, else None."""
+        layer = self._ch1_layer if which == 1 else self._ch2_layer
+        if layer is not None and self._layer_in_viewer(layer):
+            return to_canonical_tzyx(np.asarray(layer.data))
         return None
 
     def _channel_present(self, which: int) -> bool:
-        return self._channel_source(which) is not None
-
-    def _load_standalone_settings(self) -> None:
-        # Restore only real, still-present file paths. Layer sources are session-
-        # bound (never persisted), so a channel either comes back as its saved
-        # .tif or starts empty.
-        s = QSettings("cellflow", self._SETTINGS_APP)
-        for which, key in ((1, "channel1"), (2, "channel2")):
-            value = s.value(key, "", type=str)
-            if value and Path(value).exists():
-                if which == 1:
-                    self._ch1_path = Path(value)
-                else:
-                    self._ch2_path = Path(value)
-            self._refresh_source_buttons(which)
-        self.gate.recompute()
-
-    def _save_standalone_settings(self) -> None:
-        # Layer-sourced channels are session-bound, so persist only real file paths
-        # (a layer would reload as a meaningless, backing-less source).
-        s = QSettings("cellflow", self._SETTINGS_APP)
-        s.setValue("channel1", str(self._ch1_path) if self._ch1_path else "")
-        s.setValue("channel2", str(self._ch2_path) if self._ch2_path else "")
+        layer = self._ch1_layer if which == 1 else self._ch2_layer
+        return layer is not None and self._layer_in_viewer(layer)
 
     # ------------------------------------------------------------- params
     def _build_ch1_params(self) -> cellpose_runner.NucleusParams:
@@ -693,6 +684,9 @@ class CellposeSegmentTrackWidget(QWidget):
             diameter=float(self.ch1_diameter_spin.value()),
             min_size=int(self.ch1_min_size_spin.value()),
             gamma=float(self.ch1_gamma_spin.value()),
+            cellprob_threshold=_prob_to_cellprob(self.ch1_prob_thr_spin.value()),
+            flow_threshold=float(self.ch1_flow_thr_spin.value()),
+            niter=int(self.ch1_niter_spin.value()),
         )
 
     def _build_ch2_params(self) -> cellpose_runner.CellParams:
@@ -714,30 +708,54 @@ class CellposeSegmentTrackWidget(QWidget):
 
     # --------------------------------------------------------------- run: seg
     def _run_segment(self) -> None:
+        """Segment the whole Channel-1 stack, streaming each frame into the viewer.
+
+        Three layers — masks, the sigmoid prob map and the RGB flow — are created
+        up front (background) and filled frame-by-frame from a single eval per
+        plane, so the user watches results accrue instead of waiting for the end.
+        """
         source = self._channel_source(1)
         if source is None:
             self._status("Missing Channel 1 input.")
             return
+        stack = np.asarray(source)  # already canonical (T, Z, Y, X)
         params = self._build_ch1_params()
         self._cancel_requested = False
         progress_signal = self._progress_signal
-        masks_name = _layer_name(_CH1_LABEL, "masks")
+        T, Z, Y, X = (int(s) for s in stack.shape)
+        # Pre-allocate accumulators + show empty layers so frames stream into them.
+        self._stream = {
+            "masks": np.zeros((T, Z, Y, X), dtype=np.int32),
+            "prob": np.zeros((T, Z, Y, X), dtype=np.float32),
+            "flow": np.zeros((T, Z, Y, X, 3), dtype=np.uint8),
+            "masks_name": _layer_name(_CH1_LABEL, "masks"),
+            "prob_name": _layer_name(_CH1_LABEL, "prob"),
+            "flow_name": _layer_name(_CH1_LABEL, "flow"),
+        }
+        self._push_stream_layers()
+        names = (
+            self._stream["masks_name"],
+            self._stream["prob_name"],
+            self._stream["flow_name"],
+        )
 
-        def _done(result):
+        def _done(_result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(masks_name, result)
-            self._status(f"Channel 1 masks → '{masks_name}'. Save from the layer.")
+            self._stream = None
+            self._status(
+                f"Channel 1 → '{names[0]}', '{names[1]}', '{names[2]}'. "
+                "Save from the layers."
+            )
 
         @thread_worker(connect={
-            "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+            "yielded": self._on_seg_frame, "returned": _done, "errored": self._errored,
         })
         def _worker():
-            yield (0, 1, "Loading input...")
-            return segment_channel(
-                source, "nucleus", params,
-                progress_cb=lambda d, t, m: progress_signal.emit(int(d), int(t), str(m)),
+            yield from native_masks.iter_nucleus_maps_stack(
+                stack, params,
+                progress_cb=lambda d, tot, m: progress_signal.emit(int(d), int(tot), str(m)),
                 cancel_cb=lambda: self._cancel_requested,
             )
 
@@ -748,6 +766,25 @@ class CellposeSegmentTrackWidget(QWidget):
             else "Segmenting Channel 1..."
         )
         self._worker = _worker()
+
+    def _on_seg_frame(self, payload) -> None:
+        """Write one streamed frame into the accumulators and refresh the layers."""
+        st = self._stream
+        if st is None or not isinstance(payload, tuple) or len(payload) != 4:
+            return
+        t, masks, prob, flow = payload
+        st["masks"][t] = masks
+        st["prob"][t] = prob
+        st["flow"][t] = flow
+        self._push_stream_layers()
+
+    def _push_stream_layers(self) -> None:
+        st = self._stream
+        if st is None:
+            return
+        self._add_labels(st["masks_name"], st["masks"])
+        self._add_image(st["prob_name"], st["prob"])
+        self._add_image(st["flow_name"], st["flow"])
 
     # ------------------------------------------------------------- run: track
     def _run_track(self) -> None:
@@ -892,34 +929,34 @@ class CellposeSegmentTrackWidget(QWidget):
 
     # ----------------------------------------------------------- run: preview
     def _preview(self) -> None:
+        """Preview Channel 1 on the current frame: masks + sigmoid prob + RGB flow.
+
+        Only the frame on screen is segmented; the three maps overlay it so the
+        diameter / min-size / gamma / prob-threshold can be tuned before committing
+        the whole stack with **Segment**.
+        """
         source = self._channel_source(1)
         if source is None:
             self._status("Missing Channel 1 input.")
             return
         params = self._build_ch1_params()
         self._cancel_requested = False
-        try:
-            raw = source if isinstance(source, np.ndarray) else np.asarray(
-                tifffile.imread(str(source))
-            )
-            stack = to_canonical_tzyx(raw)
-        except Exception as exc:
-            self._status(f"Error: {exc}")
-            logger.exception("preview load error", exc_info=exc)
-            return
-        # Show the input so the previewed frame is visible underneath.
-        self._add_image(_layer_name(_CH1_LABEL, "image"), stack)
+        stack = np.asarray(source)  # already canonical (T, Z, Y, X)
         t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
         preview_name = _layer_name(_CH1_LABEL, "preview")
-        axes_desc = describe_axes(tuple(int(s) for s in raw.shape))
+        prob_name = _layer_name(_CH1_LABEL, "prob preview")
+        flow_name = _layer_name(_CH1_LABEL, "flow preview")
 
         def _done(result):
+            masks, prob, flow = result
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(preview_name, result)
+            self._add_labels(preview_name, masks)
+            self._add_image(prob_name, prob)
+            self._add_image(flow_name, flow)
             self._status(
-                f"Channel 1 preview (frame t={t}; {axes_desc}) → '{preview_name}'."
+                f"Channel 1 preview (frame t={t}) → masks / prob / flow."
             )
 
         @thread_worker(connect={
@@ -927,7 +964,7 @@ class CellposeSegmentTrackWidget(QWidget):
         })
         def _worker():
             yield (0, 0, f"Previewing Channel 1 on {cellpose_runner.device_label()}...")
-            return preview_channel_masks(stack, "nucleus", params, t, z)
+            return preview_channel_maps(stack, params, t, z)
 
         self._set_running("ch1_preview")
         self._status(
@@ -957,6 +994,8 @@ class CellposeSegmentTrackWidget(QWidget):
         self._worker = None
         self._set_running(None)
         self._clear_progress()
+        # Keep whatever streamed so far visible, but stop accumulating into it.
+        self._stream = None
         if isinstance(exc, cellpose_runner.CancelledError):
             self._status("Cancelled.")
         else:
@@ -988,6 +1027,9 @@ class CellposeSegmentTrackWidget(QWidget):
                 "diameter": self.ch1_diameter_spin.value(),
                 "min_size": self.ch1_min_size_spin.value(),
                 "gamma": self.ch1_gamma_spin.value(),
+                "prob_threshold": self.ch1_prob_thr_spin.value(),
+                "flow_threshold": self.ch1_flow_thr_spin.value(),
+                "niter": self.ch1_niter_spin.value(),
             },
             "channel2": {
                 "diameter": self.ch2_diameter_spin.value(),

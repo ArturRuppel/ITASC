@@ -74,6 +74,16 @@ class NucleusParams:
     diameter: float  # 0 means "let cpsam decide" (None passed to model)
     min_size: int
     gamma: float
+    # Cellpose cellprob (logit) threshold; 0.0 is Cellpose's default. Defaulted so
+    # the app (which never sets it) and existing callers are byte-for-byte unchanged.
+    cellprob_threshold: float = 0.0
+    # Cellpose flow-error QC: masks whose flow error exceeds this are removed; 0.4
+    # is Cellpose's default (0 disables QC, higher keeps more masks).
+    flow_threshold: float = 0.4
+    # Euler-integration steps for the flow dynamics; 0 -> auto (None passed to
+    # Cellpose, which derives it from the diameter). Both defaulted, so the app and
+    # existing callers stay byte-for-byte unchanged.
+    niter: int = 0
 
 
 @dataclass(frozen=True)
