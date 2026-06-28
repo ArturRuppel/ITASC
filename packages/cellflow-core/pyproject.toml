@@ -47,8 +47,8 @@ bypass-selection = true
 "../../src/cellflow/napari/widgets.py" = "cellflow/napari/widgets.py"
 # Shared correction base: the generic interactive-correction widget + its UI
 # scaffolding and layer lifecycle, reused by both the nucleus (cellflow-tracking)
-# and cell (cellflow-segmentation) correction widgets. The nucleus-specific
-# _correction_* machinery stays in cellflow-tracking.
+# and cell (the full cellflow app's cell-segmentation stage) correction widgets.
+# The nucleus-specific _correction_* machinery stays in cellflow-tracking.
 "../../src/cellflow/napari/correction_widget.py" = "cellflow/napari/correction_widget.py"
 "../../src/cellflow/napari/_correction_ui.py" = "cellflow/napari/_correction_ui.py"
 "../../src/cellflow/napari/_correction_layer_lifecycle.py" = "cellflow/napari/_correction_layer_lifecycle.py"

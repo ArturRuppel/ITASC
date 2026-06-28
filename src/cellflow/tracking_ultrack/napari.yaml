@@ -3,8 +3,8 @@ display_name: CellFlow Nucleus Tracking
 contributions:
   commands:
     - id: cellflow-tracking.widget
-      title: "Nucleus Tracking & Correction"
+      title: "Ultrack Segment + Track"
       python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
   widgets:
     - command: cellflow-tracking.widget
-      display_name: "Nucleus Tracking & Correction"
+      display_name: "Ultrack Segment + Track"

@@ -20,7 +20,7 @@ correction-only use does not require the `[solve]` extra.
 
 ## Use
 
-- **napari plugin:** launch napari and add the *Nucleus Tracking & Correction*
+- **napari plugin:** launch napari and add the *Ultrack Segment + Track*
   widget. It exposes three path fields:
   - **Foreground** — the foreground probability/intensity `.tif` (2D+t),
   - **Contours** — the contour/boundary `.tif` (2D+t),

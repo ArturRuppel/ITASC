@@ -5,20 +5,17 @@ contributions:
     - id: cellflow.main_widget
       title: "CellFlow"
       python_name: cellflow.napari:CellFlowWidget
-    # The full install folds the extracted pieces' widgets into this single
+    # The full install folds the extracted tools' widgets into this single
     # manifest. npe2 requires a manifest's name to match the providing
-    # distribution, so the standalone cellflow-aggregate / cellflow-tracking /
-    # cellflow-segmentation manifests cannot be re-registered from the cellflow
-    # distribution; their contributions are mirrored here instead.
-    - id: cellflow.cellpose_widget
-      title: "Cellpose"
-      python_name: cellflow.napari.cellpose_widget:make_cellpose_widget
+    # distribution, so the standalone cellflow-cellpose / cellflow-tracking /
+    # cellflow-aggregate manifests cannot be re-registered from the cellflow
+    # distribution; their contributions are mirrored here instead. The integrated
+    # CellFlow app's own per-stage widgets (Cellpose map-building, Cell
+    # Segmentation) live inside the CellFlow widget above and are not exposed as
+    # separate menu entries.
     - id: cellflow.nucleus_tracking_widget
-      title: "Nucleus Tracking & Correction"
+      title: "Ultrack Segment + Track"
       python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
-    - id: cellflow.cell_segmentation_widget
-      title: "Cell Segmentation"
-      python_name: cellflow.napari.cell_workflow_widget:make_cell_segmentation_widget
     # In a full install this single Aggregate Quantification entry resolves to the
     # merged studio (catalog + per-position view + analysis plugins); the standalone
     # cellflow-aggregate wheel resolves the same factory to the bare per-position
@@ -39,12 +36,8 @@ contributions:
   widgets:
     - command: cellflow.main_widget
       display_name: "CellFlow"
-    - command: cellflow.cellpose_widget
-      display_name: "Cellpose"
     - command: cellflow.nucleus_tracking_widget
-      display_name: "Nucleus Tracking & Correction"
-    - command: cellflow.cell_segmentation_widget
-      display_name: "Cell Segmentation"
+      display_name: "Ultrack Segment + Track"
     - command: cellflow.aggregate_quantification_widget
       display_name: "Aggregate Quantification"
     - command: cellflow.cellpose_segment_track_widget

@@ -8,21 +8,25 @@ runs on its own. Pick the row that matches what you actually do.
 | If you are… | Install | What you get | Depends on |
 | --- | --- | --- | --- |
 | Running the **whole pipeline** in napari | `pip install cellflow[all]` | The unified `CellFlow` workflow widget end to end | everything |
-| Producing **probability/flow + divergence maps** from raw stacks | `pip install "cellflow-cellpose[cellpose]"` | Local Cellpose-SAM runner + foreground/contour map building | `cellflow-core` |
-| **Tracking & correcting nuclei** | `pip install "cellflow-tracking[solve]"` | Ultrack candidate DB, solving, browsing, interactive correction | `cellflow-core` |
-| **Segmenting & correcting cells** | `pip install cellflow-segmentation` | Divergence-based geodesic-Voronoi cell labels + correction | `cellflow-core` |
+| **Segmenting & tracking** with Cellpose | `pip install "cellflow-cellpose[cellpose,laptrack]"` | Cellpose-SAM native masks + laptrack tracking of 1–2 channels, with correction | `cellflow-core` |
+| **Tracking & correcting nuclei** with Ultrack | `pip install "cellflow-tracking[solve]"` | Ultrack candidate DB, solving, browsing, interactive correction | `cellflow-core` |
 | Doing **contact / aggregate analysis** | `pip install cellflow-aggregate` | Cell-cell edges, T1 events, NLS classes → HDF5 + napari views | `cellflow-core` |
 | Building **on top of CellFlow** as a library | `pip install cellflow-core` | TIFF/path/label-IO helpers, lineage model, napari UI primitives | — |
 
-The optional extras (`[cellpose]`, `[solve]`) pull in heavy engines (Cellpose +
-PyTorch, the Ultrack solver) that are imported lazily — so correction-only or
-map-building-only use does not require them.
+The optional extras (`[cellpose]`, `[laptrack]`, `[solve]`) pull in heavy engines
+(Cellpose + PyTorch, laptrack, the Ultrack solver) that are imported lazily — so
+correction-only use does not require them.
+
+Divergence-based cell segmentation is no longer a standalone wheel; it ships
+inside the full `cellflow` plugin (`pip install cellflow[all]`) as the **Cell**
+stage of the `CellFlow` workflow widget.
 
 ## How the pieces fit
 
 CellFlow processes a project directory with **one subdirectory per position**
-(`pos00`, `pos01`, …). Each position is processed through staged subdirectories,
-and each distribution owns one stage:
+(`pos00`, `pos01`, …). Each position is processed through staged subdirectories;
+the full `CellFlow` app drives them end to end, and most stages are also
+available as a standalone wheel:
 
 ```{mermaid}
 flowchart LR
@@ -30,7 +34,7 @@ flowchart LR
     cp["cellflow-cellpose<br/>1_cellpose: prob/flow + maps"] --> trk
     cp --> seg
     trk["cellflow-tracking<br/>2_nucleus: DB, tracks, labels"] --> seg
-    seg["cellflow-segmentation<br/>3_cell: tracked cell labels"] --> agg
+    seg["cellflow (full app)<br/>3_cell: tracked cell labels"] --> agg
     trk --> agg
     agg["cellflow-aggregate<br/>aggregate_quantification: HDF5"]
 ```

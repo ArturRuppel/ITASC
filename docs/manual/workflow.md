@@ -2,8 +2,8 @@
 
 CellFlow expects a project directory containing one directory per position
 (`pos00`, `pos01`, …). Within each position, work flows through staged
-subdirectories — each owned by one distribution and consumed by the next as
-plain `.tif` / HDF5 files on disk.
+subdirectories — driven end to end by the full `CellFlow` app, with each stage
+consuming the previous one's plain `.tif` / HDF5 files on disk.
 
 ```text
 pos00/
@@ -17,13 +17,13 @@ pos00/
 ## Typical run
 
 1. **Provide input** stacks under `0_input/`.
-2. **Cellpose** (`cellflow-cellpose`): run the nucleus and cell channels to
+2. **Cellpose** (full `cellflow` app): run the nucleus and cell channels to
    create probability, flow, and z-average TIFFs under `1_cellpose/`, then build
    divergence-based foreground/contour maps.
 3. **Nucleus tracking** (`cellflow-tracking`): build the Ultrack candidate
    database, solve tracks, and correct/validate nucleus labels under
    `2_nucleus/`.
-4. **Cell segmentation** (`cellflow-segmentation`): turn cell foreground/contour
+4. **Cell segmentation** (full `cellflow` app): turn cell foreground/contour
    maps plus tracked nucleus seeds into tracked cell labels under `3_cell/`.
 5. **Aggregate quantification** (`cellflow-aggregate`): export contacts, edges, and
    T1 events to HDF5 under `aggregate_quantification/` and inspect them in napari.

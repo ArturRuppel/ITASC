@@ -640,7 +640,7 @@ def test_full_run_refuses_without_divergence_maps(monkeypatch, tmp_path):
     app.processEvents()
 
 
-# ── standalone seam (cellflow-segmentation distribution) ───────────────────────
+# ── standalone seam (CellWorkflowWidget standalone mode) ───────────────────────
 
 def test_standalone_shows_pickers_and_hides_staged_files(monkeypatch):
     app = QApplication.instance() or QApplication([])

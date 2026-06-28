@@ -23,10 +23,10 @@ from qtpy.QtWidgets import QApplication, QToolButton
 # pulled in, or QWidget construction aborts headless. Create it up front.
 _APP = QApplication.instance() or QApplication([])
 
-import napari
+import napari  # noqa: E402
 
-import cellflow.cellpose.cellpose_runner as cellpose_runner
-from cellflow.napari import cellpose_segment_track_widget as stw
+import cellflow.cellpose.cellpose_runner as cellpose_runner  # noqa: E402
+from cellflow.napari import cellpose_segment_track_widget as stw  # noqa: E402
 
 
 # ── fakes ──────────────────────────────────────────────────────────────────

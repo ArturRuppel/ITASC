@@ -18,16 +18,18 @@ python -m pip install -e .[all]
 
 ## A single piece
 
-Each stage installs on its own and shares the `cellflow.*` namespace, so
-`import cellflow.<stage>` works whether or not the full orchestrator is present.
+Each tool installs on its own and shares the `cellflow.*` namespace, so
+`import cellflow.<stage>` works whether or not the full app is present.
 
 ```bash
-pip install "cellflow-cellpose[cellpose]"   # raw stacks  → prob/flow + maps
-pip install "cellflow-tracking[solve]"      # maps        → tracks + correction
-pip install cellflow-segmentation           # maps + seeds → cell labels
-pip install cellflow-aggregate              # cell labels → contacts (HDF5)
-pip install cellflow-core                   # shared library only
+pip install "cellflow-cellpose[cellpose,laptrack]"  # Cellpose segment + track
+pip install "cellflow-tracking[solve]"              # maps → tracks + correction
+pip install cellflow-aggregate                      # cell labels → contacts (HDF5)
+pip install cellflow-core                           # shared library only
 ```
+
+Divergence-based cell segmentation is not published as a standalone wheel — it
+ships inside the full `cellflow` plugin (`pip install cellflow[all]`).
 
 ## Optional engines
 

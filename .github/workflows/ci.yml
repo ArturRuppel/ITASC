@@ -58,7 +58,6 @@ jobs:
           python -m build --wheel packages/cellflow-core --outdir dist
           python -m build --wheel packages/cellflow-aggregate --outdir dist
           python -m build --wheel packages/cellflow-tracking --outdir dist
-          python -m build --wheel packages/cellflow-segmentation --outdir dist
           python -m build --wheel packages/cellflow-cellpose --outdir dist
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
@@ -67,7 +66,7 @@ jobs:
           . /tmp/cf-verify/bin/activate
           pip install --upgrade pip
           pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_segmentation-*.whl dist/cellflow_cellpose-*.whl
+          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
@@ -99,23 +98,6 @@ jobs:
           lanes = build_lineage(labels)
           assert {lane.cell_id for lane in lanes.lanes} == {1, 2}
           print("isolated cellflow-tracking backend OK")
-
-          # cellflow-segmentation composes into the same namespace on top of
-          # cellflow-core alone (no tracking/contact/orchestrator), and its
-          # headless divergence backend runs.
-          from cellflow.segmentation import (
-              CellDivergenceParams,
-              segment_cells_divergence,
-          )
-          from cellflow.core.imageops import residual  # noqa: F401
-          contours = np.abs(np.random.default_rng(0).normal(0, 1, (2, 12, 12))).astype("float32")
-          foreground = np.clip(np.random.default_rng(1).normal(0.6, 0.1, (2, 12, 12)), 0, 1).astype("float32")
-          nuc = np.zeros((2, 12, 12), np.uint32)
-          nuc[:, 3:5, 3:5] = 1
-          nuc[:, 8:10, 8:10] = 2
-          res = segment_cells_divergence(contours, foreground, nuc, CellDivergenceParams())
-          assert res.labels.shape == (2, 12, 12)
-          print("isolated cellflow-segmentation backend OK")
 
           # cellflow-cellpose composes into the same namespace on cellflow-core
           # alone. The Cellpose model lib is an optional extra (lazy import), so
@@ -153,7 +135,6 @@ jobs:
               ("src/cellflow/napari.yaml", "cellflow"),
               ("src/cellflow/aggregate_quantification/napari.yaml", "cellflow-aggregate"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
-              ("src/cellflow/segmentation/napari.yaml", "cellflow-segmentation"),
               ("src/cellflow/cellpose/napari.yaml", "cellflow-cellpose"),
           ]:
               m = PluginManifest.from_file(path)
@@ -170,7 +151,6 @@ jobs:
           for path in (
               "src/cellflow/aggregate_quantification/napari.yaml",
               "src/cellflow/tracking_ultrack/napari.yaml",
-              "src/cellflow/segmentation/napari.yaml",
               "src/cellflow/cellpose/napari.yaml",
           ):
               assert factories(path) <= folded, path

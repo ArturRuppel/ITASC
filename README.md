@@ -28,18 +28,19 @@ The full plugin orchestrates them into the unified workflow described below.
   bundled quantifier is contacts (cell-cell edges, T1 events) + napari
   visualization. Headless I/O: 2D+t cell labels (optional nucleus labels) → HDF5.
   Depends on `cellflow-core`.
-- [`cellflow-segmentation`](packages/cellflow-segmentation) — divergence-based
-  cell segmentation + interactive correction (napari). Consumes Cellpose-derived
-  cell foreground/contours + tracked nucleus seeds → `3_cell/tracked_labels.tif`.
-  Depends on `cellflow-core`.
-- [`cellflow-cellpose`](packages/cellflow-cellpose) — the shared upstream
-  Cellpose stage (napari): a local Cellpose-SAM runner + divergence-based
-  foreground/contour map building. Raw `0_input` stacks → `1_cellpose/*` prob/flow
-  and foreground/contour maps that both tracking and segmentation consume. The
-  Cellpose model is an optional `[cellpose]` extra. Depends on `cellflow-core`.
+- [`cellflow-cellpose`](packages/cellflow-cellpose) — **Cellpose Segment +
+  Track** (napari): a local Cellpose-SAM native-mask runner + laptrack tracking
+  for one or two channels, with embedded basic correction. It also ships the
+  Cellpose runner + divergence-map builder that the full `cellflow` app uses for
+  its in-app Cellpose stage. The Cellpose model is an optional `[cellpose]`
+  extra. Depends on `cellflow-core`.
 - [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, generic
   image ops + label-stack IO, the shared interactive-correction base, the track
   lineage model, and reusable napari UI primitives.
+
+Divergence-based cell segmentation is no longer published as a standalone wheel;
+it ships inside the full `cellflow` plugin (`pip install cellflow[all]`), reachable
+as the **Cell** stage of the `CellFlow` workflow widget.
 
 ## Main Capabilities
 
