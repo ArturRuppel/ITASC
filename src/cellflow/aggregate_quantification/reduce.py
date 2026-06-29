@@ -77,6 +77,7 @@ IDENTITY_COLUMNS: frozenset[str] = frozenset(
     {
         # catalogue metadata
         "condition",
+        "experiment_id",
         "date",
         "position_id",
         # per-object / per-frame keys

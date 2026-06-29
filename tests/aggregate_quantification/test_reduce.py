@@ -118,6 +118,18 @@ def test_collapse_keeps_constant_attribute_drops_varying():
     assert "class_label" in varying.columns  # still constant within a cell
 
 
+def test_experiment_id_is_identity_not_a_value():
+    """experiment_id is a catalogue identity axis: collapsing by it keeps it as an
+    index column and never averages it (it would be meaningless to)."""
+    df = _pooled()
+    df["experiment_id"] = "E1"
+    out = run_pipeline(df, [Collapse(by=("condition", "experiment_id"), stat="mean")])
+    assert "experiment_id" in out.columns
+    assert (out["experiment_id"] == "E1").all()
+    # The value column is the only thing averaged; the identity axis is untouched.
+    assert "value" in out.columns
+
+
 def test_count_stat_reports_group_size():
     df = _pooled()
     out = run_pipeline(df, [Collapse(by=("condition",), stat="count")])

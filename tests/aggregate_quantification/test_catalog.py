@@ -373,6 +373,109 @@ def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
     assert records[0]["contact_analysis_status"] == "incomplete"
 
 
+def test_relative_levels_returns_segments_from_root_to_position(tmp_path):
+    """The path from root (exclusive) to the position folder (inclusive)."""
+    from cellflow.aggregate_quantification.catalog import relative_levels
+
+    pos = tmp_path / "WT" / "2024-01-15" / "pos3"
+    pos.mkdir(parents=True)
+    assert relative_levels(tmp_path, pos) == ("WT", "2024-01-15", "pos3")
+
+
+def test_columns_from_levels_zips_names_to_segments(tmp_path):
+    """Each level name maps to its folder-name value; blank names drop out."""
+    from cellflow.aggregate_quantification.catalog import columns_from_levels
+
+    cols = columns_from_levels(
+        ["condition", "experiment_id", "position_id"], ("WT", "2024-01-15", "pos3")
+    )
+    assert cols == {"condition": "WT", "experiment_id": "2024-01-15", "position_id": "pos3"}
+    # A blank level name contributes no column; extra segments without a name drop.
+    assert columns_from_levels(["", "experiment_id"], ("WT", "2024-01-15")) == {
+        "experiment_id": "2024-01-15"
+    }
+
+
+def test_discovered_level_depth_uniform_and_mixed(tmp_path):
+    """Uniform depth -> that depth; differing depths -> None (caller warns)."""
+    from cellflow.aggregate_quantification.catalog import discovered_level_depth
+
+    a = tmp_path / "WT" / "e1" / "pos1"
+    b = tmp_path / "KO" / "e2" / "pos2"
+    for p in (a, b):
+        p.mkdir(parents=True)
+    assert discovered_level_depth(tmp_path, [a, b]) == 3
+
+    shallow = tmp_path / "KO" / "pos3"
+    shallow.mkdir()
+    assert discovered_level_depth(tmp_path, [a, shallow]) is None
+
+
+def test_save_catalog_persists_extra_free_form_columns(tmp_path):
+    """A record's free-form columns are written to the CSV and reload-preserved."""
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+    save_catalog(csv_path, [{
+        "path": source,
+        "columns": {
+            "condition": "WT",
+            "experiment_id": "E1",
+            "position_id": "pos3",
+            "replicate": "r2",
+        },
+    }])
+
+    csv_text = csv_path.read_text()
+    assert "replicate" in csv_text.splitlines()[0]  # extra column in the header
+    assert "r2" in csv_text
+
+    record = load_catalog(csv_path)[0]
+    # Recognized levels become the identity/axis fields.
+    assert record["condition"] == "WT"
+    assert record["experiment_id"] == "E1"
+    assert record["id"] == "pos3"
+    # The extra column round-trips, both flat and in the columns bag.
+    assert record["columns"]["replicate"] == "r2"
+    assert record["replicate"] == "r2"
+
+
+def test_extra_columns_do_not_join_identity(tmp_path):
+    """Two rows differing only in an extra column still share an identity (error)."""
+    from cellflow.aggregate_quantification.catalog import load_catalog
+
+    (tmp_path / "a.h5").touch()
+    (tmp_path / "b.h5").touch()
+    csv_path = tmp_path / "catalog.csv"
+    csv_path.write_text(
+        "path,date,condition,experiment_id,id,replicate\n"
+        "a.h5,d1,ctrl,EXP-01,Pos0,r1\n"
+        "b.h5,d1,ctrl,EXP-01,Pos0,r2\n"
+    )
+    with pytest.raises(ValueError, match="Pos0"):
+        load_catalog(csv_path)
+
+
+def test_legacy_flat_record_gains_a_columns_bag(tmp_path):
+    """Old-style flat records (no columns key) still save/load and expose a bag."""
+    from cellflow.aggregate_quantification.catalog import load_catalog, save_catalog
+
+    source = tmp_path / "contact_analysis.h5"
+    source.touch()
+    csv_path = tmp_path / "catalog.csv"
+    save_catalog(csv_path, [{
+        "path": source, "date": "d1", "condition": "ctrl", "id": "p1", "notes": "",
+    }])
+
+    record = load_catalog(csv_path)[0]
+    assert record["columns"]["condition"] == "ctrl"
+    assert record["columns"]["position_id"] == "p1"
+    # No spurious extra columns for a plain record.
+    assert "replicate" not in record["columns"]
+
+
 def test_merge_catalog_records_skips_duplicate_resolved_paths(tmp_path):
     """Merging should avoid duplicate H5 sources by resolved contact-analysis path."""
     from cellflow.aggregate_quantification.catalog import merge_catalog_records

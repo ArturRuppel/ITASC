@@ -80,6 +80,28 @@ def test_experiment_id_broadcast_onto_pooled_rows(tmp_path):
     assert (df["date"] == "2026-05-09").all()
 
 
+def test_free_form_column_broadcast_onto_pooled_rows(tmp_path):
+    """A folder-derived / manual free-form column rides onto every pooled row as
+    a constant descriptor, without disturbing the recognized axes."""
+    cs = CellShapeQuantifier()
+    rec = _record(tmp_path, "a", condition="WT", date="d1", experiment_id="E1")
+    rec["columns"] = {
+        "condition": "WT",
+        "experiment_id": "E1",
+        "date": "d1",
+        "position_id": "a",
+        "replicate": "r2",
+    }
+    _write_object_table(cs, rec, _cell_shape_table([1, 2], [0]))
+
+    df = build_table("cell_shape", [rec])
+
+    assert "replicate" in df.columns
+    assert (df["replicate"] == "r2").all()
+    # The recognized axis is still stamped exactly once (no duplicate column).
+    assert list(df.columns).count("condition") == 1
+
+
 def test_build_table_assigns_deterministic_row_id(tmp_path):
     """Each row gets a stable ``id`` derived from its identity — the join key the
     curation artifact references, so it must survive a regeneration unchanged."""

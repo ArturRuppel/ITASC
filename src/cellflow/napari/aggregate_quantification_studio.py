@@ -42,9 +42,12 @@ from cellflow.aggregate_quantification.quantifier import (
     available_quantifiers,
 )
 from cellflow.aggregate_quantification.catalog import (
+    columns_from_levels,
     discover_catalog_entries,
+    discovered_level_depth,
     load_catalog,
     merge_catalog_records,
+    relative_levels,
     save_catalog,
 )
 from cellflow.aggregate_quantification.pipeline import author_config, run
@@ -83,6 +86,21 @@ def _inputs_label(record: dict) -> str:
     if record.get("nucleus_tracked_labels_path"):
         parts.append("nuc")
     return "·".join(parts) if parts else "—"
+
+
+#: The innermost nesting levels are seeded with the recognized identity axes
+#: (innermost = position_id), so the common ``condition / experiment_id / pos``
+#: layout names itself; deeper levels get generic ``level_k`` placeholders.
+_SEED_LEVEL_NAMES = ("condition", "experiment_id", "position_id")
+
+
+def _seed_level_names(depth: int) -> list[str]:
+    """Default name for each of *depth* nesting levels (anchored at the root)."""
+    names = [f"level_{i + 1}" for i in range(depth)]
+    for offset, seed in enumerate(reversed(_SEED_LEVEL_NAMES), start=1):
+        if offset <= depth:
+            names[depth - offset] = seed
+    return names
 
 
 def _contacts_reader():
@@ -187,11 +205,26 @@ class AggregateQuantificationStudioWidget(QWidget):
         return edit
 
     def _build_discover_section(self, layout) -> None:
-        """Discover positions by file name / relative path, then add as a collection."""
+        """Discover positions by file name, name each folder-nesting level, then add.
+
+        Each position inherits its metadata from its own path: a named nesting
+        level becomes a column whose value is that folder's name (folder-derived
+        columns). Levels named with the recognized identity axes (``condition`` /
+        ``experiment_id`` / ``position_id``) drive pooling; any other level name is
+        an extra descriptor. A manual *+ Add column* unit supplies batch-wide
+        constant tags not encoded in the folder tree.
+        """
         container = QWidget()
         col = QVBoxLayout(container)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
+
+        #: Discovered-but-not-added entries; each carries its folder ``levels``.
+        self._pending_entries = []
+        #: Manual (name, value) constant-tag fields, copied onto every added row.
+        self._manual_column_fields: list[tuple[QLineEdit, QLineEdit]] = []
+        #: Per-level name fields, rebuilt to the discovered depth.
+        self._level_name_fields: list[QLineEdit] = []
 
         root_row = QHBoxLayout()
         root_row.setContentsMargins(0, 0, 0, 0)
@@ -217,27 +250,48 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._nucleus_name_edit = self._make_field_row(
             col, "Nucleus labels (optional):", placeholder="e.g. 2_nucleus/tracked_labels.tif"
         )
+        for edit in (self._cell_name_edit, self._nucleus_name_edit):
+            edit.textChanged.connect(lambda _t: self._update_discover_tooltip())
 
-        discover_btn = QPushButton("Discover")
-        discover_btn.setToolTip(
-            "Find every folder under the root that contains at least one of the "
-            "named inputs (cell and/or nucleus labels)."
-        )
-        action_button(discover_btn, expand=True)
-        discover_btn.clicked.connect(self._on_discover)
-        col.addWidget(discover_btn)
+        self._discover_btn = QPushButton("Discover")
+        action_button(self._discover_btn, expand=True)
+        self._discover_btn.clicked.connect(self._on_discover)
+        col.addWidget(self._discover_btn)
+        self._update_discover_tooltip()
 
         self._discovered_list = QListWidget()
         self._discovered_list.setMaximumHeight(120)
         col.addWidget(self._discovered_list)
 
-        # Metadata applied to the whole discovered collection before adding.
-        self._condition_edit = self._make_field_row(col, "Condition:")
-        self._date_edit = self._make_field_row(col, "Date:")
-        self._notes_edit = self._make_field_row(col, "Notes:")
+        # Levels editor: one name field per detected nesting level, anchored at the
+        # root. Editable before committing; renaming re-derives that column on the
+        # staged rows. Rebuilt to the discovered depth in ``_rebuild_level_fields``.
+        col.addWidget(QLabel("Folder levels (root → position):"))
+        self._levels_box = QVBoxLayout()
+        self._levels_box.setContentsMargins(12, 0, 0, 0)
+        self._levels_box.setSpacing(2)
+        col.addLayout(self._levels_box)
+        self._levels_hint = QLabel("Discover first to name the folder levels.")
+        status_label(self._levels_hint, muted=True)
+        col.addWidget(self._levels_hint)
+
+        # Manual constant columns (batch-wide tags not in the folder tree).
+        self._manual_columns_box = QVBoxLayout()
+        self._manual_columns_box.setContentsMargins(12, 0, 0, 0)
+        self._manual_columns_box.setSpacing(2)
+        col.addLayout(self._manual_columns_box)
+        add_col_btn = QPushButton("+ Add column")
+        add_col_btn.setToolTip(
+            "Tag every added position with a constant column not in the folder tree, "
+            "e.g. operator or treatment."
+        )
+        action_button(add_col_btn)
+        add_col_btn.clicked.connect(lambda: self._add_manual_column())
+        col.addWidget(add_col_btn)
 
         self._add_btn = QPushButton("Add to catalogue")
         action_button(self._add_btn, expand=True)
+        self._add_btn.setEnabled(False)
         self._add_btn.clicked.connect(self._on_add_to_catalogue)
         col.addWidget(self._add_btn)
 
@@ -260,6 +314,9 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        # A large catalogue scrolls within a bounded region instead of pushing the
+        # rest of the studio down (the whole studio already lives in a scroll area).
+        self._table.setMaximumHeight(320)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         col.addWidget(self._table, 1)
 
@@ -432,6 +489,24 @@ class AggregateQuantificationStudioWidget(QWidget):
     def _set_discover_status(self, message: str) -> None:
         self._discover_status_lbl.setText(message)
 
+    def _discover_tooltip_text(self) -> str:
+        """Plain-language scan description naming the filled input-file fields."""
+        names = [
+            edit.text().strip()
+            for edit in (self._cell_name_edit, self._nucleus_name_edit)
+            if edit.text().strip()
+        ]
+        if not names:
+            return "Enter at least one input file name, then scan a root folder."
+        joined = names[0] if len(names) == 1 else f"{' and '.join(names)}"
+        return (
+            "Find every folder under the root that contains "
+            f"{joined}, and stage each as a position."
+        )
+
+    def _update_discover_tooltip(self) -> None:
+        self._discover_btn.setToolTip(self._discover_tooltip_text())
+
     def _on_discover(self) -> None:
         root = self._root_edit.text().strip()
         cell = self._cell_name_edit.text().strip()
@@ -451,8 +526,100 @@ class AggregateQuantificationStudioWidget(QWidget):
         except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
             self._set_discover_status(f"Discover error: {exc}")
             return
+
+        # Each entry carries its nesting levels (root → position folder) so a
+        # named level maps to that folder's name per position.
+        for entry in entries:
+            entry["levels"] = list(relative_levels(root, entry["position_path"]))
+        depth = discovered_level_depth(root, [e["position_path"] for e in entries])
+        if entries and depth is None:
+            self._pending_entries = []
+            self._discovered_list.clear()
+            self._rebuild_level_fields(0)
+            self._add_btn.setEnabled(False)
+            self._set_discover_status(
+                "Discovered positions sit at differing folder depths; the levels "
+                "cannot line up. Scan a root where every position is equally nested."
+            )
+            return
+
         self._pending_entries = entries
+        self._rebuild_level_fields(depth or 0)
         self._populate_discovered()
+
+    def _rebuild_level_fields(self, depth: int) -> None:
+        """(Re)build one name field per nesting level, seeded by recognized axes."""
+        while self._levels_box.count():
+            item = self._levels_box.takeAt(0)
+            sub = item.layout()
+            if sub is not None:
+                while sub.count():
+                    w = sub.takeAt(0).widget()
+                    if w is not None:
+                        w.deleteLater()
+            elif item.widget() is not None:
+                item.widget().deleteLater()
+        self._level_name_fields = []
+        if depth <= 0:
+            self._levels_hint.setVisible(True)
+            return
+        self._levels_hint.setVisible(False)
+        for level, seed in enumerate(_seed_level_names(depth), start=1):
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(2)
+            lbl = QLabel(f"Level {level}:")
+            lbl.setFixedWidth(60)
+            edit = QLineEdit(seed)
+            edit.textChanged.connect(lambda _t: self._reapply_levels())
+            row.addWidget(lbl)
+            row.addWidget(edit, 1)
+            self._levels_box.addLayout(row)
+            self._level_name_fields.append(edit)
+
+    def _level_names(self) -> list[str]:
+        return [edit.text().strip() for edit in self._level_name_fields]
+
+    def _add_manual_column(self, name: str = "", value: str = "") -> None:
+        """Append a manual (name, value) constant-column field to the batch."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        name_edit = QLineEdit(name)
+        name_edit.setPlaceholderText("column")
+        value_edit = QLineEdit(value)
+        value_edit.setPlaceholderText("value")
+        for edit in (name_edit, value_edit):
+            edit.textChanged.connect(lambda _t: self._reapply_levels())
+        row.addWidget(name_edit, 1)
+        row.addWidget(value_edit, 1)
+        self._manual_columns_box.addLayout(row)
+        self._manual_column_fields.append((name_edit, value_edit))
+
+    def _manual_columns(self) -> dict[str, str]:
+        columns: dict[str, str] = {}
+        for name_edit, value_edit in self._manual_column_fields:
+            name = name_edit.text().strip()
+            if name:
+                columns[name] = value_edit.text().strip()
+        return columns
+
+    def _columns_for_entry(self, entry: dict) -> dict[str, str]:
+        """Folder-derived columns for one entry, plus the manual constant tags.
+
+        ``position_id`` always resolves to the innermost folder name so positions
+        keep distinct identities even if the user renames that level away."""
+        segments = tuple(entry.get("levels", ()))
+        columns = columns_from_levels(self._level_names(), segments)
+        if segments:
+            columns.setdefault("position_id", segments[-1])
+        columns.update(self._manual_columns())
+        return columns
+
+    def _reapply_levels(self) -> None:
+        """Re-derive the staged preview as level names / manual tags change."""
+        if self._pending_entries:
+            self._populate_discovered()
 
     def _populate_discovered(self) -> None:
         self._discovered_list.clear()
@@ -463,13 +630,22 @@ class AggregateQuantificationStudioWidget(QWidget):
             badges = ["built" if built else "missing"]
             if have_nucleus:
                 badges.append("nucleus")
-            self._discovered_list.addItem(f"{entry['id']}  [{', '.join(badges)}]")
+            columns = self._columns_for_entry(entry)
+            caption = "  ·  ".join(
+                f"{k}={v}" for k, v in columns.items() if k != "position_id" and v
+            )
+            pid = columns.get("position_id", entry["id"])
+            label = f"{pid}  [{', '.join(badges)}]"
+            if caption:
+                label = f"{label}    {caption}"
+            self._discovered_list.addItem(label)
         n = len(self._pending_entries)
+        self._add_btn.setEnabled(n > 0)
         if not n:
             self._set_discover_status("No matching positions found under the root.")
         else:
             self._set_discover_status(
-                f"Discovered {n} position(s); set condition / date / notes and add."
+                f"{n} position(s) discovered — name the levels and Add to catalogue."
             )
 
     def _on_add_to_catalogue(self) -> None:
@@ -477,17 +653,15 @@ class AggregateQuantificationStudioWidget(QWidget):
         if not self._pending_entries:
             self._set_discover_status("Discover positions before adding.")
             return
-        condition = self._condition_edit.text().strip() or "unknown_condition"
-        date = self._date_edit.text().strip() or "unknown_date"
-        notes = self._notes_edit.text().strip()
         annotated = [
-            {**entry, "condition": condition, "date": date, "notes": notes}
+            {**entry, "columns": self._columns_for_entry(entry)}
             for entry in self._pending_entries
         ]
         added = len(annotated)
         self._merge_records(annotated, source=f"added {added} from discovery")
         self._pending_entries = []
         self._discovered_list.clear()
+        self._add_btn.setEnabled(False)
         self._set_discover_status(
             f"Added {added} position(s). Check a builder plugin to compute quantities."
         )
@@ -560,10 +734,42 @@ class AggregateQuantificationStudioWidget(QWidget):
         self._set_catalog_status(f"Catalog: {len(self._records)} position(s) ({source}).")
 
     # --------------------------------------------------------------- table + scope
+    def _group_caption(self, record: dict) -> str:
+        """Bold-separator caption for a record's batch: its columns bar position_id."""
+        columns = record.get("columns") or {}
+        return "  ·  ".join(
+            f"{k}: {v}" for k, v in columns.items() if k != "position_id" and v
+        )
+
     def _refresh_table(self) -> None:
         self._table.blockSignals(True)
-        self._table.setRowCount(len(self._records))
-        for row, record in enumerate(self._records):
+        self._table.clearSpans()
+        #: Table-row → record-index map; ``None`` marks a non-selectable group
+        #: separator so selection / removal keep pointing at the right records.
+        self._row_to_record: list[int | None] = []
+        plan: list[tuple[str, object]] = []
+        last_caption: str | None = None
+        for ridx, record in enumerate(self._records):
+            caption = self._group_caption(record)
+            if caption and caption != last_caption:
+                plan.append(("sep", caption))
+            last_caption = caption
+            plan.append(("rec", ridx))
+
+        self._table.setRowCount(len(plan))
+        for trow, (kind, payload) in enumerate(plan):
+            if kind == "sep":
+                item = QTableWidgetItem(str(payload))
+                # Enabled (so it renders) but not selectable — never a scope row.
+                item.setFlags(Qt.ItemIsEnabled)
+                font = item.font()
+                font.setBold(True)
+                item.setFont(font)
+                self._table.setItem(trow, 0, item)
+                self._table.setSpan(trow, 0, 1, len(self._TABLE_COLUMNS))
+                self._row_to_record.append(None)
+                continue
+            record = self._records[payload]
             values = (
                 str(record.get("condition", "")),
                 str(record.get("date", "")),
@@ -573,12 +779,19 @@ class AggregateQuantificationStudioWidget(QWidget):
                 str(record.get("contact_analysis_status", "")),
             )
             for col, value in enumerate(values):
-                self._table.setItem(row, col, QTableWidgetItem(value))
+                self._table.setItem(trow, col, QTableWidgetItem(value))
+            self._row_to_record.append(payload)
         self._table.blockSignals(False)
         self._push_context()
 
     def _selected_rows(self) -> list[int]:
-        return sorted({idx.row() for idx in self._table.selectedIndexes()})
+        """Selected *record* indices — separator rows (mapped to ``None``) drop out."""
+        mapping = getattr(self, "_row_to_record", [])
+        record_indices = []
+        for trow in sorted({idx.row() for idx in self._table.selectedIndexes()}):
+            if 0 <= trow < len(mapping) and mapping[trow] is not None:
+                record_indices.append(mapping[trow])
+        return sorted(set(record_indices))
 
     def _records_in_scope(self) -> list[dict]:
         """Selected rows define scope; an empty selection means the whole catalog."""

@@ -222,7 +222,7 @@ def test_factory_resolves_to_studio_in_full_install():
 # -------------------------------------------------------------- catalog actions
 
 
-def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
+def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     app = _app()
     study = tmp_path / "study"
     _make_ready_position(study, "ctrl", "exp1", "pos01")
@@ -238,27 +238,132 @@ def test_discover_annotate_add_then_csv_roundtrip(tmp_path):
     assert len(widget._pending_entries) == 2
     assert widget._discovered_list.count() == 2
     assert widget._records == []
+    # The three nesting levels (study → condition → experiment → position) are
+    # seeded with the recognized identity axes, innermost = position_id.
+    assert widget._level_names() == ["condition", "experiment_id", "position_id"]
 
-    # Annotate the collection and add it.
-    widget._condition_edit.setText("ctrl")
-    widget._date_edit.setText("2026-05-09")
-    widget._notes_edit.setText("pilot")
+    # A manual constant tag rides onto every added row alongside the folder levels.
+    widget._add_manual_column("operator", "Ada")
     widget._on_add_to_catalogue()
     assert len(widget._records) == 2
-    assert widget._table.rowCount() == 2
     assert widget._pending_entries == []
-    assert all(r["condition"] == "ctrl" and r["notes"] == "pilot" for r in widget._records)
+    by_id = {r["id"]: r for r in widget._records}
+    assert set(by_id) == {"pos01", "pos02"}
+    assert all(r["condition"] == "ctrl" for r in widget._records)
+    assert all(r["experiment_id"] == "exp1" for r in widget._records)
+    assert all(r["columns"]["operator"] == "Ada" for r in widget._records)
     assert all(r["cell_tracked_labels_path"] is not None for r in widget._records)
 
-    # CSV round-trip preserves the label paths.
+    # CSV round-trip preserves the label paths and the free-form columns.
     csv_path = tmp_path / "catalog.csv"
     widget._save_csv_to(csv_path)
+    assert "operator" in csv_path.read_text().splitlines()[0]
     widget._on_clear_catalog()
     assert widget._records == []
     widget._load_csv_from(csv_path)
     assert len(widget._records) == 2
     assert all(r["cell_tracked_labels_path"] is not None for r in widget._records)
     assert all(r["nucleus_tracked_labels_path"] is not None for r in widget._records)
+    assert all(r["columns"]["operator"] == "Ada" for r in widget._records)
+    assert all(r["experiment_id"] == "exp1" for r in widget._records)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_renaming_a_level_rederives_staged_columns(tmp_path):
+    app = _app()
+    study = tmp_path / "study"
+    _make_ready_position(study, "ctrl", "exp1", "pos01")
+
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget._root_edit.setText(str(study))
+    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
+    widget._on_discover()
+
+    # Rename the outermost level before committing; the column follows live.
+    widget._level_name_fields[0].setText("genotype")
+    cols = widget._columns_for_entry(widget._pending_entries[0])
+    assert cols["genotype"] == "ctrl"
+    assert "condition" not in cols
+    # position_id still resolves to the innermost folder name (kept unique).
+    assert cols["position_id"] == "pos01"
+
+    widget._on_add_to_catalogue()
+    assert widget._records[0]["columns"]["genotype"] == "ctrl"
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_discover_refuses_mixed_depth_positions(tmp_path):
+    app = _app()
+    study = tmp_path / "study"
+    _make_ready_position(study, "ctrl", "exp1", "pos01")  # depth 3
+    shallow = study / "loose_pos"  # depth 1
+    (shallow / "3_cell").mkdir(parents=True)
+    (shallow / "3_cell" / "tracked_labels.tif").touch()
+
+    widget = mod.AggregateQuantificationStudioWidget()
+    widget._root_edit.setText(str(study))
+    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
+    widget._on_discover()
+
+    # Differing depths can't line up to named levels → nothing staged, a warning.
+    assert widget._pending_entries == []
+    assert widget._level_name_fields == []
+    assert not widget._add_btn.isEnabled()
+    assert "differing folder depths" in widget._discover_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_dynamic_discover_tooltip_names_filled_inputs():
+    app = _app()
+    widget = mod.AggregateQuantificationStudioWidget()
+
+    widget._cell_name_edit.setText("")
+    widget._nucleus_name_edit.setText("")
+    assert "at least one input file" in widget._discover_btn.toolTip()
+
+    widget._cell_name_edit.setText("cells.tif")
+    assert "cells.tif" in widget._discover_btn.toolTip()
+    widget._nucleus_name_edit.setText("nuc.tif")
+    tip = widget._discover_btn.toolTip()
+    assert "cells.tif" in tip and "nuc.tif" in tip
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_group_separators_and_remove_with_separators(tmp_path):
+    app = _app()
+    widget = mod.AggregateQuantificationStudioWidget()
+    # Two batches (distinct column captions) → a separator row precedes each.
+    widget._records = [
+        {"condition": "WT", "date": "d1", "id": "p1",
+         "columns": {"condition": "WT", "position_id": "p1"},
+         "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
+        {"condition": "WT", "date": "d1", "id": "p2",
+         "columns": {"condition": "WT", "position_id": "p2"},
+         "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "ready"},
+        {"condition": "KO", "date": "d1", "id": "p3",
+         "columns": {"condition": "KO", "position_id": "p3"},
+         "contact_analysis_path": Path("/c.h5"), "contact_analysis_status": "ready"},
+    ]
+    widget._refresh_table()
+    # 3 records + 2 group separators = 5 table rows.
+    assert widget._table.rowCount() == 5
+    assert widget._row_to_record == [None, 0, 1, None, 2]
+
+    # Selecting the KO data row (table row 4) maps to record index 2, and removing
+    # it drops exactly p3 despite the separator offset.
+    widget._table.selectRow(4)
+    app.processEvents()
+    assert widget._selected_rows() == [2]
+    widget._on_remove_selected()
+    assert [r["id"] for r in widget._records] == ["p1", "p2"]
 
     widget.deleteLater()
     app.processEvents()

@@ -50,6 +50,78 @@ CSV_COLUMNS = (
     "notes",
 )
 
+#: The free-form metadata bag (``record["columns"]``) carries one entry per
+#: folder-nesting level plus any manual constant tags. These canonical bag keys
+#: have a dedicated CSV home (``position_id`` is the bag's name for the ``id``
+#: column); every other bag key is an *extra* free-form column, appended to the
+#: CSV header after :data:`CSV_COLUMNS`.
+_BAG_TO_CSV = {
+    "condition": "condition",
+    "experiment_id": "experiment_id",
+    "date": "date",
+    "position_id": "id",
+    "notes": "notes",
+}
+#: Flat recognized metadata fields handled explicitly by normalization — never
+#: copied verbatim into the free-form bag (they map to canonical bag keys).
+_RECOGNIZED_FLAT = frozenset({"condition", "experiment_id", "date", "notes"})
+#: Structural / internal record keys that are never free-form metadata columns.
+_NON_COLUMN_KEYS = frozenset(
+    {
+        "path",
+        "position_path",
+        "contact_analysis_path",
+        "cell_labels",
+        "nucleus_labels",
+        "cell_tracked_labels_path",
+        "nucleus_tracked_labels_path",
+        "contact_analysis_status",
+        "columns",
+        "condition_id",
+        "id",
+        "position_id",
+        "labels",  # legacy alias for notes
+        "pixel_size_um",
+        "time_interval_s",
+    }
+)
+
+
+def relative_levels(root: Path | str, position_path: Path | str) -> tuple[str, ...]:
+    """The folder-name segments from *root* (exclusive) to *position_path* (inclusive).
+
+    These are the nesting *levels* a discovered position sits under; the UI names
+    each level once and every position inherits its column values from its own
+    segments (see :func:`columns_from_levels`).
+    """
+    root = _resolve_path(Path(root))
+    pos = _resolve_path(Path(position_path))
+    return pos.relative_to(root).parts
+
+
+def columns_from_levels(
+    level_names: Iterable[str | None], segments: Iterable[str]
+) -> dict[str, str]:
+    """Zip level *names* to folder-name *segments*; blank/``None`` names drop out.
+
+    Extra segments without a paired name (or extra names without a segment) are
+    ignored — only the overlap with a non-blank name becomes a column.
+    """
+    return {name: seg for name, seg in zip(level_names, segments) if name}
+
+
+def discovered_level_depth(
+    root: Path | str, position_paths: Iterable[Path | str]
+) -> int | None:
+    """The shared nesting depth of discovered positions, or ``None`` if it varies.
+
+    Folder-derived columns anchor at the root (level 1 = first folder under root),
+    so the level names line up across positions only when every position sits at
+    the same depth. A ``None`` return tells the caller to warn rather than mislabel.
+    """
+    depths = {len(relative_levels(root, p)) for p in position_paths}
+    return depths.pop() if len(depths) == 1 else None
+
 
 def load_catalog(csv_path: Path | str) -> list[dict]:
     """Load CSV catalog records and expose normalized compatibility keys."""
@@ -108,15 +180,33 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
     catalog_path = Path(csv_path)
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
 
+    normalized_records = [
+        _normalize_catalog_record(record, base_dir=catalog_path.parent)
+        for record in records
+    ]
+    # The header is the fixed core columns plus the union of every free-form
+    # column (folder levels + manual tags) across records, in first-seen order.
+    # Recognized bag keys map to existing core columns, so only the *extras*
+    # extend the header — keeping legacy catalogs byte-identical.
+    extras: list[str] = []
+    seen: set[str] = set()
+    for normalized in normalized_records:
+        for key in normalized.get("columns", {}):
+            if key in _BAG_TO_CSV or key in seen:
+                continue
+            seen.add(key)
+            extras.append(key)
+    fieldnames = list(CSV_COLUMNS) + extras
+
     with catalog_path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(CSV_COLUMNS))
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
-        for record in records:
-            normalized = _normalize_catalog_record(record, base_dir=catalog_path.parent)
+        for normalized in normalized_records:
             position_path = normalized.get("position_path")
             # Files are written relative to the position folder when one is
             # known; otherwise relative to the CSV file's directory.
             file_base = position_path if position_path is not None else catalog_path.parent
+            columns = normalized.get("columns", {})
             row = {
                 "position_path": str(position_path) if position_path is not None else "",
                 "path": _path_for_csv(normalized["contact_analysis_path"], file_base),
@@ -132,6 +222,7 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
                 ),
                 "notes": normalized["notes"],
             }
+            row.update({key: columns[key] for key in extras if key in columns})
             writer.writerow(row)
 
 
@@ -172,15 +263,32 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         normalized.get("path", normalized.get("contact_analysis_path", "")), file_base
     )
 
-    date = str(normalized.get("date", "unknown_date"))
+    # A record may carry its recognized axes flat (CSV load / legacy) or only in
+    # an incoming free-form ``columns`` bag (the folder-derived UI path). Prefer
+    # the flat field, fall back to the bag, then to the default.
+    incoming_columns = normalized.get("columns") or {}
+
+    def _meta(flat_key: str, bag_key: str, default: str) -> str:
+        value = normalized.get(flat_key)
+        if value in (None, ""):
+            value = incoming_columns.get(bag_key)
+        return str(value) if value not in (None, "") else default
+
+    date = _meta("date", "date", "unknown_date")
     # The paired-replicate key. Its own annotation, *not* an alias for date;
     # defaults to date only when the catalog leaves it blank (single-replicate
     # experiments need not fill it). See the artifact-contract spec, §2.
-    experiment_id = str(normalized.get("experiment_id") or date)
-    condition = str(
-        normalized.get("condition", normalized.get("condition_id", "unknown_condition"))
+    experiment_id = _meta("experiment_id", "experiment_id", date)
+    condition = _meta(
+        "condition",
+        "condition",
+        str(normalized.get("condition_id", "unknown_condition")),
     )
-    source_id = str(normalized.get("id", normalized.get("position_id", contact_analysis_path.stem)))
+    source_id = _meta(
+        "id",
+        "position_id",
+        str(normalized.get("position_id", contact_analysis_path.stem)),
+    )
     # ``notes`` is the free-text field; accept the legacy ``labels`` column too.
     notes = str(normalized.get("notes", normalized.get("labels", "")))
     cell_labels_path = _resolve_optional_with_base(
@@ -191,6 +299,8 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         file_base,
     )
 
+    columns = _columns_bag(normalized, condition, experiment_id, date, source_id)
+
     normalized.update({
         "path": contact_analysis_path,
         "date": date,
@@ -200,6 +310,7 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         "condition_id": condition,
         "experiment_id": experiment_id,
         "position_id": source_id,
+        "columns": columns,
         "position_path": position_path,
         "contact_analysis_path": contact_analysis_path,
         "cell_tracked_labels_path": cell_labels_path,
@@ -207,6 +318,36 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         "contact_analysis_status": STATUS_READY if contact_analysis_path.is_file() else STATUS_INCOMPLETE,
     })
     return normalized
+
+
+def _columns_bag(
+    record: dict, condition: str, experiment_id: str, date: str, position_id: str
+) -> dict[str, str]:
+    """The canonical free-form metadata bag for a record.
+
+    Holds one entry per folder-nesting level plus any manual constant tags. The
+    recognized identity/pooling axes always appear under their canonical bag keys
+    (``position_id`` for the ``id`` column); every other non-structural,
+    non-``None`` field — whether a flat CSV column or an entry in an incoming
+    ``columns`` dict — rides along as an extra column. ``notes`` is display-only
+    and excluded (it never becomes a downstream metadata axis)."""
+    bag: dict[str, str] = {}
+    # Flat extras first (a CSV load surfaces extra columns as flat keys)…
+    for key, value in record.items():
+        if key in _NON_COLUMN_KEYS or key in _RECOGNIZED_FLAT or value is None:
+            continue
+        bag[key] = str(value)
+    # …then an explicit incoming bag overrides (the UI / round-trip path).
+    for key, value in (record.get("columns") or {}).items():
+        if key == "notes":
+            continue
+        bag[key] = str(value)
+    # Recognized axes win last so they always carry the normalized values.
+    bag["condition"] = condition
+    bag["experiment_id"] = experiment_id
+    bag["date"] = date
+    bag["position_id"] = position_id
+    return bag
 
 
 def discover_catalog_entries(

@@ -186,12 +186,22 @@ def _position_frame(
 
 
 def _position_metadata(record: dict) -> dict[str, str]:
-    return {
+    """The per-position descriptor columns stamped onto every pooled row.
+
+    The recognized identity/descriptor axes (:data:`METADATA_COLUMNS`) come first,
+    followed by any extra free-form columns (folder-derived nesting levels or
+    manual constant tags) carried in ``record["columns"]``. Extras ride along as
+    constant descriptors; they never alter the row-id identity hash."""
+    meta = {
         "condition": str(record.get("condition", "")),
         "experiment_id": str(record.get("experiment_id", "")),
         "date": str(record.get("date", "")),
         "position_id": str(record.get("id", "")),
     }
+    for key, value in (record.get("columns") or {}).items():
+        if key not in meta:  # recognized axes already stamped above
+            meta[key] = str(value)
+    return meta
 
 
 def catalogue_root(records: Sequence[dict]) -> Path:
