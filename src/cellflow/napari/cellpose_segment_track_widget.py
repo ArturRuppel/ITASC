@@ -130,6 +130,20 @@ def _layer_name(channel_label: str, kind: str) -> str:
     return f"[{channel_label}] {kind}"
 
 
+def _segment_done_status(masks_name: str, prob_name: str, flow_name: str) -> str:
+    return (
+        f"Channel 1 → '{masks_name}', '{prob_name}', '{flow_name}'. "
+        "Save from the layers. Track to link masks across time."
+    )
+
+
+def _track_done_status(tracked_name: str) -> str:
+    return (
+        f"Channel 1 tracked → '{tracked_name}'. Save from the layer. "
+        "Select it below to correct."
+    )
+
+
 def _coerce_stack(source) -> np.ndarray:
     """Canonical ``(T, Z, Y, X)`` from either source a channel can have.
 
@@ -315,6 +329,10 @@ class CellposeSegmentTrackWidget(QWidget):
         self._register_gate_controls()
         self._progress_signal.connect(self._progress)
         self._connect_layer_events()
+        self._status(
+            "Bind Channel 1 to begin. "
+            "(Optional: also bind Channel 2 for joint segmentation.)"
+        )
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
@@ -586,7 +604,10 @@ class CellposeSegmentTrackWidget(QWidget):
         self.gate.recompute()
         if layer is not None:
             label = _CH1_LABEL if which == 1 else _CH2_LABEL
-            self._status(f"{label} ← layer '{layer.name}'.")
+            msg = f"{label} ← layer '{layer.name}'."
+            if which == 1:
+                msg += " Preview a frame or Segment the full stack."
+            self._status(msg)
 
     def _refresh_source_buttons(self, which: int) -> None:
         """Mirror the channel's bound layer into its pill (status light + tooltip)."""
@@ -713,10 +734,7 @@ class CellposeSegmentTrackWidget(QWidget):
             self._set_running(None)
             self._clear_progress()
             self._stream = None
-            self._status(
-                f"Channel 1 → '{names[0]}', '{names[1]}', '{names[2]}'. "
-                "Save from the layers."
-            )
+            self._status(_segment_done_status(*names))
 
         @thread_worker(connect={
             "yielded": self._on_seg_frame, "returned": _done, "errored": self._errored,
@@ -827,7 +845,7 @@ class CellposeSegmentTrackWidget(QWidget):
             self._set_running(None)
             self._clear_progress()
             self._add_labels(tracked_name, result)
-            self._status(f"Channel 1 tracked → '{tracked_name}'. Save from the layer.")
+            self._status(_track_done_status(tracked_name))
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
@@ -1100,28 +1118,52 @@ class CellposeSegmentTrackWidget(QWidget):
         self.progress_bar.setValue(0)
         self.progress_bar.setVisible(False)
 
-    def _action_buttons(self):
-        return (self.ch1_preview_btn, self.ch1_seg_btn, self.ch1_track_btn)
-
     def _joint_buttons(self):
         return (self.ch2_preview_btn, self.ch2_run_btn)
 
+    def _ch1_masks_available(self) -> bool:
+        return _layer_name(_CH1_LABEL, "masks") in self.viewer.layers
+
+    def _ch1_track_reason(self) -> str:
+        if not self._channel_present(1):
+            return "Bind Channel 1 first — click ⧉."
+        return "Segment Channel 1 first."
+
+    def _ch2_joint_reason(self) -> str:
+        if not self._channel_present(1):
+            return "Bind Channel 1 first."
+        return "Bind Channel 2 for joint segmentation."
+
     def _register_gate_controls(self) -> None:
         g = self.gate
+
+        def _own(btn) -> bool:
+            return self._running is None or self._active_btn() is btn
+
         g.register(self.ch1_params_btn, ControlClass.HARMLESS)
         g.register(self.ch2_params_btn, ControlClass.HARMLESS)
-        for btn in self._action_buttons():
-            own = lambda b=btn: self._running is None or self._active_btn() is b
-            g.register(btn, ControlClass.RUN_VIEWER, when=own)
+        g.register(
+            self.ch1_preview_btn, ControlClass.RUN_VIEWER,
+            when=lambda: _own(self.ch1_preview_btn) and self._channel_present(1),
+            reason="Bind Channel 1 first — click ⧉.",
+        )
+        g.register(
+            self.ch1_seg_btn, ControlClass.RUN_VIEWER,
+            when=lambda: _own(self.ch1_seg_btn) and self._channel_present(1),
+            reason="Bind Channel 1 first — click ⧉.",
+        )
+        g.register(
+            self.ch1_track_btn, ControlClass.RUN_VIEWER,
+            when=lambda: _own(self.ch1_track_btn) and self._ch1_masks_available(),
+            reason=self._ch1_track_reason,
+        )
         # Channel 2's actions (preview + run) are joint-only: both require both
         # inputs to be present.
         for btn in self._joint_buttons():
             g.register(
                 btn, ControlClass.RUN_VIEWER,
-                when=lambda b=btn: (
-                    (self._running is None or self._active_btn() is b)
-                    and self._both_inputs()
-                ),
+                when=lambda b=btn: _own(b) and self._both_inputs(),
+                reason=self._ch2_joint_reason,
             )
         g.recompute()
 

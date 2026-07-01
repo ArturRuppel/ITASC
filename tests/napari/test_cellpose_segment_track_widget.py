@@ -112,6 +112,18 @@ def test_layer_name_tags_channel():
     assert stw._layer_name("Channel 1", "preview") == "[Channel 1] preview"
 
 
+def test_segment_done_status_names_next_step():
+    msg = stw._segment_done_status("[Channel 1] masks", "[Channel 1] prob", "[Channel 1] flow")
+    assert "'[Channel 1] masks'" in msg and "'[Channel 1] flow'" in msg
+    assert "Track to link masks across time." in msg
+
+
+def test_track_done_status_names_next_step():
+    msg = stw._track_done_status("[Channel 1] tracked")
+    assert "'[Channel 1] tracked'" in msg
+    assert "Select it below to correct." in msg
+
+
 # ── compute steps (Qt-free) ─────────────────────────────────────────────────
 def test_segment_channel_returns_masks_array(tmp_path: Path, _model):
     # Layout-free: a (T, Y, X) stack canonicalises to (T, 1, Y, X) with no layout
@@ -244,6 +256,54 @@ def test_joint_button_disabled_until_both_inputs():
     w.deleteLater()
 
 
+def test_ch1_preview_and_seg_buttons_disabled_until_bound():
+    """Arrival UX: Channel 1's preview/segment are inert until a source is bound."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    assert w.ch1_preview_btn.isEnabled() is False
+    assert w.ch1_seg_btn.isEnabled() is False
+    assert "Bind Channel 1" in w.ch1_preview_btn.toolTip()
+    assert "Bind Channel 1" in w.ch1_seg_btn.toolTip()
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert w.ch1_preview_btn.isEnabled() is True
+    assert w.ch1_seg_btn.isEnabled() is True
+    w.deleteLater()
+
+
+def test_ch1_track_button_reason_tracks_bind_then_segment_state():
+    """Track's disabled reason distinguishes 'unbound' from 'bound but not segmented'."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    assert w.ch1_track_btn.isEnabled() is False
+    assert "Bind Channel 1" in w.ch1_track_btn.toolTip()
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert w.ch1_track_btn.isEnabled() is False
+    assert "Segment Channel 1 first" in w.ch1_track_btn.toolTip()
+    # a masks layer appearing (as Segment would produce) enables Track.
+    viewer.add_labels(np.zeros((2, 4, 4), dtype=np.int32), name="[Channel 1] masks")
+    w._on_layers_changed()
+    assert w.ch1_track_btn.isEnabled() is True
+    w.deleteLater()
+
+
+def test_ch2_buttons_reason_names_the_missing_input():
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    assert "Bind Channel 1" in w.ch2_run_btn.toolTip()
+    assert "Bind Channel 1" in w.ch2_preview_btn.toolTip()
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert w.ch2_run_btn.isEnabled() is False
+    assert "Bind Channel 2" in w.ch2_run_btn.toolTip()
+    assert "Bind Channel 2" in w.ch2_preview_btn.toolTip()
+    w.deleteLater()
+
+
 def test_bind_channel_to_layer_sources_canonical_stack():
     """Binding a channel reads the layer's data as a canonical (T, Z, Y, X) stack."""
     QApplication.instance() or QApplication([])
@@ -256,6 +316,24 @@ def test_bind_channel_to_layer_sources_canonical_stack():
     assert w._channel_source(1).shape == (2, 1, 8, 8)  # canonicalised on read
     # the pill is lit while the layer is bound + present.
     assert w.ch1_layer_btn.isChecked() is True
+    w.deleteLater()
+
+
+def test_status_label_shows_idle_hint_on_construction():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    assert "Bind Channel 1 to begin" in w.status_lbl.text()
+    assert w.status_lbl.isHidden() is False
+    w.deleteLater()
+
+
+def test_status_label_names_next_step_after_binding_channel_1():
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert "Preview a frame or Segment the full stack." in w.status_lbl.text()
     w.deleteLater()
 
 
@@ -664,6 +742,42 @@ def test_corrector_save_button_hidden_in_active_layer_mode():
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
     # no on-disk target in active-layer mode → the disk-save button is hidden.
     assert w.cell_correction.save_labels_btn.isHidden() is True
+    w.deleteLater()
+
+
+def test_activate_button_disabled_until_labels_layer_selected():
+    """Arrival UX: the ⏻ activate button is inert until a Labels layer is active."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    cc = w.cell_correction
+    assert cc.active_btn.isEnabled() is False
+    assert "Select a Labels layer" in cc.active_btn.toolTip()
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] tracked")
+    viewer.layers.selection.active = labels
+    # the fake viewer's selection has no real events to fire (see
+    # test_source_pill_darkens_when_bound_layer_removed for the same pattern),
+    # so drive the recompute directly.
+    cc._sync_active_btn_enabled()
+    assert cc.active_btn.isEnabled() is True
+    assert cc.active_btn.toolTip() == "Activate correction mode and show correction controls."
+    w.deleteLater()
+
+
+def test_activate_button_stays_enabled_once_checked_even_if_selection_moves_away():
+    """A live correction session can always be turned back off."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    cc = w.cell_correction
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] tracked")
+    viewer.layers.selection.active = labels
+    cc.active_btn.setChecked(True)  # activates correction on the bound layer
+    assert cc.active_btn.isChecked() is True
+    # selection moves to something that is not a Labels layer mid-session.
+    viewer.layers.selection.active = SimpleNamespace(name="[Channel 1] image")
+    cc._sync_active_btn_enabled()
+    assert cc.active_btn.isEnabled() is True  # still togglable off
     w.deleteLater()
 
 

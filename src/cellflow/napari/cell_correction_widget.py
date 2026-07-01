@@ -157,6 +157,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # the in-widget disk-save button is hidden.
         if self._active_labels_layer_provider is not None:
             self.save_labels_btn.setVisible(False)
+        self._sync_active_btn_enabled()
 
     # ------------------------------------------------------------------ #
     # pos_dir property — delegate to provider if available                #
@@ -468,6 +469,17 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self.viewer.dims.events.current_step.connect(
                 self._on_dims_changed_for_lineage
             )
+        if self._active_layer_mode():
+            # Standalone tools have no project directory to poll — readiness
+            # here is "is the viewer's active layer a Labels layer", which
+            # only changes on a selection change.
+            active_events = getattr(
+                getattr(getattr(self.viewer.layers, "selection", None), "events", None),
+                "active", None,
+            )
+            if active_events is not None:
+                active_events.connect(lambda *_a, **_k: self._sync_active_btn_enabled())
+            self.active_btn.toggled.connect(lambda _c: self._sync_active_btn_enabled())
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
@@ -501,6 +513,25 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             return self._active_labels_layer_provider() is not None
         lp = self._cell_labels_path()
         return lp is not None and lp.exists()
+
+    def _sync_active_btn_enabled(self) -> None:
+        """Locally gate the activate button in active-layer mode.
+
+        Not routed through the parent widget's ``UiGate`` — this widget is
+        reused in disk-mode contexts (the app) where this precondition doesn't
+        apply. Stays enabled while already checked so an active correction
+        session can always be turned back off even if the viewer's active-layer
+        selection has since moved off the bound Labels layer.
+        """
+        if not self._active_layer_mode():
+            return
+        available = self._correction_data_available() or self.active_btn.isChecked()
+        self.active_btn.setEnabled(available)
+        self.active_btn.setToolTip(
+            "Activate correction mode and show correction controls."
+            if available
+            else "Select a Labels layer to correct — the active layer is not one."
+        )
 
     def _toggle_active_layer_correction(self, active: bool) -> None:
         """Bind/unbind the corrector to the viewer's active Labels layer.

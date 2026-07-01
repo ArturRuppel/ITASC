@@ -224,10 +224,27 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
 
 ## Cellpose Segment + Track distro
 
-- [ ] UI/UX on arrival — progressive button enabling (extend the existing
+- [x] UI/UX on arrival — progressive button enabling (extend the existing
   `UiGate` `when`/`reason` predicates) + contextual "next step" status-label
-  text, rather than a new onboarding widget. Spec:
-  `docs/superpowers/specs/2026-07-01-cellpose-segment-track-arrival-ux-design.md`.
+  text, rather than a new onboarding widget. (Channel 1's preview/segment now
+  gate on `_channel_present(1)`, Track gates on a `[Channel 1] masks` layer
+  existing (with a reason callable distinguishing "bind first" from "segment
+  first"), and Channel 2's preview/run gate reasons name whichever input is
+  still missing. The status label gets a real idle hint at construction and a
+  trailing next-step sentence after binding Channel 1 / after Segment
+  completes / after Track completes, via two new pure `_segment_done_status` /
+  `_track_done_status` helpers (kept Qt-free so they're unit-testable without
+  driving the `thread_worker` path). The embedded corrector's ⏻ activate
+  button gets a **local** `_sync_active_btn_enabled` (not routed through the
+  parent's `UiGate`, since `CellCorrectionWidget` is reused in disk-mode
+  contexts where this precondition doesn't apply), wired to a new
+  `viewer.layers.selection.events.active` listener; stays enabled once
+  checked so a live session can always be toggled back off even if the active
+  layer selection moves away. Spec:
+  `docs/superpowers/specs/2026-07-01-cellpose-segment-track-arrival-ux-design.md`,
+  plan: `docs/superpowers/plans/2026-07-01-cellpose-segment-track-arrival-ux.md`.
+  See `cellpose_segment_track_widget.py` + `cell_correction_widget.py` +
+  `test_cellpose_segment_track_widget.py`.)
 
 - [x] **Bug: "segment current frame" clobbers all frames when a full-stack run
   was already run.** It should only mutate the active frame. (`_run_segment`'s
