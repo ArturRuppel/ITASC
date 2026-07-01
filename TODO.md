@@ -222,6 +222,59 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
   Note: divergence/contour maps are *positive* ridge signal, so a sequential
   map (magma, as the divergence widget uses) is right — not a diverging one.)
 
+## Cellpose Segment + Track distro
+
+- [ ] UI/UX on arrival — progressive button enabling (extend the existing
+  `UiGate` `when`/`reason` predicates) + contextual "next step" status-label
+  text, rather than a new onboarding widget. Spec:
+  `docs/superpowers/specs/2026-07-01-cellpose-segment-track-arrival-ux-design.md`.
+
+- [ ] **Preview should mutate the real stack in place** ("segment this frame"),
+  not spawn separate throwaway layers. Currently `_preview()`
+  (`cellpose_segment_track_widget.py:945`) allocates a fresh full-size zero
+  array per click and writes to disposable `… preview` / `… prob preview` /
+  `… flow preview` layers, entirely disconnected from the persistent
+  `self._stream` accumulator `_run_segment()` builds (line 727) for the real
+  `… masks` / `… prob` / `… flow` layers. Fix: preview should lazily initialize
+  `self._stream` the same way `_run_segment` does if it's `None` (i.e. init the
+  full stack on first use), then write the single computed frame into
+  `self._stream["masks"][t, z]` etc. and refresh via the existing
+  `_push_stream_layers()` — same layers the full "Segment" run uses, one slice
+  mutated, no separate preview layers.
+
+- [x] **Tracking is much slower than laptrack itself should be.** Profiled on a
+  synthetic dense-monolayer stack (150 frames × ~576 cells/frame): the actual
+  bottleneck was **not** our glue code but `laptrack`'s own
+  `LapTrack.predict_dataframe()` → `laptrack.data_conversion.tree_to_dataframe`,
+  which assigns `tree_id`/`track_id` to every tracked object **one at a time**
+  via `DataFrame.loc[(frame, index), col] = value` (the library's own source
+  even flags a sibling loop with "XXX there may exist faster impl.") — this
+  accounted for >80% of total tracking time, dwarfing laptrack's actual linking
+  cost. Fixed in `track_laptrack.py::_run_laptrack` by calling the public,
+  lower-level `LapTrack.predict()` (returns the raw tracking graph) instead,
+  then extracting track ids ourselves via a single `networkx.connected_components`
+  pass + dict lookup (`_track_ids_from_tree`, valid because splitting/merging are
+  always disabled here — guarded by an assertion in case that ever changes).
+  Also vectorized `build_track_dataframe`'s row construction (minor secondary
+  win; `regionprops_table` itself is now the dominant remaining cost there).
+  Result: 19.3s → 3.6s on the benchmark (5.3x). `relabel_by_tracks` was
+  confirmed negligible (~2% of pipeline time) and left as-is.
+
+- [ ] **Port validation / clear-not-validated / track-list navigation into the
+  correction tool** (`CellCorrectionWidget`, `cell_correction_widget.py`). The
+  Q/E forward/backward retracker is already ported (nothing to do there) but
+  the widget is explicitly "DB-free — there is no validation/locking" (lines
+  213, 841). All three missing pieces already exist in DB-free-compatible form
+  on the Ultrack/nucleus side and need adapting rather than rebuilding:
+  - `tracking_ultrack/validation_state.py` — JSON-file-backed validation state
+    (not Ultrack-DB-dependent; only `validation_nodes.py::inject_validated_nodes`
+    touches the DB and isn't needed here).
+  - `napari/_correction_utils.py::remove_unvalidated_labels` +
+    `_correction_commit.py` — clear-not-validated, works on plain numpy label
+    arrays.
+  - `napari/_correction_track_accordion.py` + `lineage_canvas_controller.py` —
+    the track-list/swimlane navigator.
+
 - [x] Atom extractor: do the checkbox situation like the cell segmentation widget's
   preview. Put the checkboxes in a row along the top and only compute what is
   checked. (The two stage checkboxes (Foreground, Contour) are now a "Compute:"

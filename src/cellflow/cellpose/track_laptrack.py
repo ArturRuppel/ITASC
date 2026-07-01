@@ -40,7 +40,7 @@ def build_track_dataframe(masks_tzyx: np.ndarray):
 
     if masks_tzyx.ndim != 4:
         raise ValueError(f"expected (T, Z, Y, X), got shape {masks_tzyx.shape}")
-    rows = []
+    frames, labels, zs, ys, xs = [], [], [], [], []
     for t in range(masks_tzyx.shape[0]):
         volume = np.asarray(masks_tzyx[t])
         if not volume.any():
@@ -48,20 +48,22 @@ def build_track_dataframe(masks_tzyx: np.ndarray):
         table = regionprops_table(volume, properties=("label", "centroid"))
         n = len(table["label"])
         # centroid-0/1/2 -> z/y/x (3D volume always yields three centroid cols).
-        z = table.get("centroid-0", np.zeros(n))
-        y = table.get("centroid-1", np.zeros(n))
-        x = table.get("centroid-2", np.zeros(n))
-        for i in range(n):
-            rows.append(
-                {
-                    "frame": t,
-                    "label": int(table["label"][i]),
-                    "z": float(z[i]),
-                    "y": float(y[i]),
-                    "x": float(x[i]),
-                }
-            )
-    return pd.DataFrame(rows, columns=["frame", "label", "z", "y", "x"])
+        frames.append(np.full(n, t, dtype=np.int64))
+        labels.append(table["label"])
+        zs.append(table.get("centroid-0", np.zeros(n)))
+        ys.append(table.get("centroid-1", np.zeros(n)))
+        xs.append(table.get("centroid-2", np.zeros(n)))
+    if not frames:
+        return pd.DataFrame(columns=["frame", "label", "z", "y", "x"])
+    return pd.DataFrame(
+        {
+            "frame": np.concatenate(frames),
+            "label": np.concatenate(labels).astype(int),
+            "z": np.concatenate(zs).astype(float),
+            "y": np.concatenate(ys).astype(float),
+            "x": np.concatenate(xs).astype(float),
+        }
+    )[["frame", "label", "z", "y", "x"]]
 
 
 def relabel_by_tracks(masks_tzyx: np.ndarray, track_of: dict) -> np.ndarray:
@@ -163,13 +165,49 @@ def stitch_z(masks_tzyx: np.ndarray, *, iou_threshold: float = 0.25) -> np.ndarr
     return out
 
 
+def _track_ids_from_tree(tree) -> dict:
+    """Map each ``(frame, index)`` tree node to a track id via connected components.
+
+    Only valid when splitting/merging are disabled (as they always are in
+    :func:`_run_laptrack`): every node then has at most one predecessor and one
+    successor, so the raw tree's connected components are exactly the tracks —
+    matching what ``laptrack``'s own ``tree_id``/``track_id`` computation would
+    give here, without going through its per-node assignment (see
+    :func:`_run_laptrack` docstring). Guards against silently wrong ids if that
+    assumption is ever broken by raising on unexpected branching.
+    """
+    import networkx as nx
+
+    if any(tree.out_degree(n) > 1 or tree.in_degree(n) > 1 for n in tree.nodes):
+        raise AssertionError(
+            "track tree has branching (split/merge); _run_laptrack assumes "
+            "splitting/merging stay disabled"
+        )
+    track_id_by_node: dict = {}
+    for track_id, nodes in enumerate(nx.connected_components(nx.Graph(tree))):
+        for node in nodes:
+            track_id_by_node[node] = track_id
+    return track_id_by_node
+
+
 def _run_laptrack(df, *, max_distance: float, max_frame_gap: int):
     """Run laptrack on a centroid dataframe; return it with a ``track_id`` column.
+
+    Calls ``LapTrack.predict()`` (the public method returning the raw tracking
+    graph) rather than ``predict_dataframe()``. The latter's own conversion step
+    (``laptrack.data_conversion.tree_to_dataframe``) assigns ``tree_id`` and
+    ``track_id`` to every node **one at a time** via ``DataFrame.loc[...] =``
+    (the library's own source flags this with "XXX there may exist faster
+    impl."); on a dense stack (profiled: 150 frames x ~576 cells/frame) those
+    per-node pandas writes accounted for >80% of total tracking time, dwarfing
+    laptrack's actual linking cost. :func:`_track_ids_from_tree` gets the same
+    result via a dict lookup instead.
 
     Isolated so :func:`track_masks` orchestration can be tested without the
     optional dependency installed (tests monkeypatch this).
     """
     from laptrack import LapTrack
+    from laptrack.data_conversion import dataframe_to_coords_frame_index
 
     cutoff = float(max_distance) ** 2  # sqeuclidean metric
     lt = LapTrack(
@@ -181,13 +219,14 @@ def _run_laptrack(df, *, max_distance: float, max_frame_gap: int):
         splitting_cost_cutoff=False,
         merging_cost_cutoff=False,
     )
-    track_df, _split_df, _merge_df = lt.predict_dataframe(
-        df,
-        coordinate_cols=COORDINATE_COLS,
-        frame_col="frame",
-        only_coordinate_cols=False,
+    coords, frame_index = dataframe_to_coords_frame_index(
+        df, COORDINATE_COLS, frame_col="frame"
     )
-    return track_df.reset_index(drop=True)
+    tree = lt.predict(coords)
+    track_id_by_node = _track_ids_from_tree(tree)
+    track_df = df.reset_index(drop=True).copy()
+    track_df["track_id"] = [track_id_by_node[node] for node in frame_index]
+    return track_df
 
 
 def track_masks(
