@@ -137,9 +137,9 @@ def _segment_done_status(masks_name: str, prob_name: str, flow_name: str) -> str
     )
 
 
-def _track_done_status(tracked_name: str) -> str:
+def _track_done_status(masks_name: str) -> str:
     return (
-        f"Channel 1 tracked → '{tracked_name}'. Save from the layer. "
+        f"Channel 1 tracked → '{masks_name}' updated in place. "
         "Select it below to correct."
     )
 
@@ -838,14 +838,13 @@ class CellposeSegmentTrackWidget(QWidget):
         masks = _to_tzyx(np.asarray(self.viewer.layers[masks_name].data))
         max_distance = float(self.track_max_dist_spin.value())
         max_frame_gap = int(self.track_gap_spin.value())
-        tracked_name = _layer_name(_CH1_LABEL, "tracked")
 
         def _done(result):
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(tracked_name, result)
-            self._status(_track_done_status(tracked_name))
+            self._add_labels(masks_name, result)
+            self._status(_track_done_status(masks_name))
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,

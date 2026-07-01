@@ -119,8 +119,9 @@ def test_segment_done_status_names_next_step():
 
 
 def test_track_done_status_names_next_step():
-    msg = stw._track_done_status("[Channel 1] tracked")
-    assert "'[Channel 1] tracked'" in msg
+    msg = stw._track_done_status("[Channel 1] masks")
+    assert "'[Channel 1] masks'" in msg
+    assert "updated in place" in msg
     assert "Select it below to correct." in msg
 
 
