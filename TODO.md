@@ -229,8 +229,21 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
   text, rather than a new onboarding widget. Spec:
   `docs/superpowers/specs/2026-07-01-cellpose-segment-track-arrival-ux-design.md`.
 
-- [ ] **Bug: "segment current frame" clobbers all frames when a full-stack run
-  was already run.** It should only mutate the active frame.
+- [x] **Bug: "segment current frame" clobbers all frames when a full-stack run
+  was already run.** It should only mutate the active frame. (`_run_segment`'s
+  `_done` callback clears `self._stream` to `None` on completion, but the
+  masks/prob/flow layers keep the full-stack result. `_preview` re-inits the
+  stream on next use via `_init_stream`, which was zero-filling unconditionally
+  — its first `_push_stream_layers()` call then overwrote the real layers with
+  zeros a beat before the single-frame result was even computed. `_init_stream`
+  now seeds each accumulator from the matching viewer layer's existing data
+  (via new `_existing_layer_array`, undoing the display-time Z-squeeze) when
+  its shape matches, falling back to zeros only when no layer exists or the
+  shape doesn't match (e.g. a different stack loaded). See
+  `cellpose_segment_track_widget.py` +
+  `test_init_stream_after_a_full_run_reuses_layer_data_not_zeros` /
+  `test_init_stream_falls_back_to_zeros_when_layer_shape_differs` in
+  `test_cellpose_segment_track_widget.py`.)
 
 - [x] **Preview should mutate the real stack in place** ("segment this frame"),
   not spawn separate throwaway layers. `_preview()`

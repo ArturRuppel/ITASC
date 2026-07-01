@@ -741,17 +741,42 @@ class CellposeSegmentTrackWidget(QWidget):
 
         Shared by :meth:`_run_segment` (fills every frame) and :meth:`_preview`
         (fills one frame at a time on first use) so both write into — and
-        display — the very same persistent layers.
+        display — the very same persistent layers. If those layers already hold
+        data from a prior full **Segment** run (``self._stream`` is cleared on
+        completion, but the layers survive), that data seeds the new
+        accumulators instead of zeros — otherwise a lone "segment this frame"
+        after a full run would blank every other frame the instant it repaints
+        the layers, before its own single-frame result even comes back.
         """
         T, Z, Y, X = (int(s) for s in stack.shape)
+        masks_name = _layer_name(_CH1_LABEL, "masks")
+        prob_name = _layer_name(_CH1_LABEL, "prob")
+        flow_name = _layer_name(_CH1_LABEL, "flow")
         self._stream = {
-            "masks": np.zeros((T, Z, Y, X), dtype=np.int32),
-            "prob": np.zeros((T, Z, Y, X), dtype=np.float32),
-            "flow": np.zeros((T, Z, Y, X, 3), dtype=np.uint8),
-            "masks_name": _layer_name(_CH1_LABEL, "masks"),
-            "prob_name": _layer_name(_CH1_LABEL, "prob"),
-            "flow_name": _layer_name(_CH1_LABEL, "flow"),
+            "masks": self._existing_layer_array(masks_name, (T, Z, Y, X), np.int32),
+            "prob": self._existing_layer_array(prob_name, (T, Z, Y, X), np.float32),
+            "flow": self._existing_layer_array(flow_name, (T, Z, Y, X, 3), np.uint8),
+            "masks_name": masks_name,
+            "prob_name": prob_name,
+            "flow_name": flow_name,
         }
+
+    def _existing_layer_array(
+        self, name: str, shape: tuple[int, ...], dtype: np.dtype
+    ) -> np.ndarray:
+        """Reuse ``name``'s current viewer data if it matches ``shape``, else zeros.
+
+        Layer data may have a singleton Z squeezed out for display (see
+        :func:`_squeeze_z`); that's undone before the shape check.
+        """
+        layer = self.viewer.layers[name] if name in self.viewer.layers else None
+        if layer is not None:
+            arr = np.asarray(layer.data)
+            if arr.ndim == len(shape) - 1:
+                arr = arr[:, np.newaxis]
+            if arr.shape == shape:
+                return np.asarray(arr, dtype=dtype).copy()
+        return np.zeros(shape, dtype=dtype)
 
     def _on_seg_frame(self, payload) -> None:
         """Write one streamed frame into the accumulators and refresh the layers."""

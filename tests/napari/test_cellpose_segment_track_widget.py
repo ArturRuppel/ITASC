@@ -382,6 +382,53 @@ def test_preview_writes_one_slice_without_clobbering_other_frames():
     w.deleteLater()
 
 
+def test_init_stream_after_a_full_run_reuses_layer_data_not_zeros():
+    """Regression: after a full Segment run completes, self._stream is cleared
+    but the masks/prob/flow layers hold the real result. A later "segment this
+    frame" (_preview) re-inits the stream via _init_stream — it must seed from
+    that existing layer data, not zero it out, or the very first
+    _push_stream_layers() call blanks every already-segmented frame."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    T, Z, Y, X = 3, 1, 5, 5
+    masks = np.zeros((T, Y, X), np.int32)
+    masks[:] = 1  # every frame "segmented" by a prior full run
+    prob = np.full((T, Y, X), 0.7, np.float32)
+    flow = np.full((T, Y, X, 3), 9, np.uint8)
+    viewer.add_labels(masks, name="[Channel 1] masks")
+    viewer.add_image(prob, name="[Channel 1] prob")
+    viewer.add_image(flow, name="[Channel 1] flow")
+    w._stream = None  # as left by _run_segment's _done callback
+
+    w._init_stream(np.zeros((T, Z, Y, X), dtype=np.float32))
+
+    st = w._stream
+    assert st["masks"].shape == (T, Z, Y, X)
+    assert (st["masks"] == 1).all()  # reused, not zeroed
+    assert (st["prob"] == 0.7).all()
+    assert (st["flow"] == 9).all()
+    # pushing the rehydrated stream must not clobber the viewer layers either.
+    w._push_stream_layers()
+    assert (viewer.layers["[Channel 1] masks"].data == 1).all()
+    w.deleteLater()
+
+
+def test_init_stream_falls_back_to_zeros_when_layer_shape_differs():
+    """A stale/mismatched layer (e.g. a different stack was loaded) must not be
+    reused — fall back to a clean zero-filled accumulator instead."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    viewer.add_labels(np.ones((2, 5, 5), np.int32), name="[Channel 1] masks")
+
+    w._init_stream(np.zeros((3, 1, 5, 5), dtype=np.float32))
+
+    assert w._stream["masks"].shape == (3, 1, 5, 5)
+    assert not w._stream["masks"].any()
+    w.deleteLater()
+
+
 def test_source_pill_darkens_when_bound_layer_removed():
     """The pill is a status light: it unlits + releases the channel on removal."""
     QApplication.instance() or QApplication([])
