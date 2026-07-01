@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+from napari.utils.colormaps import direct_colormap
 from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -22,6 +23,8 @@ from cellflow.correction.labels import (
 )
 from cellflow.core.tiff import imwrite_grayscale
 from cellflow.core.label_store import read_full_tracked_stack
+from cellflow.napari._correction_utils import frame_view_2d, remove_unvalidated_labels
+from cellflow.napari.lineage_canvas_controller import LineageCanvasController
 from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
@@ -57,6 +60,13 @@ logger = logging.getLogger(__name__)
 _TRACKED_CELL_LAYER = "[Correction] Cell Labels"
 _CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
+# Validated-cell overlay (full-editing only): an opaque green border around
+# every cell in every frame it's validated for. Standalone analogue of
+# ValidatedOverlayController's border mode, drawn from the in-memory
+# ``self._validated_tracks`` store instead of validated_cells.json.
+_VALIDATED_OVERLAY_LAYER = "[Correction] Validated: Cell"
+_VALIDATED_OVERLAY_COLOR = "#00ff00"
+_VALIDATED_OVERLAY_CONTOUR = 2
 
 # Pipeline-side (non-correction) layer names — used as fallbacks where the
 # user may have loaded layers manually, and as the target for the on-disk
@@ -134,6 +144,13 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._correction_view_state: LayerViewState | None = None
         self._correction_owned_layers: set[str] = set()
         self._correction_dirty: bool = False
+        # DB-free validation store (full-editing/standalone only): there is no
+        # project directory to persist validated_cells.json into, so validation
+        # lives only for the session, keyed the same as the disk-backed store
+        # ({cell_id: {validated frames}}) so remove_unvalidated_labels and the
+        # lineage canvas need no adaptation.
+        self._validated_tracks: dict[int, set[int]] = {}
+        self._lineage_canvas: LineageCanvasController | None = None
         self._setup_ui()
         self._connect_signals()
         # Active-layer mode has no on-disk target — saving is napari's job, so
@@ -217,6 +234,16 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             )
             self.retrack_fwd_btn = _tool_btn(
                 "↷", "Retrack labels forward from the current frame (E)."
+            )
+            # Validation is DB-free here too: it just flags cell/frame pairs in
+            # memory for this session (no on-disk project to persist into).
+            self.validate_btn = _tool_btn(
+                "✓",
+                "Toggle validation for the selected cell across its frames (V).",
+            )
+            self.remove_unvalidated_btn = _tool_btn(
+                "🗑",
+                "Remove cell label pixels not marked validated for their frame.",
             )
 
         # ── Scope selector (always visible in the active panel) ───────
@@ -318,6 +345,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         ]
         if self._full_editing:
             toolbar_groups.append((self.retrack_back_btn, self.retrack_fwd_btn))
+            toolbar_groups.append((self.validate_btn, self.remove_unvalidated_btn))
         self.toolbar = build_correction_toolbar(self, toolbar_groups)
         self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
@@ -348,6 +376,31 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
 
         active_lay.addWidget(self.scope_row)
         active_lay.addWidget(self.correction_widget._attrib_lbl)
+
+        # ── Track-list navigator (full-editing only) ──────────────────
+        # Reuses the nucleus workflow's swimlane accordion: it needs a plain
+        # (T, Y, X)-ish label stack, not an Ultrack DB, so it is directly
+        # portable. There is no intensity backdrop to crop thumbnails from in
+        # this standalone tool (the active layer is whatever the user bound),
+        # so the film-strip band stays empty; the per-track presence/validated
+        # bars and click-to-jump navigation still work fully.
+        if self._full_editing:
+            self._lineage_canvas = LineageCanvasController(
+                self.viewer,
+                tracked_data_provider=self._lineage_tracked_data,
+                tracked_layer_provider=self._correction_tracked_layer,
+                intensity_layer_provider=lambda: None,
+                selected_label_provider=lambda: int(
+                    getattr(self.correction_widget, "_selected_label", 0) or 0
+                ),
+                current_t_provider=self._current_t,
+                on_activate=self._navigate_to_cell_from_lineage,
+                validated_tracks_provider=lambda: self._validated_tracks,
+            )
+            panel = self._lineage_canvas.panel()
+            panel.setMinimumHeight(140)
+            active_lay.addWidget(panel, stretch=1)
+
         self.active_content.setVisible(False)
         group_lay.addWidget(self.active_content)
 
@@ -405,6 +458,16 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         if self._full_editing:
             self.retrack_back_btn.clicked.connect(self._on_retrack_backward)
             self.retrack_fwd_btn.clicked.connect(self._on_retrack_forward)
+            self.validate_btn.clicked.connect(self._on_toggle_validation)
+            self.remove_unvalidated_btn.clicked.connect(
+                self._on_remove_unvalidated_labels
+            )
+            self.correction_widget.add_selection_listener(
+                self._on_track_selection_changed
+            )
+            self.viewer.dims.events.current_step.connect(
+                self._on_dims_changed_for_lineage
+            )
 
     @staticmethod
     def _set_checked_without_signal(button, checked: bool) -> None:
@@ -460,13 +523,20 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self._active_bound_layer = layer
             self.viewer.layers.selection.active = layer
             self.correction_widget.activate_layer(layer)
-            self._bind_retrack_keys(layer)
+            self._bind_full_editing_keys(layer)
+            if self._full_editing:
+                # A fresh binding starts a fresh validation session — stale
+                # entries from a previous layer/segment run would otherwise
+                # collide with unrelated cell ids by coincidence.
+                self._validated_tracks = {}
+                self._lineage_canvas.refresh()
+                self._refresh_validated_overlay()
             shape = tuple(np.asarray(layer.data).shape)
             self._correction_status(f"Correcting '{layer.name}' {shape}.")
             self._sync_correction_panel_visibility()
             return
         self._set_checked_without_signal(self.active_btn, False)
-        self._unbind_retrack_keys()
+        self._unbind_full_editing_keys()
         self.correction_widget.deactivate()
         self._active_bound_layer = None
         self._correction_dirty = False
@@ -797,19 +867,21 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
     # Retracker (standalone full-editing only) — DB-free                  #
     # ------------------------------------------------------------------ #
 
-    def _bind_retrack_keys(self, layer) -> None:
-        """Bind the Q/E retrack hotkeys on the active layer (full-editing only).
+    def _bind_full_editing_keys(self, layer) -> None:
+        """Bind the Q/E retrack + V validation hotkeys (full-editing only).
 
         Layer-level keymap entries take precedence over napari's defaults, so
-        Q/E reliably drive the retracker while correction is active. The inner
-        CorrectionWidget already binds Delete (erase) when not contour-only.
+        these reliably drive the DB-free toolkit while correction is active.
+        The inner CorrectionWidget already binds Delete (erase) when not
+        contour-only.
         """
         if not self._full_editing:
             return
-        self._unbind_retrack_keys()
+        self._unbind_full_editing_keys()
         for key, slot in (
             ("Q", self._on_retrack_backward),
             ("E", self._on_retrack_forward),
+            ("V", self._on_toggle_validation),
         ):
             def handler(_layer, _slot=slot):
                 _slot()
@@ -817,11 +889,11 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             layer.bind_key(key, handler, overwrite=True)
         self._retrack_keys_layer = layer
 
-    def _unbind_retrack_keys(self) -> None:
+    def _unbind_full_editing_keys(self) -> None:
         layer = self._retrack_keys_layer
         if layer is None:
             return
-        for key in ("Q", "E"):
+        for key in ("Q", "E", "V"):
             try:
                 layer.bind_key(key, None)
             except Exception:
@@ -873,4 +945,183 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self.correction_widget._update_highlight(
                 t0, self.correction_widget._selected_label,
             )
+        self._lineage_canvas.refresh()
+        self._refresh_validated_overlay()
         self._correction_status(f"Retracked {direction} from t={t0}. Unsaved.")
+
+    # ------------------------------------------------------------------ #
+    # Validation + track-list navigator (standalone full-editing only)    #
+    # ------------------------------------------------------------------ #
+
+    def _lineage_tracked_data(self) -> np.ndarray | None:
+        layer = self._correction_tracked_layer()
+        return np.asarray(layer.data) if layer is not None else None
+
+    def _current_cell_ids(self, t: int) -> set[int]:
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            return set()
+        frame = frame_view_2d(np.asarray(layer.data), t)
+        if frame is None:
+            return set()
+        return set(int(v) for v in np.unique(frame)) - {0}
+
+    def _frames_with_cell(self, cell_id: int) -> list[int]:
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            return []
+        data = np.asarray(layer.data)
+        if data.ndim < 3:
+            return [0] if int(cell_id) in np.unique(data) else []
+        frames = []
+        for t in range(data.shape[0]):
+            frame = frame_view_2d(data, t)
+            if frame is not None and int(cell_id) in frame:
+                frames.append(t)
+        return frames
+
+    def _deselect_if_selection_gone(self) -> None:
+        """Clear the selection when the selected cell no longer exists at the
+        current frame (a relabel / removal may have dropped it)."""
+        sel = self.correction_widget._selected_label
+        if sel:
+            ct = self._current_t()
+            if sel not in self._current_cell_ids(ct):
+                self.correction_widget.select_label(ct, 0)
+
+    def _on_toggle_validation(self) -> None:
+        """Toggle validation for the selected cell across all its frames (V).
+
+        DB-free: flips membership in the in-memory ``self._validated_tracks``
+        store rather than writing ``validated_cells.json`` (there is no project
+        directory in the standalone active-layer tool).
+        """
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No labels layer."); return
+        sel = self.correction_widget._selected_label
+        if not sel:
+            self._correction_status(
+                "Validation toggle: no cell selected (left-click first)."
+            ); return
+        t = self._current_t()
+        if sel not in self._current_cell_ids(t):
+            self._correction_status(f"Cell {sel} not present at t={t}."); return
+        frames = self._frames_with_cell(sel)
+        if not frames:
+            return
+        if sel in self._validated_tracks:
+            del self._validated_tracks[sel]
+            self._correction_status(
+                f"Cell {sel} invalidated across {len(frames)} frame(s)."
+            )
+        else:
+            self._validated_tracks[sel] = set(frames)
+            self._correction_status(
+                f"Cell {sel} validated across {len(frames)} frame(s)."
+            )
+        # Flag-only change (no pixels touched) — recolour without rescanning.
+        self._lineage_canvas.refresh_status()
+        self._refresh_validated_overlay()
+
+    def _on_remove_unvalidated_labels(self) -> None:
+        """Zero out cell label pixels not validated for their frame."""
+        layer = self._correction_tracked_layer()
+        if layer is None:
+            self._correction_status("No cell labels loaded."); return
+        data = np.asarray(layer.data)
+        # remove_unvalidated_labels expects a time-first stack of 2D frames;
+        # squeeze singleton extra dims the same way _frame_view tolerates.
+        squeezed = data
+        while squeezed.ndim > 3:
+            if squeezed.shape[1] != 1:
+                self._correction_status(
+                    "Labels layer has a non-singleton extra dimension."
+                )
+                return
+            squeezed = squeezed[:, 0]
+        before = squeezed.copy()
+        try:
+            changed_frames, changed_pixels = remove_unvalidated_labels(
+                squeezed, self._validated_tracks
+            )
+        except ValueError as exc:
+            self._correction_status(str(exc)); return
+        if not changed_pixels:
+            self._correction_status("No unvalidated labels found."); return
+        frame_range = range(squeezed.shape[0]) if squeezed.ndim >= 3 else [0]
+        for t in frame_range:
+            frame_before = before[t] if before.ndim >= 3 else before
+            frame_after = squeezed[t] if squeezed.ndim >= 3 else squeezed
+            if not np.array_equal(frame_before, frame_after):
+                self.correction_widget._record_history(layer, t, frame_before)
+        layer.refresh()
+        self._deselect_if_selection_gone()
+        self._lineage_canvas.refresh()
+        self._refresh_validated_overlay()
+        self._correction_status(
+            f"Removed unvalidated labels in {changed_frames} frame(s), "
+            f"{changed_pixels} px changed. Unsaved."
+        )
+
+    def _refresh_validated_overlay(self) -> None:
+        """Draw an opaque green border around every validated cell.
+
+        Standalone counterpart of ``ValidatedOverlayController``'s border
+        mode: same visual (a napari Labels layer, contour-only, fully
+        opaque), but masked from the in-memory ``self._validated_tracks``
+        store instead of ``validated_cells.json`` (no project directory
+        here to read one from).
+        """
+        layer = self._correction_tracked_layer()
+        data = np.asarray(layer.data) if layer is not None else None
+        if data is None or data.ndim < 3 or not self._validated_tracks:
+            self._remove_validated_overlay()
+            return
+        mask = np.zeros(data.shape, dtype=np.uint8)
+        n_frames = data.shape[0]
+        for cell_id, frames in self._validated_tracks.items():
+            for t in frames:
+                if 0 <= t < n_frames:
+                    mask[t][data[t] == int(cell_id)] = 1
+        colormap = direct_colormap({None: (0, 0, 0, 0), 1: _VALIDATED_OVERLAY_COLOR})
+        if _VALIDATED_OVERLAY_LAYER in self.viewer.layers:
+            overlay = self.viewer.layers[_VALIDATED_OVERLAY_LAYER]
+            overlay.data = mask
+            overlay.colormap = colormap
+        else:
+            overlay = self.viewer.add_labels(
+                mask, name=_VALIDATED_OVERLAY_LAYER, opacity=1.0, colormap=colormap,
+            )
+            self._correction_owned_layers.add(_VALIDATED_OVERLAY_LAYER)
+        overlay.contour = _VALIDATED_OVERLAY_CONTOUR
+        overlay.opacity = 1.0
+        self.viewer.layers.selection.active = layer
+
+    def _remove_validated_overlay(self) -> None:
+        if _VALIDATED_OVERLAY_LAYER in self.viewer.layers:
+            self.viewer.layers.remove(self.viewer.layers[_VALIDATED_OVERLAY_LAYER])
+        self._correction_owned_layers.discard(_VALIDATED_OVERLAY_LAYER)
+
+    def _on_track_selection_changed(self, _t: int, cell_id: int) -> None:
+        """Keep the accordion's expanded track in step with the image selection."""
+        self._lineage_canvas.set_selection(int(cell_id or 0))
+
+    def _on_dims_changed_for_lineage(self, _event=None) -> None:
+        self._lineage_canvas.set_current_frame(self._current_t())
+
+    def _navigate_to_cell_from_lineage(self, t: int, cell_id: int) -> None:
+        """Accordion click: jump to frame ``t`` and select ``cell_id``."""
+        try:
+            step = list(self.viewer.dims.current_step)
+            if step:
+                step[0] = int(t)
+                self.viewer.dims.current_step = tuple(step)
+        except Exception:
+            logger.exception("track-list navigation: frame jump failed")
+        if int(cell_id) and int(cell_id) not in self._current_cell_ids(int(t)):
+            return
+        try:
+            self.correction_widget.select_label(int(t), int(cell_id))
+        except Exception:
+            logger.exception("track-list navigation: cell select failed")

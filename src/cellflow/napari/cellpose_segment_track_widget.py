@@ -211,31 +211,6 @@ def preview_channel_masks(
     return out
 
 
-def preview_channel_maps(
-    stack_tzyx: np.ndarray,
-    params,
-    t: int,
-    z: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Channel-1 masks + sigmoid prob + RGB flow for one current frame, full-size.
-
-    Runs a single Cellpose eval on frame ``t`` (slice ``z``) and embeds each of the
-    three maps into an otherwise-background ``(T, Z, Y, X)`` stack (flow keeps a
-    trailing RGB axis), so each previewed layer overlays exactly the frame on
-    screen while staying dim-aligned with the input.
-    """
-    stack = _to_tzyx(stack_tzyx)
-    T, Z, Y, X = (int(s) for s in stack.shape)
-    masks = np.zeros((T, Z, Y, X), dtype=np.int32)
-    prob = np.zeros((T, Z, Y, X), dtype=np.float32)
-    flow = np.zeros((T, Z, Y, X, 3), dtype=np.uint8)
-    m, p, f = native_masks.run_nucleus_maps_frame(stack[t], z=z, params=params)
-    masks[t, z] = m
-    prob[t, z] = p
-    flow[t, z] = f
-    return masks, prob, flow
-
-
 def segment_track_joint(
     ch1_source,
     ch2_source,
@@ -355,7 +330,9 @@ class CellposeSegmentTrackWidget(QWidget):
         # whatever image layer is active and then acts as a status light for it.
         self.ch1_layer_btn = self._make_source_button(_CH1_LABEL, self._on_load_layer_ch1)
         self.ch1_params_btn = _tool_btn("⚙", "Channel 1 parameters.", checkable=True)
-        self.ch1_preview_btn = _tool_btn("▷", "Preview Channel 1 on the current frame.")
+        self.ch1_preview_btn = _tool_btn(
+            "▷", "Segment the current frame into the masks/prob/flow layers."
+        )
         self.ch1_seg_btn = _tool_btn("▶", "Segment Channel 1 (native masks).")
         self.ch1_track_btn = _tool_btn("⊳", "Track Channel 1 masks (laptrack).")
         for b in (
@@ -722,16 +699,8 @@ class CellposeSegmentTrackWidget(QWidget):
         params = self._build_ch1_params()
         self._cancel_requested = False
         progress_signal = self._progress_signal
-        T, Z, Y, X = (int(s) for s in stack.shape)
         # Pre-allocate accumulators + show empty layers so frames stream into them.
-        self._stream = {
-            "masks": np.zeros((T, Z, Y, X), dtype=np.int32),
-            "prob": np.zeros((T, Z, Y, X), dtype=np.float32),
-            "flow": np.zeros((T, Z, Y, X, 3), dtype=np.uint8),
-            "masks_name": _layer_name(_CH1_LABEL, "masks"),
-            "prob_name": _layer_name(_CH1_LABEL, "prob"),
-            "flow_name": _layer_name(_CH1_LABEL, "flow"),
-        }
+        self._init_stream(stack)
         self._push_stream_layers()
         names = (
             self._stream["masks_name"],
@@ -766,6 +735,23 @@ class CellposeSegmentTrackWidget(QWidget):
             else "Segmenting Channel 1..."
         )
         self._worker = _worker()
+
+    def _init_stream(self, stack: np.ndarray) -> None:
+        """(Re)allocate the Channel 1 masks/prob/flow accumulators, sized to ``stack``.
+
+        Shared by :meth:`_run_segment` (fills every frame) and :meth:`_preview`
+        (fills one frame at a time on first use) so both write into — and
+        display — the very same persistent layers.
+        """
+        T, Z, Y, X = (int(s) for s in stack.shape)
+        self._stream = {
+            "masks": np.zeros((T, Z, Y, X), dtype=np.int32),
+            "prob": np.zeros((T, Z, Y, X), dtype=np.float32),
+            "flow": np.zeros((T, Z, Y, X, 3), dtype=np.uint8),
+            "masks_name": _layer_name(_CH1_LABEL, "masks"),
+            "prob_name": _layer_name(_CH1_LABEL, "prob"),
+            "flow_name": _layer_name(_CH1_LABEL, "flow"),
+        }
 
     def _on_seg_frame(self, payload) -> None:
         """Write one streamed frame into the accumulators and refresh the layers."""
@@ -943,11 +929,14 @@ class CellposeSegmentTrackWidget(QWidget):
 
     # ----------------------------------------------------------- run: preview
     def _preview(self) -> None:
-        """Preview Channel 1 on the current frame: masks + sigmoid prob + RGB flow.
+        """Segment Channel 1's current frame in place ("segment this frame").
 
-        Only the frame on screen is segmented; the three maps overlay it so the
-        diameter / min-size / gamma / prob-threshold can be tuned before committing
-        the whole stack with **Segment**.
+        Writes straight into the same masks / prob / flow layers **Segment**
+        fills — lazily initializing them (full-stack, background elsewhere) on
+        first use if no full run has happened yet — instead of spawning
+        disposable ``… preview`` layers. So the diameter / min-size / gamma /
+        prob-threshold can be tuned one frame at a time on the real stack
+        before (or while) committing the rest with **Segment**.
         """
         source = self._channel_source(1)
         if source is None:
@@ -957,34 +946,38 @@ class CellposeSegmentTrackWidget(QWidget):
         self._cancel_requested = False
         stack = np.asarray(source)  # already canonical (T, Z, Y, X)
         t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
-        preview_name = _layer_name(_CH1_LABEL, "preview")
-        prob_name = _layer_name(_CH1_LABEL, "prob preview")
-        flow_name = _layer_name(_CH1_LABEL, "flow preview")
+        if self._stream is None:
+            self._init_stream(stack)
+            self._push_stream_layers()
+        st = self._stream
+        names = (st["masks_name"], st["prob_name"], st["flow_name"])
 
         def _done(result):
             masks, prob, flow = result
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(preview_name, masks)
-            self._add_image(prob_name, prob)
-            self._add_image(flow_name, flow)
+            st["masks"][t, z] = masks
+            st["prob"][t, z] = prob
+            st["flow"][t, z] = flow
+            self._push_stream_layers()
             self._status(
-                f"Channel 1 preview (frame t={t}) → masks / prob / flow."
+                f"Channel 1 frame t={t} segmented → '{names[0]}', '{names[1]}', "
+                f"'{names[2]}'."
             )
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
         })
         def _worker():
-            yield (0, 0, f"Previewing Channel 1 on {cellpose_runner.device_label()}...")
-            return preview_channel_maps(stack, params, t, z)
+            yield (0, 0, f"Segmenting frame on {cellpose_runner.device_label()}...")
+            return native_masks.run_nucleus_maps_frame(stack[t], z=z, params=params)
 
         self._set_running("ch1_preview")
         self._status(
             f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
-            else "Previewing Channel 1..."
+            else "Segmenting current frame..."
         )
         self._worker = _worker()
 

@@ -47,6 +47,7 @@ class LineageCanvasController:
         current_t_provider: Callable[[], int],
         on_activate: Callable[[int, int], None],
         pos_dir_provider: Callable[[], Path | None] | None = None,
+        validated_tracks_provider: Callable[[], dict[int, set[int]]] | None = None,
     ) -> None:
         self.viewer = viewer
         self._tracked_data_provider = tracked_data_provider
@@ -56,6 +57,10 @@ class LineageCanvasController:
         self._current_t_provider = current_t_provider
         self._on_activate = on_activate
         self._pos_dir_provider = pos_dir_provider
+        # DB-free hosts (no project directory to hold validated_cells.json) hand
+        # in their own in-memory {cell_id: {frames}} store instead; anchors are
+        # an Ultrack-workflow concept and stay empty in that case.
+        self._validated_tracks_provider = validated_tracks_provider
         # The unified accordion panel is embedded as a bare widget into the
         # host's workspace splitter; the controller no longer owns napari docks.
         self._panel: TrackAccordionPanel | None = None
@@ -238,6 +243,16 @@ class LineageCanvasController:
         self,
     ) -> tuple[dict[int, set[int]], dict[int, set[int]]]:
         """Per-track validated / anchored frame sets, read once per refresh."""
+        if self._validated_tracks_provider is not None:
+            try:
+                validated = {
+                    int(cell_id): {int(f) for f in frames}
+                    for cell_id, frames in (self._validated_tracks_provider() or {}).items()
+                }
+            except Exception:
+                logger.exception("could not read in-memory validated tracks for the canvas")
+                validated = {}
+            return validated, {}
         pos_dir = self._pos_dir_provider() if self._pos_dir_provider else None
         if pos_dir is None:
             return {}, {}

@@ -153,21 +153,6 @@ def test_preview_channel_masks_populates_only_current_frame(_model):
     assert not out[0].any() and not out[2].any()  # others stay background
 
 
-def test_preview_channel_maps_returns_masks_prob_flow_current_frame(_model):
-    stack = np.zeros((3, 1, 6, 6), dtype=np.float32)
-    params = cellpose_runner.NucleusParams(
-        do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
-    )
-    masks, prob, flow = stw.preview_channel_maps(stack, params, t=1, z=0)
-    assert masks.shape == (3, 1, 6, 6) and masks.dtype == np.int32
-    assert prob.shape == (3, 1, 6, 6) and prob.dtype == np.float32
-    assert flow.shape == (3, 1, 6, 6, 3) and flow.dtype == np.uint8
-    # only the current frame is populated; sigmoid(0) == 0.5 there, 0 elsewhere.
-    assert masks[1].any() and not masks[0].any() and not masks[2].any()
-    np.testing.assert_allclose(prob[1], 0.5)
-    assert not prob[0].any() and not prob[2].any()
-
-
 def test_prob_threshold_is_inverse_sigmoid_of_prob_map():
     # The [0, 1] cutoff is read in the prob-map image's own space (sigmoid(cellprob))
     # and reversed by the inverse sigmoid (logit) to the raw cellprob Cellpose
@@ -352,6 +337,48 @@ def test_segment_streaming_advances_frame_slider():
     assert viewer.dims.current_step[1] == 0
     w._on_seg_frame(frame(1))
     assert viewer.dims.current_step[0] == 1
+    w.deleteLater()
+
+
+def test_init_stream_matches_the_real_segment_layers():
+    """_preview reuses _init_stream, so it fills the very same layers Segment does
+    (no separate ``… preview`` layers) when lazily initializing on first use."""
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    w._init_stream(np.zeros((3, 1, 6, 6), dtype=np.float32))
+    st = w._stream
+    assert st["masks"].shape == (3, 1, 6, 6) and st["masks"].dtype == np.int32
+    assert st["prob"].shape == (3, 1, 6, 6) and st["prob"].dtype == np.float32
+    assert st["flow"].shape == (3, 1, 6, 6, 3) and st["flow"].dtype == np.uint8
+    assert st["masks_name"] == "[Channel 1] masks"
+    assert st["prob_name"] == "[Channel 1] prob"
+    assert st["flow_name"] == "[Channel 1] flow"
+    w.deleteLater()
+
+
+def test_preview_writes_one_slice_without_clobbering_other_frames():
+    """The preview _done callback (exercised directly, no thread) writes only the
+    current frame's slice into the shared stream, leaving other frames alone."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    T, Z, Y, X = 3, 1, 5, 5
+    w._init_stream(np.zeros((T, Z, Y, X), dtype=np.float32))
+    st = w._stream
+    st["masks"][0, 0] = 9  # pretend frame 0 was already segmented
+    t, z = 1, 0
+    masks, prob, flow = (
+        np.ones((Y, X), np.int32), np.full((Y, X), 0.5, np.float32),
+        np.full((Y, X, 3), 7, np.uint8),
+    )
+    st["masks"][t, z] = masks
+    st["prob"][t, z] = prob
+    st["flow"][t, z] = flow
+    w._push_stream_layers()
+    assert viewer.layers["[Channel 1] masks"].data[0].any()   # frame 0 preserved
+    assert viewer.layers["[Channel 1] masks"].data[1].any()   # frame 1 now filled
+    assert not viewer.layers["[Channel 1] masks"].data[2].any()  # frame 2 untouched
+    assert "[Channel 1] preview" not in viewer.layers  # no throwaway preview layer
     w.deleteLater()
 
 
@@ -616,6 +643,9 @@ class _FakeLabelsLayer:
     def refresh(self):
         pass
 
+    def _save_history(self, entry):
+        pass
+
 
 def test_full_editing_unlocks_toolkit_and_retracker():
     """The standalone corrector runs full DB-free editing + the Q/E retracker."""
@@ -684,4 +714,200 @@ def test_full_editing_retrack_needs_multiframe_stack():
     viewer.dims.current_step = (0, 0)
     w._on_retrack("forward")  # no raise; reports via status
     assert "time-first" in w.correction_status_lbl.text().lower()
+    w.deleteLater()
+
+
+def _make_three_frame_two_cell_stack():
+    """Cell 1 present in every frame; cell 2 only in frame 0."""
+    stack = np.zeros((3, 20, 20), dtype=np.int32)
+    stack[0, 2:5, 2:5] = 1
+    stack[1, 2:5, 2:5] = 1
+    stack[2, 2:5, 2:5] = 1
+    stack[0, 10:13, 10:13] = 2
+    return stack
+
+
+def test_toggle_validation_flags_and_unflags_across_a_cells_frames():
+    """V / the ✓ button validates a cell across every frame it appears in, then
+    invalidates it back — a DB-free in-memory analogue of the nucleus tool's
+    validated_cells.json (no project directory exists in standalone mode)."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    viewer.dims.current_step = (0, 0)
+    w.correction_widget._selected_label = 1
+
+    w._on_toggle_validation()
+    assert w._validated_tracks == {1: {0, 1, 2}}
+    assert "validated" in w.correction_status_lbl.text().lower()
+
+    w._on_toggle_validation()
+    assert w._validated_tracks == {}
+    assert "invalidated" in w.correction_status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_toggle_validation_requires_a_selected_cell_present_at_the_frame():
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    viewer.dims.current_step = (1, 0)  # cell 2 is absent here
+    w.correction_widget._selected_label = 2
+
+    w._on_toggle_validation()
+    assert w._validated_tracks == {}
+    assert "not present" in w.correction_status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_remove_unvalidated_labels_clears_everything_but_the_validated_cell():
+    """The 🗑 clear-not-validated action zeroes every cell not flagged validated,
+    reusing cellflow.napari._correction_utils.remove_unvalidated_labels verbatim
+    (the same pure function the nucleus tool's DB-free clear action calls)."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    w._active_bound_layer = layer
+    viewer.dims.current_step = (0, 0)
+    w._validated_tracks = {1: {0, 1, 2}}  # cell 1 validated everywhere; cell 2 not
+
+    w._on_remove_unvalidated_labels()
+
+    out = layer.data
+    assert (out == 1).any()          # validated cell survives
+    assert not (out == 2).any()      # unvalidated cell removed
+    assert "removed unvalidated" in w.correction_status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_remove_unvalidated_labels_noop_status_when_all_validated():
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    stack = np.zeros((2, 10, 10), dtype=np.int32)
+    stack[:, 2:5, 2:5] = 1
+    layer = _FakeLabelsLayer(stack)
+    w._active_bound_layer = layer
+    w._validated_tracks = {1: {0, 1}}
+
+    w._on_remove_unvalidated_labels()
+
+    assert np.array_equal(layer.data, stack)  # nothing changed
+    assert "no unvalidated labels" in w.correction_status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_track_list_navigator_present_only_in_full_editing():
+    """The swimlane track-list navigator is part of the DB-free full-editing
+    toolkit only — the integrated app's contour-only corrector is unchanged."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari._correction_track_accordion import TrackAccordionPanel
+
+    QApplication.instance() or QApplication([])
+    full = CellCorrectionWidget(
+        _FakeViewer(), active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    assert isinstance(full._lineage_canvas.panel(), TrackAccordionPanel)
+    full.deleteLater()
+
+    app_widget = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: None)
+    assert app_widget._lineage_canvas is None
+    assert not hasattr(app_widget, "validate_btn")
+    assert not hasattr(app_widget, "remove_unvalidated_btn")
+    app_widget.deleteLater()
+
+
+def test_track_list_navigator_click_jumps_frame_and_selects_cell():
+    """A bar click on the accordion (node_activated) jumps the viewer's time
+    slider and selects that cell — the same navigation the nucleus tool's
+    lineage canvas drives, adapted to the standalone active-layer corrector."""
+    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    viewer.dims.current_step = (0, 0)
+
+    w._navigate_to_cell_from_lineage(2, 1)
+
+    assert viewer.dims.current_step[0] == 2
+    assert w.correction_widget._selected_label == 1
+    w.deleteLater()
+
+
+def test_validating_a_cell_draws_green_border_overlay_layer():
+    """Validating a cell adds a new, contour-only Labels layer masking exactly
+    the frames it's validated for — the standalone stand-in for
+    ValidatedOverlayController's opaque green border."""
+    from cellflow.napari.cell_correction_widget import (
+        CellCorrectionWidget,
+        _VALIDATED_OVERLAY_COLOR,
+        _VALIDATED_OVERLAY_CONTOUR,
+        _VALIDATED_OVERLAY_LAYER,
+    )
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    stack = _make_three_frame_two_cell_stack()
+    w._active_bound_layer = _FakeLabelsLayer(stack)
+    viewer.dims.current_step = (0, 0)
+    w.correction_widget._selected_label = 1
+
+    assert _VALIDATED_OVERLAY_LAYER not in viewer.layers
+    w._on_toggle_validation()  # validates cell 1 across frames 0, 1, 2
+
+    assert _VALIDATED_OVERLAY_LAYER in viewer.layers
+    overlay = viewer.layers[_VALIDATED_OVERLAY_LAYER]
+    assert overlay.contour == _VALIDATED_OVERLAY_CONTOUR
+    assert overlay.opacity == 1.0
+    expected = (stack == 1).astype(np.uint8)  # cell 1 present in every frame
+    assert np.array_equal(overlay.data, expected)
+    assert not np.array_equal(overlay.data, (stack == 2).astype(np.uint8))
+    w.deleteLater()
+
+
+def test_invalidating_the_last_validated_cell_removes_the_overlay_layer():
+    from cellflow.napari.cell_correction_widget import (
+        CellCorrectionWidget,
+        _VALIDATED_OVERLAY_LAYER,
+    )
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    viewer.dims.current_step = (0, 0)
+    w.correction_widget._selected_label = 1
+
+    w._on_toggle_validation()  # validate
+    assert _VALIDATED_OVERLAY_LAYER in viewer.layers
+    w._on_toggle_validation()  # invalidate
+    assert _VALIDATED_OVERLAY_LAYER not in viewer.layers
     w.deleteLater()

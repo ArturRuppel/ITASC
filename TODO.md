@@ -229,18 +229,23 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
   text, rather than a new onboarding widget. Spec:
   `docs/superpowers/specs/2026-07-01-cellpose-segment-track-arrival-ux-design.md`.
 
-- [ ] **Preview should mutate the real stack in place** ("segment this frame"),
-  not spawn separate throwaway layers. Currently `_preview()`
-  (`cellpose_segment_track_widget.py:945`) allocates a fresh full-size zero
-  array per click and writes to disposable `… preview` / `… prob preview` /
-  `… flow preview` layers, entirely disconnected from the persistent
-  `self._stream` accumulator `_run_segment()` builds (line 727) for the real
-  `… masks` / `… prob` / `… flow` layers. Fix: preview should lazily initialize
-  `self._stream` the same way `_run_segment` does if it's `None` (i.e. init the
-  full stack on first use), then write the single computed frame into
-  `self._stream["masks"][t, z]` etc. and refresh via the existing
-  `_push_stream_layers()` — same layers the full "Segment" run uses, one slice
-  mutated, no separate preview layers.
+- [ ] **Bug: "segment current frame" clobbers all frames when a full-stack run
+  was already run.** It should only mutate the active frame.
+
+- [x] **Preview should mutate the real stack in place** ("segment this frame"),
+  not spawn separate throwaway layers. `_preview()`
+  (`cellpose_segment_track_widget.py`) now lazily initializes the persistent
+  `self._stream` accumulator via a new shared `_init_stream()` helper (also used
+  by `_run_segment()`) if no full run has happened yet, computes only the
+  current frame (`native_masks.run_nucleus_maps_frame`), writes it straight into
+  `self._stream["masks"][t, z]` / `["prob"][t, z]` / `["flow"][t, z]`, and
+  refreshes via the existing `_push_stream_layers()` — the same `… masks` /
+  `… prob` / `… flow` layers the full **Segment** run fills, one slice mutated,
+  no separate `… preview` layers. The now-superseded `preview_channel_maps()`
+  module function (full-stack zero-alloc-per-click embedding) was removed along
+  with its test. Covered by `test_init_stream_matches_the_real_segment_layers`
+  + `test_preview_writes_one_slice_without_clobbering_other_frames` in
+  `test_cellpose_segment_track_widget.py`.
 
 - [x] **Tracking is much slower than laptrack itself should be.** Profiled on a
   synthetic dense-monolayer stack (150 frames × ~576 cells/frame): the actual
@@ -260,20 +265,54 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
   Result: 19.3s → 3.6s on the benchmark (5.3x). `relabel_by_tracks` was
   confirmed negligible (~2% of pipeline time) and left as-is.
 
-- [ ] **Port validation / clear-not-validated / track-list navigation into the
-  correction tool** (`CellCorrectionWidget`, `cell_correction_widget.py`). The
-  Q/E forward/backward retracker is already ported (nothing to do there) but
-  the widget is explicitly "DB-free — there is no validation/locking" (lines
-  213, 841). All three missing pieces already exist in DB-free-compatible form
-  on the Ultrack/nucleus side and need adapting rather than rebuilding:
-  - `tracking_ultrack/validation_state.py` — JSON-file-backed validation state
-    (not Ultrack-DB-dependent; only `validation_nodes.py::inject_validated_nodes`
-    touches the DB and isn't needed here).
-  - `napari/_correction_utils.py::remove_unvalidated_labels` +
-    `_correction_commit.py` — clear-not-validated, works on plain numpy label
-    arrays.
-  - `napari/_correction_track_accordion.py` + `lineage_canvas_controller.py` —
-    the track-list/swimlane navigator.
+- [x] **Port validation / clear-not-validated / track-list navigation into the
+  correction tool** (`CellCorrectionWidget`, `cell_correction_widget.py`,
+  full-editing/standalone mode only — the integrated app's contour-only
+  corrector is unchanged). Adapted rather than rebuilt, per plan:
+  - **Validation** is in-memory only (`self._validated_tracks: dict[int,
+    set[int]]`) rather than `tracking_ultrack/validation_state.py`'s
+    JSON-file store — the standalone tool has no project directory to persist
+    into. Same `{cell_id: {frames}}` shape as the disk-backed store, so the
+    downstream pieces need no adaptation. New ✓ toolbar button / **V** key
+    (`_on_toggle_validation`) toggles validation for the selected cell across
+    every frame it appears in (`_frames_with_cell`); reset on each fresh
+    layer binding (`_toggle_active_layer_correction`) so stale ids from a
+    previous session can't collide.
+  - **Clear-not-validated** reuses `napari/_correction_utils.py::
+    remove_unvalidated_labels` verbatim (already DB-free — a pure
+    `(data, validated_tracks)` function) via a new 🗑 toolbar button
+    (`_on_remove_unvalidated_labels`), with per-frame undo history recorded
+    through the existing `CorrectionWidget._record_history`.
+  - **Track-list navigator**: `napari/_correction_track_accordion.py`
+    (`TrackAccordionPanel`) was already fully DB-free and reused unmodified.
+    `lineage_canvas_controller.py::LineageCanvasController` gained one new
+    optional constructor param, `validated_tracks_provider`, so it can pull
+    validated/anchored flags from an in-memory dict instead of
+    `validation_state.read_validated_tracks(pos_dir)` (anchors, an
+    Ultrack-workflow concept, stay empty here) — fully backward compatible,
+    the nucleus workflow widget's own wiring is untouched. Embedded directly
+    in `active_content` below the correction toolbar. There is no reliable
+    intensity backdrop to crop film-strip thumbnails from in standalone mode
+    (the active layer is whatever the user bound), so `intensity_layer_provider`
+    is `lambda: None` and the thumbnail band stays empty; the per-track
+    presence/validated swimlane bars and click-to-jump (`node_activated` →
+    `_navigate_to_cell_from_lineage`, jumps the time slider + selects the
+    cell) work fully.
+  - **Validated-cell overlay in the viewer** (the "green border" — the
+    standalone counterpart of `validated_overlay_controller.py`'s border
+    mode): `_refresh_validated_overlay()` adds/updates a new
+    `[Correction] Validated: Cell` Labels layer, opaque green
+    (`contour=2`, `opacity=1.0`), masked straight from
+    `self._validated_tracks` (no `pos_dir`/JSON read — that controller's
+    disk coupling didn't fit cleanly, so this is a small dedicated
+    rewrite rather than an instantiation of it). Removed again once no
+    cell is validated. Refreshed after toggle-validate, remove-unvalidated,
+    retrack, and on each fresh layer binding.
+  - Covered by 9 new tests in `test_cellpose_segment_track_widget.py`
+    (toggle validate/invalidate, validate-requires-presence,
+    remove-unvalidated removes/no-ops correctly, navigator gated to
+    full-editing only, bar-click navigation, overlay layer appears/matches
+    the mask/is removed when the last validated cell is invalidated).
 
 - [x] Atom extractor: do the checkbox situation like the cell segmentation widget's
   preview. Put the checkboxes in a row along the top and only compute what is
