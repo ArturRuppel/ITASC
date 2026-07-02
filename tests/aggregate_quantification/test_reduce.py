@@ -78,6 +78,19 @@ def test_collapse_does_not_average_mostly_categorical_column():
     assert "grade" not in out.columns or out["grade"].dtype == object
 
 
+def test_grouped_collapse_coerces_all_parseable_object_column():
+    """An object-dtype value column whose values all parse as numeric (e.g.
+    numeric strings) must aggregate the same way grouped as it does ungrouped,
+    not raise on the raw object dtype."""
+    df = pd.DataFrame({"condition": ["a", "a", "b"], "v": ["1", "3", "5"]})
+
+    grouped = run_pipeline(df, [Collapse(by=("condition",), stat="mean")])
+    ungrouped = run_pipeline(df, [Collapse(by=(), stat="mean")])
+
+    assert dict(zip(grouped["condition"], grouped["v"])) == {"a": 2.0, "b": 5.0}
+    assert ungrouped["v"].iloc[0] == 3.0  # (1 + 3 + 5) / 3
+
+
 def test_filter_ordered_on_non_numeric_column_is_noop():
     """An ordered comparison against a fully non-numeric column is a config
     error; keep all rows (no-op) rather than silently dropping every row."""

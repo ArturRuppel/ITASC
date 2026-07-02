@@ -212,9 +212,20 @@ class Collapse:
             return pd.concat([base, kept], axis=1) if not kept.empty else base
 
         grouped = df.groupby(by, dropna=False, sort=False)
-        out = grouped[numeric_values].agg(agg).reset_index() if numeric_values else (
-            df[by].drop_duplicates().reset_index(drop=True)
-        )
+        if numeric_values:
+            # Mirror the no-``by`` branch: an object column that _is_numeric
+            # accepts (all values parse) must be coerced before aggregating,
+            # else ``.agg("mean")`` raises on the raw object/str dtype.
+            coerced = df[list(by) + numeric_values].copy()
+            for c in numeric_values:
+                coerced[c] = pd.to_numeric(coerced[c], errors="coerce")
+            out = (
+                coerced.groupby(by, dropna=False, sort=False)[numeric_values]
+                .agg(agg)
+                .reset_index()
+            )
+        else:
+            out = df[by].drop_duplicates().reset_index(drop=True)
         out = out.merge(grouped.size().reset_index(name="n"), on=by, how="left")
         kept = _constant_attributes(df, by, attributes)
         if not kept.empty:
