@@ -147,8 +147,12 @@ def _accumulate_track_sq(
 
 
 def _default_n_max(trajectories: list[Trajectory]) -> int:
-    spans = [int(t.frames[-1] - t.frames[0]) for t in trajectories if t.n_frames >= 2]
-    longest = max(spans) if spans else 1
+    # Use each track's effective length (number of observed points), not its
+    # frame span. A gappy 2-point track present only in frames {0, 400} has a
+    # span of 400 but supports a single lag; keying n_max off the span would
+    # extend the ensemble MSD curve into an unreliable, poorly-sampled tail.
+    lengths = [t.n_frames - 1 for t in trajectories if t.n_frames >= 2]
+    longest = max(lengths) if lengths else 1
     return max(1, longest // 4)
 
 

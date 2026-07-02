@@ -168,7 +168,11 @@ def _one_over_e_length(centers: np.ndarray, C: np.ndarray) -> float:
     for i in range(centers.size):
         if C[i] <= _INV_E:
             if i == 0:
-                return float(centers[0])
+                # Already below 1/e at the first populated bin: the curve
+                # crossed at a separation smaller than we can resolve. Report
+                # "cannot resolve" (NaN) rather than claiming ξ = the first bin
+                # center, which would overstate the resolution.
+                return float("nan")
             c0, c1 = C[i - 1], C[i]
             if c0 == c1:
                 return float(centers[i])

@@ -16,6 +16,7 @@ from cellflow.aggregate_quantification.dynamics.kinematics import (
 from cellflow.aggregate_quantification.dynamics.collective import pooled_corr_length
 from cellflow.aggregate_quantification.dynamics.msd import (
     DEFAULT_MSD_TRACK_WINDOW,
+    _default_n_max,
     ensemble_msd,
     fit_msd_power_law,
     per_track_msd_fit,
@@ -27,6 +28,19 @@ def _straight_track(track_id=1, n=6, step=(1.0, 0.0), start_frame=0):
     frames = np.arange(start_frame, start_frame + n, dtype=np.int64)
     xy = np.array([(i * step[0], i * step[1]) for i in range(n)], dtype=float)
     return Trajectory(track_id=track_id, frames=frames, xy=xy)
+
+
+def test_default_n_max_uses_effective_length_not_frame_span():
+    # A gappy 2-point track spanning 400 frames supports only a single lag; a
+    # dense 40-point track is the genuinely long one. n_max must follow the
+    # dense track's length (39 // 4 = 9), not the gappy track's span (400).
+    gappy = Trajectory(
+        track_id=1,
+        frames=np.array([0, 400], dtype=np.int64),
+        xy=np.zeros((2, 2), dtype=float),
+    )
+    dense = _straight_track(track_id=2, n=40)
+    assert _default_n_max([gappy, dense]) == 9
 
 
 # ------------------------------------------------------------------ kinematics
@@ -152,6 +166,14 @@ def test_one_over_e_length_interpolates():
 def test_one_over_e_length_nan_when_no_decay():
     centers = np.array([0.5, 1.5, 2.5])
     assert math.isnan(_one_over_e_length(centers, np.array([1.0, 0.9, 0.8])))
+
+
+def test_one_over_e_length_nan_when_first_bin_already_below():
+    # C is already <= 1/e at the first populated bin: the crossing happened at a
+    # separation we cannot resolve, so ξ must be NaN, not the first bin center.
+    centers = np.array([0.5, 1.5, 2.5])
+    C = np.array([math.exp(-1.0) - 0.01, 0.2, 0.1])
+    assert math.isnan(_one_over_e_length(centers, C))
 
 
 def test_pooled_corr_length_matches_one_over_e_crossing():
