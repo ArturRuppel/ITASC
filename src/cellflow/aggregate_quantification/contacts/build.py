@@ -685,6 +685,7 @@ def _coordinate_segments(coords: np.ndarray) -> list[np.ndarray]:
         if idx != neighbor_idx
     }
     segments: list[np.ndarray] = []
+    covered: set[int] = set()
 
     while unused_edges:
         start_idx = _next_trail_start(coords, neighbors, unused_edges)
@@ -710,6 +711,15 @@ def _coordinate_segments(coords: np.ndarray) -> list[np.ndarray]:
             prev_idx, current_idx = current_idx, next_idx
 
         segments.append(coords[np.asarray(path, dtype=np.intp)])
+        covered.update(path)
+
+    # Points with no incident edges (crossings that are not adjacent to any
+    # other crossing of the same pair) are never walked above.  Emit each as
+    # its own single-point segment, mirroring the len(coords) <= 1 branch, so
+    # a contact touching only at scattered points is not silently dropped.
+    for idx in range(len(coords)):
+        if idx not in covered:
+            segments.append(coords[np.asarray([idx], dtype=np.intp)])
 
     return sorted(segments, key=lambda segment: (segment[0, 0], segment[0, 1], len(segment)))
 

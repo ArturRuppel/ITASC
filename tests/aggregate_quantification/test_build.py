@@ -248,6 +248,43 @@ def test_extract_frame_cell_edges_splits_discontinuous_segments_for_same_cell_pa
         assert np.all(jumps <= 1.0)
 
 
+def test_extract_frame_cell_edges_keeps_non_adjacent_crossings():
+    # Cells 1 and 2 touch only at rows 0 and 4 (non-adjacent single points);
+    # cells 1 and 3 form a connected run in between. The (1, 2) contact must
+    # not be silently dropped just because its two crossings are not adjacent.
+    frame = np.asarray(
+        [
+            [1, 2],
+            [1, 3],
+            [1, 3],
+            [1, 3],
+            [1, 2],
+        ],
+        dtype=np.uint16,
+    )
+
+    records = _extract_frame_cell_edges(frame, frame_idx=0)
+    pairs = [record.pair for record in records]
+
+    assert (1, 2) in pairs
+    assert pairs.count((1, 2)) == 2  # two distinct, isolated crossings
+    assert (1, 3) in pairs
+
+
+def test_coordinate_segments_emits_isolated_points_as_own_segments():
+    # Two points too far apart to be neighbors: previously the edge-walk loop
+    # never ran and every point was dropped. Each isolated point must survive
+    # as its own single-point segment.
+    coords = np.asarray([[0.0, 0.5], [4.0, 0.5]], dtype=float)
+
+    segments = _coordinate_segments(coords)
+
+    assert len(segments) == 2
+    assert all(len(segment) == 1 for segment in segments)
+    surviving = {tuple(segment[0]) for segment in segments}
+    assert surviving == {(0.0, 0.5), (4.0, 0.5)}
+
+
 def test_order_coordinates_starts_open_segments_at_true_endpoint():
     coords = np.asarray(
         [
