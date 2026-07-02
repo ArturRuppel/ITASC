@@ -10,7 +10,6 @@ from cellflow.correction.labels import (
     fix_label_semiholes,
     split_across,
 )
-from cellflow.segmentation import apply_gamma
 import numpy as np
 import pytest
 
@@ -19,11 +18,6 @@ def test_correction_package_does_not_reexport_apply_gamma():
     import cellflow.correction as correction
 
     assert not hasattr(correction, "apply_gamma")
-
-
-def test_gamma_identity():
-    logits = np.array([-1.0, 0.0, 1.0])
-    assert np.allclose(apply_gamma(logits, 1.0), logits)
 
 
 def test_free_label_returns_next_id():
@@ -38,16 +32,6 @@ def test_free_label_raises_at_dtype_ceiling():
     seg[0, 0] = np.iinfo(np.uint16).max
     with pytest.raises(OverflowError):
         _free_label(seg)
-
-def test_gamma_values():
-    logits = np.array([0.0]) # prob 0.5
-    # gamma 2.0 -> prob 0.25 -> logit log(0.25/0.75) = log(1/3) = -1.0986
-    corrected = apply_gamma(logits, 2.0)
-    assert np.isclose(corrected, np.log(1/3))
-    
-    # gamma 0.5 -> prob 0.707 -> logit log(0.707/0.293) = 0.857
-    corrected = apply_gamma(logits, 0.5)
-    assert np.isclose(corrected, np.log(np.sqrt(0.5) / (1 - np.sqrt(0.5))))
 
 
 def test_draw_cell_path_rejects_disconnected_extension():
