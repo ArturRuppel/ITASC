@@ -357,3 +357,15 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
   the full stack and now ticks both boxes so every layer shows. Covered by a new
   compute-gating test in `test_nucleus_workflow_standalone.py`.)
 
+- [ ] **Investigate MSD / DAC SEM over overlapping-origin samples.** The
+  2026-07-02 review flagged that `ensemble_msd` (`dynamics/msd.py`) and
+  `_dac_sem` (`dynamics/kinematics.py`) report `SEM = std(ddof=1)/√N` over
+  overlapping-origin lag samples, which are strongly autocorrelated — so `N`
+  overcounts the independent-sample count and the persisted error bars are
+  systematically too small at large lags (the means D/α/persistence are
+  unaffected). The right correction is a methodology choice: look at how other
+  tools handle it (e.g. `trackpy` `emsd`/`imsd`, `msdanalyzer`, the Michalet &
+  Berglund localization-precision MSD papers, block-averaging / non-overlapping
+  windows vs. an autocorrelation-time effective-N) before changing the
+  published error bars. Deferred out of the review-fix pass on purpose.
+
