@@ -24,5 +24,11 @@ def residual(frame: np.ndarray, window: int, strength: float = 1.0) -> np.ndarra
     """
     window = int(window) | 1
     frame = np.asarray(frame, dtype=np.float32)
+    if strength == 0.0:
+        # No background subtraction requested (the default): the result is just
+        # the non-negative raw map, so skip the O(Y·X) gaussian entirely. This
+        # matters because ``CellDivergenceParams.fg_strength`` defaults to 0.0,
+        # so every default-config frame — including live previews — hit this.
+        return np.clip(frame, 0.0, None)
     local_mean = threshold_local(frame, block_size=window, method="gaussian")
     return np.clip(frame - strength * local_mean, 0.0, None).astype(np.float32)
