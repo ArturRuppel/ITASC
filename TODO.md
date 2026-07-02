@@ -344,6 +344,11 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
     full-editing only, bar-click navigation, overlay layer appears/matches
     the mask/is removed when the last validated cell is invalidated).
 
+- [ ] **Bug: cancelling a batch segmentation run leaves the UI stuck.** Clicking
+  Cancel during a full-stack Segment run in the Cellpose Segment + Track distro
+  does stop the run, but the other action buttons stay disabled and the
+  progress bar freezes instead of resetting to idle.
+
 - [x] Atom extractor: do the checkbox situation like the cell segmentation widget's
   preview. Put the checkboxes in a row along the top and only compute what is
   checked. (The two stage checkboxes (Foreground, Contour) are now a "Compute:"

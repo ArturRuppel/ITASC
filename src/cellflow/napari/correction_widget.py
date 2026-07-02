@@ -453,8 +453,8 @@ class CorrectionWidget(QWidget):
         self._activate_btn.setText("Deactivate")
         self._outline_btn.setEnabled(True)
         self._set_cleanup_enabled(True)
-        self._outline_btn.setChecked(True)
-        self._toggle_outline(True)
+        self._outline_btn.setChecked(False)
+        self._toggle_outline(False)
         self._goto_cell_id.setEnabled(True)
         self._set_status(f"Active on '{layer.name}'")
 

@@ -65,6 +65,7 @@ from cellflow.napari.ui_style import (
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
+from cellflow.napari._correction_utils import frame_view_2d
 from cellflow.napari.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 from cellflow.cellpose import joint as joint_mod
@@ -423,10 +424,13 @@ class CellposeSegmentTrackWidget(QWidget):
         # DB-free toolkit (spawn / erase / merge / swap / split + Q/E retrack) that
         # the app keeps contour-only. The widget brings its own "Correction"
         # header + ⏻ activate button; it edits the active layer in place and the
-        # user saves it via napari.
+        # user saves it via napari. ``intensity_frame_provider`` snaps a spawned
+        # cell to the prob layer sharing the corrected layer's ``[Channel N]``
+        # tag (see ``_spawn_intensity_frame``) instead of stamping a blind disk.
         self.cell_correction = CellCorrectionWidget(
             self.viewer,
             active_labels_layer_provider=self._active_labels_layer,
+            intensity_frame_provider=self._spawn_intensity_frame,
             full_editing=True,
             parent=self,
         )
@@ -825,9 +829,12 @@ class CellposeSegmentTrackWidget(QWidget):
         st = self._stream
         if st is None:
             return
-        self._add_labels(st["masks_name"], st["masks"])
-        self._add_image(st["prob_name"], st["prob"])
+        # napari stacks each newly-added layer above the ones already present,
+        # so adding flow, then prob, then masks last leaves them ordered top to
+        # bottom as masks / prob / flow / input.
         self._add_image(st["flow_name"], st["flow"])
+        self._add_image(st["prob_name"], st["prob"])
+        self._add_labels(st["masks_name"], st["masks"])
 
     # ------------------------------------------------------------- run: track
     def _run_track(self) -> None:
@@ -1038,6 +1045,22 @@ class CellposeSegmentTrackWidget(QWidget):
         """
         layer = getattr(getattr(self.viewer.layers, "selection", None), "active", None)
         return layer if isinstance(layer, Labels) else None
+
+    def _spawn_intensity_frame(self, t: int) -> np.ndarray | None:
+        """Signal frame for spawn-snapping: the prob layer sharing the corrected
+        layer's ``[Tag]`` (e.g. Channel 1's masks/tracked layer → its own prob
+        map). Channel 2 has no prob layer of its own (it is never segmented
+        independently), so spawning there falls back to a plain disk.
+        """
+        layer = self.cell_correction._correction_tracked_layer()
+        if layer is None or not layer.name.startswith("["):
+            return None
+        tag = layer.name.split("]", 1)[0] + "]"
+        prob_name = f"{tag} prob"
+        if prob_name not in self.viewer.layers:
+            return None
+        data = np.asarray(self.viewer.layers[prob_name].data)
+        return frame_view_2d(data, int(t))
 
     def _errored(self, exc) -> None:
         self._worker = None

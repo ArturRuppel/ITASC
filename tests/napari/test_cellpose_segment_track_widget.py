@@ -782,6 +782,37 @@ def test_activate_button_stays_enabled_once_checked_even_if_selection_moves_away
     w.deleteLater()
 
 
+def test_spawn_intensity_frame_uses_prob_layer_sharing_the_tag():
+    """Spawn snaps to the prob layer tagged like the layer under correction."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    prob = np.arange(2 * 5 * 5, dtype=np.float32).reshape(2, 5, 5)
+    viewer.layers["[Channel 1] prob"] = SimpleNamespace(data=prob, name="[Channel 1] prob")
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] masks")
+    viewer.layers.selection.active = labels
+    w.cell_correction.active_btn.setChecked(True)  # binds _active_bound_layer
+
+    frame = w._spawn_intensity_frame(1)
+
+    assert np.array_equal(frame, prob[1])
+    w.deleteLater()
+
+
+def test_spawn_intensity_frame_none_without_matching_prob_layer():
+    """No same-tag prob layer (e.g. Channel 2, which is never segmented on its
+    own) falls back to None → plain-disk spawn."""
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 2] tracked")
+    viewer.layers.selection.active = labels
+    w.cell_correction.active_btn.setChecked(True)
+
+    assert w._spawn_intensity_frame(0) is None
+    w.deleteLater()
+
+
 def test_cell_corrector_default_paths_unchanged():
     """Without overrides the corrector keeps the app's staged pos-dir paths."""
     from cellflow.napari.cell_correction_widget import CellCorrectionWidget
@@ -1025,7 +1056,6 @@ def test_validating_a_cell_draws_green_border_overlay_layer():
     ValidatedOverlayController's opaque green border."""
     from cellflow.napari.cell_correction_widget import (
         CellCorrectionWidget,
-        _VALIDATED_OVERLAY_COLOR,
         _VALIDATED_OVERLAY_CONTOUR,
         _VALIDATED_OVERLAY_LAYER,
     )

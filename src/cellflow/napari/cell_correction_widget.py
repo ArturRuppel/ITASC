@@ -108,6 +108,11 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         layer's data in place — no on-disk label file, no backdrop loading, no
         layer hiding — and the user saves it via napari. Defaults to None →
         unchanged disk-based app behaviour.
+    intensity_frame_provider:
+        Optional callable ``(t) -> 2D array | None`` giving the signal frame that
+        middle-click spawn snaps a new cell to (see ``add_cell``'s ``image``
+        argument); ``None`` (or a returned ``None``) falls back to a plain disk.
+        Defaults to None → spawn always stamps a disk (unchanged app behaviour).
     parent:
         Optional Qt parent.
     """
@@ -122,6 +127,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         cell_ref_path_provider: Callable[[], Path | None] | None = None,
         nucleus_ref_path_provider: Callable[[], Path | None] | None = None,
         active_labels_layer_provider: Callable[[], object] | None = None,
+        intensity_frame_provider: Callable[[int], np.ndarray | None] | None = None,
         full_editing: bool = False,
         parent: QWidget | None = None,
     ) -> None:
@@ -139,6 +145,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._cell_ref_path_provider = cell_ref_path_provider
         self._nucleus_ref_path_provider = nucleus_ref_path_provider
         self._active_labels_layer_provider = active_labels_layer_provider
+        self._intensity_frame_provider = intensity_frame_provider
         self._active_bound_layer = None
         self._retrack_keys_layer = None
         self._correction_view_state: LayerViewState | None = None
@@ -323,6 +330,10 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # its "Unsaved" dirty-tracking. Mark the panel dirty on every edit so the
         # exit confirm fires, just like the nucleus correction widget.
         self.correction_widget.set_edit_callback(self._on_correction_edit)
+        if self._intensity_frame_provider is not None:
+            self.correction_widget.set_intensity_frame_callback(
+                self._intensity_frame_provider
+            )
         # The outline view is driven from the toolbar ``outline_btn`` toggle now,
         # so hide the embedded checkbox and keep the two in sync.
         self.correction_widget._outline_btn.setVisible(False)
