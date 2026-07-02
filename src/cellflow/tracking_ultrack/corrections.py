@@ -1171,6 +1171,14 @@ def apply_post_solve_corrections(
             # Solver already labeled the owning track with the correct ID;
             # all pixels labeled cell_id belong to that one track.
             continue
+        if solver_track_remap.get(cell_id, cell_id) != cell_id:
+            # The pixels at value cell_id are a solver track that is itself
+            # scheduled to be remapped elsewhere (cell_id -> other) by the loop
+            # below; they are the *source* of that remap and must not be
+            # scattered to a fresh ID here. Otherwise the later remap finds
+            # nothing and the anchored cell loses its guaranteed identity.
+            # Mirrors the ~src_mask guard in reseed.py.
+            continue
         collision_mask = np.asarray(labels == cell_id)
         if collision_mask.any():
             labels[collision_mask] = _next_fresh_id(labels, reserved_ids, used_ids)
