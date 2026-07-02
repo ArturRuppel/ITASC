@@ -439,10 +439,26 @@ def _unary_cache_key(
     shape: tuple[int, int, int],
     alpha_unary: float,
     gamma_unary: float,
+    *content: np.ndarray | None,
 ) -> str:
-    raw = f"{shape[0]}x{shape[1]}x{shape[2]}_a{alpha_unary:g}_g{gamma_unary:g}"
-    digest = hashlib.sha1(raw.encode()).hexdigest()[:12]
-    return f"unary_{digest}"
+    """Content-addressed key for a set of geodesic unaries.
+
+    The unaries are a function of the *inputs* (nucleus tracks, foreground mask,
+    contours, foreground scores), not just the shape and α/γ weights. Folding a
+    digest of the input arrays into the key means changing an upstream knob that
+    alters the cost field — but not α/γ — invalidates the cache instead of
+    silently returning a stale segmentation.
+    """
+    h = hashlib.sha1()
+    h.update(f"{shape[0]}x{shape[1]}x{shape[2]}_a{alpha_unary:g}_g{gamma_unary:g}".encode())
+    for arr in content:
+        if arr is None:
+            h.update(b"\x00none")
+            continue
+        arr = np.ascontiguousarray(arr)
+        h.update(f"{arr.dtype}{arr.shape}".encode())
+        h.update(arr.tobytes())
+    return f"unary_{h.hexdigest()[:12]}"
 
 
 def _unary_cache_path(cache_dir: Path, key: str) -> Path:
@@ -551,7 +567,10 @@ def initialize_icm(
     alpha_unary, gamma_unary = balance_strength_to_weights(
         params.balance, params.feature_strength
     )
-    cache_key = _unary_cache_key((T, Y, X), alpha_unary, gamma_unary)
+    cache_key = _unary_cache_key(
+        (T, Y, X), alpha_unary, gamma_unary,
+        nuc_tracks, fg_mask, contours, foreground_scores,
+    )
     unary_dict: dict[tuple[int, int], np.ndarray] | None = None
 
     if cache_dir is not None:

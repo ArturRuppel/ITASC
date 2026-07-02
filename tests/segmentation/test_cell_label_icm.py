@@ -10,10 +10,30 @@ from cellflow.segmentation.cell_label_icm import (
     CellLabelICMParams,
     _argmin_init_from_dict,
     _read_unary_cache,
+    _unary_cache_key,
     assemble_cost_field,
     commit_labels,
     initialize_icm,
 )
+
+
+def test_unary_cache_key_depends_on_input_content():
+    """Two runs with identical shape and α/γ but different input arrays must not
+    collide on the same cache key — otherwise a stale segmentation is returned."""
+    shape = (2, 4, 4)
+    rng = np.random.default_rng(0)
+    contours_a = rng.random((2, 4, 4), dtype=np.float32)
+    contours_b = rng.random((2, 4, 4), dtype=np.float32)
+
+    key_a = _unary_cache_key(shape, 1.0, 2.0, contours_a)
+    key_b = _unary_cache_key(shape, 1.0, 2.0, contours_b)
+    # Same content → stable key; different content → different key.
+    assert key_a == _unary_cache_key(shape, 1.0, 2.0, contours_a.copy())
+    assert key_a != key_b
+    # α/γ still participate.
+    assert key_a != _unary_cache_key(shape, 1.5, 2.0, contours_a)
+    # None slots (e.g. absent foreground_scores) are handled.
+    assert _unary_cache_key(shape, 1.0, 2.0, contours_a, None).startswith("unary_")
 
 
 def test_read_unary_cache_missing_is_silent_cold_miss(tmp_path, caplog):
