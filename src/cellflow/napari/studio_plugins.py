@@ -31,7 +31,6 @@ from qtpy.QtWidgets import (
 
 from cellflow.aggregate_quantification.quantifier import (
     Quantifier,
-    available_quantifiers,
 )
 from cellflow.aggregate_quantification.records import (
     output_for_record,
@@ -58,25 +57,6 @@ class PluginEntry:
     display_name: str
     requires: tuple[str, ...]
     factory: Callable[[Any], QWidget]  # factory(viewer) -> body widget
-
-
-def built_quantity_ids(records: Iterable[dict]) -> frozenset[str]:
-    """The ``quantity_id``\\s built for at least one of *records*.
-
-    This is the *product availability* the plot area gates on: a plot whose
-    ``consumes`` is a subset of this set is live for the given scope. Mirrors the
-    per-quantifier ``is_built(output_for_record(...))`` check the builder uses, so
-    "built" means the same thing on both sides of the producer/consumer seam.
-    """
-    record_list = list(records)
-    built: set[str] = set()
-    for q_cls in available_quantifiers():
-        quantifier = q_cls()
-        for record in record_list:
-            if quantifier.is_built(output_for_record(quantifier, record)):
-                built.add(quantifier.quantity_id)
-                break
-    return frozenset(built)
 
 
 def available_tool_plugins() -> list[PluginEntry]:

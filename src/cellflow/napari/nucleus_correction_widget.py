@@ -129,7 +129,6 @@ logger = logging.getLogger(__name__)
 
 _TRACKED_LAYER = "Tracked: Nucleus"
 _CORRECTION_TRACKED_LAYER = "[Correction] Nucleus Labels"
-_CORRECTION_TRACK_LAYER = "[Correction] Nucleus tracks"
 _CORRECTION_CELL_ZAVG_LAYER = "[Correction] Cell z-avg"
 _CORRECTION_NUC_ZAVG_LAYER = "[Correction] Nucleus z-avg"
 _NUCLEUS_TRACK_COLOR_SCALE = 1.0

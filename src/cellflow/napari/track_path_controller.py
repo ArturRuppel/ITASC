@@ -65,9 +65,6 @@ def _neutral_tracks_colormap():
         _NEUTRAL_TRACKS_COLORMAP = Colormap([rgba, rgba], name="neutral_overview")
     return _NEUTRAL_TRACKS_COLORMAP
 
-# Backwards-compatible aliases (the layer name is also referenced by the widget).
-TRACK_PATH_LAYER = TRACK_LAYER
-
 _CORRECTION_TRACKS_CLS = None
 
 

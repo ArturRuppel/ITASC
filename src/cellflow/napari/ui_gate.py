@@ -146,9 +146,6 @@ class UiGate(QObject):
         info = self._state.owners.get(owner) if owner else None
         return info.label if info else None
 
-    def is_busy(self) -> bool:
-        return bool(self._state.tasks)
-
     def claim_viewer(self, token: str) -> None:
         """Mark *token* as the active viewer owner and recompute."""
         if self._state.owner == token:

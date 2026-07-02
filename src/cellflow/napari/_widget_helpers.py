@@ -4,7 +4,6 @@ from __future__ import annotations
 from qtpy.QtCore import QEvent, QObject, QSize, Qt
 from qtpy.QtWidgets import (
     QDoubleSpinBox,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -235,16 +234,3 @@ def tool_btn(glyph: str, tooltip: str = "", *, checkable: bool = False) -> QTool
     b.setCheckable(checkable)
     b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
     return b
-
-
-def button_grid(*rows: tuple[QPushButton, ...]) -> QGridLayout:
-    grid = QGridLayout()
-    grid.setHorizontalSpacing(8)
-    grid.setVerticalSpacing(4)
-    for r, buttons in enumerate(rows):
-        for c, button in enumerate(buttons):
-            span = 2 - c if c == len(buttons) - 1 and len(buttons) == 1 else 1
-            grid.addWidget(button, r, c, 1, span)
-    grid.setColumnStretch(0, 1)
-    grid.setColumnStretch(1, 1)
-    return grid

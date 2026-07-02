@@ -15,42 +15,14 @@ from qtpy.QtWidgets import (
 TINY_MARGIN = 2
 SECTION_MARGIN = 4
 TIGHT_SPACING = 4
-DEFAULT_SPIN_WIDTH = 70
 DEFAULT_FIELD_SPACING = 8
 DEFAULT_ROW_SPACING = 4
-DEFAULT_SWEEP_SPIN_WIDTH = 62
 BLOCK_GRID_COLUMNS = 4
 
 # ── Theme palette ────────────────────────────────────────────────────────
-# Catppuccin Mocha accent palette. To add another flavor later, define a
-# parallel dict (e.g. CATPPUCCIN_LATTE) with the same keys and reassign
-# ACTIVE_PALETTE. Call sites should reference accents via stage_accent()
-# so theme changes propagate automatically.
-CATPPUCCIN_MOCHA = {
-    "rosewater": "#f5e0dc", "flamingo": "#f2cdcd", "pink":      "#f5c2e7",
-    "mauve":     "#cba6f7", "red":      "#f38ba8", "maroon":    "#eba0ac",
-    "peach":     "#fab387", "yellow":   "#f9e2af", "green":     "#a6e3a1",
-    "teal":      "#94e2d5", "sky":      "#89dceb", "sapphire":  "#74c7ec",
-    "blue":      "#89b4fa", "lavender": "#b4befe",
-}
-
-# Dracula — https://draculatheme.com/contribute
-DRACULA = {
-    "rosewater": "#ffb86c", "flamingo":  "#ff79c6", "pink":     "#ff79c6",
-    "mauve":     "#bd93f9", "red":       "#ff5555", "maroon":   "#ff5555",
-    "peach":     "#ffb86c", "yellow":    "#f1fa8c", "green":    "#50fa7b",
-    "teal":      "#8be9fd", "sky":       "#8be9fd", "sapphire": "#8be9fd",
-    "blue":      "#6272a4", "lavender":  "#bd93f9",
-}
-
-# Tokyo Night — https://github.com/enkia/tokyo-night-vscode-theme
-TOKYO_NIGHT = {
-    "rosewater": "#f7768e", "flamingo":  "#f7768e", "pink":     "#f7768e",
-    "mauve":     "#9d7cd8", "red":       "#f7768e", "maroon":   "#db4b4b",
-    "peach":     "#ff9e64", "yellow":    "#e0af68", "green":    "#9ece6a",
-    "teal":      "#73daca", "sky":       "#7dcfff", "sapphire": "#7aa2f7",
-    "blue":      "#7aa2f7", "lavender":  "#bb9af7",
-}
+# Accent palettes keyed by the same color names. THEME_PALETTES selects the
+# active set; ACTIVE_THEME_NAME picks the default. Call sites reference accents
+# via stage_accent() so theme changes propagate automatically.
 
 # Nord — https://www.nordtheme.com/docs/colors-and-palettes
 NORD = {
@@ -110,16 +82,6 @@ SUNSET = {
     "blue":      "#b66b83", "lavender":  "#d04e6c",
 }
 
-# CellFlow Retro. Saturated green-to-red reference palette mapped left-to-right
-# across the visible workflow accents for comparison.
-RETRO = {
-    "rosewater": "#f5c783", "flamingo":  "#d98872", "pink":     "#8c0027",
-    "mauve":     "#8c0027", "red":       "#dd4111", "maroon":   "#8c0027",
-    "peach":     "#a1d4b1", "yellow":    "#f1a512", "green":    "#f1a512",
-    "teal":      "#2baf90", "sky":       "#7fc7a8", "sapphire": "#2baf90",
-    "blue":      "#4ca99a", "lavender":  "#dd4111",
-}
-
 # CellFlow Signal Archive. Previous first choice: muted red, parchment, sage,
 # teal, and charcoal reference palette mapped across the workflow accents.
 SIGNAL_ARCHIVE = {
@@ -128,16 +90,6 @@ SIGNAL_ARCHIVE = {
     "peach":     "#eae3c3", "yellow":    "#eae3c3", "green":    "#9bb6a1",
     "teal":      "#3b7b7a", "sky":       "#6f9a95", "sapphire": "#c94b4b",
     "blue":      "#3b7b7a", "lavender":  "#3b7b7a",
-}
-
-# CellFlow Parent Four. Four-color supplied palette expanded with a darker
-# teal companion for the fifth visible workflow accent.
-PARENT_FOUR = {
-    "rosewater": "#e3b4a6", "flamingo":  "#d96248", "pink":     "#b95058",
-    "mauve":     "#01454f", "red":       "#d96248", "maroon":   "#9b493d",
-    "peach":     "#d96248", "yellow":    "#e3cc69", "green":    "#77c8a6",
-    "teal":      "#026473", "sky":       "#5ca99d", "sapphire": "#e3cc69",
-    "blue":      "#2f7d86", "lavender":  "#d96248",
 }
 
 # CellFlow Viridis. Five-stop scientific colormap palette sampled from the
@@ -160,7 +112,6 @@ CIVIDIS = {
     "blue":      "#555c6d", "lavender":  "#555c6d",
 }
 
-# ACTIVE_PALETTE = CATPPUCCIN_MOCHA
 THEME_PALETTES = {
     "Cividis": CIVIDIS,
     "Viridis": VIRIDIS,
@@ -231,15 +182,6 @@ def stage_header_disabled_action_color(stage_key: str) -> str:
     return color.name()
 
 
-# Stage status indicator colors. Keyed by status name so call sites stay
-# decoupled from specific hexes.
-STAGE_STATUS_COLORS = {
-    "not_started": "#6c7086",  # Catppuccin overlay0 — muted gray
-    "in_progress": CATPPUCCIN_MOCHA["yellow"],
-    "done":        CATPPUCCIN_MOCHA["green"],
-}
-
-
 def _fixed_widget(widget, width=None):
     if width is not None:
         widget.setMaximumWidth(width)
@@ -269,10 +211,6 @@ def _disabled_push_button(button):
     if isinstance(button, QPushButton):
         _append_button_style(button, _DISABLED_PUSH_BUTTON_STYLE)
     return button
-
-
-def compact_spinbox(widget, width=DEFAULT_SPIN_WIDTH):
-    return _fixed_widget(widget, width)
 
 
 def action_button(button, expand=False):
@@ -468,14 +406,6 @@ def _block_label(text):
     return label
 
 
-def _add_block_cell(grid, row, column, widget, span=1, alignment=None):
-    if alignment is None:
-        grid.addWidget(widget, row, column, 1, span)
-    else:
-        grid.addWidget(widget, row, column, 1, span, alignment)
-    return widget
-
-
 def add_block_pair_row(
     grid,
     row,
@@ -507,15 +437,3 @@ def _add_block_pair_cell(grid, row, column, label_widget, widget, field_width):
     layout.addWidget(field)
     grid.addWidget(container, row, column, 1, 2)
     return container
-
-
-def add_block_checkbox_row(grid, row, checkbox):
-    _add_block_cell(
-        grid,
-        row,
-        0,
-        checkbox,
-        span=BLOCK_GRID_COLUMNS,
-        alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-    )
-    return checkbox
