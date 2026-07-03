@@ -50,6 +50,7 @@ from cellflow.contact_analysis.catalog import (
 from cellflow.contact_analysis.pipeline import author_config, run
 from cellflow.contact_analysis.shape_tables import catalogue_root
 from cellflow.napari._catalog_table import CatalogRowSpec, CatalogTable
+from cellflow.napari._stage_loader import load_stage
 from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.contact_analysis.plugins import AnalysisContext
 from cellflow.napari.contact_analysis_params import SharedParamsWidget
@@ -317,6 +318,7 @@ class ContactAnalysisStudioWidget(QWidget):
         # already lives in a scroll area.
         self._table = CatalogTable()
         self._table.selectionChanged.connect(self._on_selection_changed)
+        self._table.dotClicked.connect(self._on_stage_dot_clicked)
         col.addWidget(self._table, 1)
 
         actions_row = QHBoxLayout()
@@ -776,6 +778,27 @@ class ContactAnalysisStudioWidget(QWidget):
     def _selected_rows(self) -> list[int]:
         """Selected *record* indices — separator rows never select."""
         return self._table.selected_record_indices()
+
+    def _on_stage_dot_clicked(self, record_index: int, stage: str) -> None:
+        """Click a rail dot → load that stage's output(s) for the position."""
+        if not (0 <= record_index < len(self._records)):
+            return
+        record = self._records[record_index]
+        pos_dir = record.get("position_path")
+        if pos_dir is None:
+            self._set_catalog_status(
+                f"{record.get('id', 'position')}: no canonical folder, cannot load."
+            )
+            return
+        loaded = load_stage(self.viewer, pos_dir, stage)
+        if loaded:
+            self._set_catalog_status(f"Loaded {', '.join(loaded)}.")
+        elif stage == "contacts":
+            self._set_catalog_status(
+                "Contact analysis has no image to load — use Visualize Contacts."
+            )
+        else:
+            self._set_catalog_status(f"Nothing to load for {stage} yet.")
 
     def _records_in_scope(self) -> list[dict]:
         """Selected rows define scope; an empty selection means the whole catalog."""

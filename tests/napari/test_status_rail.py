@@ -70,3 +70,23 @@ def test_missing_keys_default_to_unknown():
     rail = StatusRail()
     rail.set_status({})  # no stages supplied
     assert all(dot.state == UNKNOWN for dot in rail.dots)
+
+
+def test_clicking_a_dot_emits_its_stage():
+    from qtpy.QtCore import QEvent, QPointF, Qt
+    from qtpy.QtGui import QMouseEvent
+
+    _app()
+    rail = StatusRail()
+    seen: list[str] = []
+    rail.dotClicked.connect(seen.append)
+    nucleus = next(dot for dot in rail.dots if dot.stage == STAGE_NUCLEUS)
+    event = QMouseEvent(
+        QEvent.MouseButtonPress,
+        QPointF(1, 1),
+        Qt.LeftButton,
+        Qt.LeftButton,
+        Qt.NoModifier,
+    )
+    nucleus.mousePressEvent(event)
+    assert seen == [STAGE_NUCLEUS]

@@ -8,6 +8,7 @@ stage" behaviour is added in a later step.
 """
 from __future__ import annotations
 
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from cellflow.napari._stage_status import (
@@ -54,14 +55,26 @@ _DOT_PX = 12
 
 
 class StatusDot(QLabel):
-    """One stage's status, drawn as a small coloured circle."""
+    """One stage's status, drawn as a small coloured circle.
+
+    Clicking the dot emits :attr:`clicked` with the stage name — the catalog wires
+    this to load that stage's output into the viewer.
+    """
+
+    clicked = Signal(str)  # stage name
 
     def __init__(self, stage: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.stage = stage
         self.state = UNKNOWN
         self.setFixedSize(_DOT_PX, _DOT_PX)
+        self.setCursor(Qt.PointingHandCursor)
         self.set_state(UNKNOWN)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # Consume the event (do not fall through to row selection) and load.
+        self.clicked.emit(self.stage)
+        event.accept()
 
     def set_state(self, state: str) -> None:
         self.state = state
@@ -77,7 +90,12 @@ class StatusDot(QLabel):
 
 
 class StatusRail(QWidget):
-    """Four :class:`StatusDot`s, one per pipeline stage, in canonical order."""
+    """Four :class:`StatusDot`s, one per pipeline stage, in canonical order.
+
+    :attr:`dotClicked` re-emits any dot's click with its stage name.
+    """
+
+    dotClicked = Signal(str)  # stage name
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,6 +104,7 @@ class StatusRail(QWidget):
         layout.setSpacing(3)
         self.dots: list[StatusDot] = [StatusDot(stage) for stage in STAGES]
         for dot in self.dots:
+            dot.clicked.connect(self.dotClicked)
             layout.addWidget(dot)
         layout.addStretch(1)
 

@@ -71,6 +71,7 @@ class _CatalogRow(QFrame):
     """A single selectable catalog record row: text cells + a status rail."""
 
     clicked = Signal(int, object)  # (record_index, keyboard modifiers)
+    dotClicked = Signal(int, str)  # (record_index, stage)
 
     def __init__(self, spec: CatalogRowSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -86,6 +87,9 @@ class _CatalogRow(QFrame):
         self.rail = StatusRail()
         self.rail.setFixedWidth(_STATUS_WIDTH)
         self.rail.set_status(spec.status)
+        self.rail.dotClicked.connect(
+            lambda stage: self.dotClicked.emit(self.record_index, stage)
+        )
         layout.addWidget(self.rail)
         layout.addStretch(1)
         self._apply_style()
@@ -135,6 +139,7 @@ class CatalogTable(QWidget):
     """
 
     selectionChanged = Signal()
+    dotClicked = Signal(int, str)  # (record_index, stage) — a rail dot was clicked
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -209,6 +214,7 @@ class CatalogTable(QWidget):
                 continue
             row = _CatalogRow(spec)
             row.clicked.connect(self._on_row_clicked)
+            row.dotClicked.connect(self.dotClicked)
             self._body_layout.addWidget(row)
             self.row_to_record.append(spec.record_index)
             self._data_order.append(spec.record_index)

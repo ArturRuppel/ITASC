@@ -599,6 +599,50 @@ def test_remove_selected_without_selection_is_a_noop():
     app.processEvents()
 
 
+def test_clicking_nucleus_dot_loads_stage_into_viewer(tmp_path):
+    import numpy as np
+    import tifffile
+
+    app = _app()
+
+    class _Viewer:
+        def __init__(self):
+            self.layers = {}
+            self.added = []
+
+        def add_labels(self, data, name):
+            self.layers[name] = data
+            self.added.append(name)
+
+        def add_image(self, data, name, colormap="gray"):
+            self.layers[name] = data
+            self.added.append(name)
+
+    pos = tmp_path / "p1"
+    pos.mkdir()
+    tifffile.imwrite(str(pos / "nucleus_labels.tif"), np.zeros((4, 4), np.uint16))
+
+    viewer = _Viewer()
+    widget = mod.ContactAnalysisStudioWidget(viewer=viewer)
+    widget._records = [
+        {"condition": "c", "date": "d", "id": "p1", "position_path": pos,
+         "contact_analysis_path": pos / "x.h5", "contact_analysis_status": "incomplete"},
+    ]
+    widget._refresh_table()
+
+    widget._on_stage_dot_clicked(0, "nucleus")
+    assert viewer.added == ["p1:nucleus_labels"]
+
+    # A row with no canonical folder reports it can't load.
+    widget._records = [{"id": "loose", "position_path": None}]
+    widget._refresh_table()
+    widget._on_stage_dot_clicked(0, "nucleus")
+    assert "cannot load" in widget._catalog_status_lbl.text()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_discovery_fields_default_to_committed_final_output_names():
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
