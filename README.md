@@ -24,7 +24,7 @@ The full plugin orchestrates them into the unified workflow described below.
   2D+t `foreground.tif` + `contours.tif` → atoms, database, tracked labels, and
   validated/corrected annotations. The Ultrack solver is an optional `[solve]`
   extra. Depends on `cellflow-core`.
-- [`cellflow-aggregate`](packages/cellflow-aggregate) — aggregate quantification;
+- [`cellflow-contact-analysis`](packages/cellflow-contact-analysis) — aggregate quantification;
   bundled quantifier is contacts (cell-cell edges, T1 events) + napari
   visualization. Headless I/O: 2D+t cell labels (optional nucleus labels) → HDF5.
   Depends on `cellflow-core`.
@@ -151,7 +151,7 @@ workflow dependencies.
 
 Programmatic use should import from the relevant subpackages, such as
 `cellflow.segmentation`, `cellflow.tracking_ultrack`,
-`cellflow.correction`, and `cellflow.aggregate_quantification` (with generic
+`cellflow.correction`, and `cellflow.contact_analysis` (with generic
 label-stack IO in `cellflow.core.label_store`). These subpackage APIs
 are useful for scripting and testing, but they should still be treated as
 provisional until the public release and manuscript stabilize.

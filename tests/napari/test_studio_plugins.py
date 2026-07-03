@@ -26,7 +26,7 @@ def test_available_tool_plugins_are_analysis_tools_not_builders():
 
 
 def test_contacts_declares_it_produces_the_contact_analysis_input():
-    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+    from cellflow.contact_analysis.quantifiers.contacts import ContactsQuantifier
 
     # The contacts-derived metrics consume this field; the producer link is what
     # lets the Build area draw the dependency generically.
@@ -34,7 +34,7 @@ def test_contacts_declares_it_produces_the_contact_analysis_input():
 
 
 def test_group_build_metrics_nests_derived_under_their_producer():
-    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+    from cellflow.contact_analysis.quantifier import available_quantifiers
 
     quantifiers = [cls() for cls in available_quantifiers()]
     groups = sp.group_build_metrics(quantifiers)
@@ -58,7 +58,7 @@ def test_group_build_metrics_nests_derived_under_their_producer():
 
 
 def test_metric_dependencies_list_files_then_params_in_registry_order():
-    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+    from cellflow.contact_analysis.quantifier import available_quantifiers
 
     quantifiers = [cls() for cls in available_quantifiers()]
     by_id = {q.quantity_id: q for q in quantifiers}
@@ -80,7 +80,7 @@ def test_metric_dependencies_list_files_then_params_in_registry_order():
 
 
 def test_referenced_dependencies_dedupes_and_keeps_registry_order():
-    from cellflow.aggregate_quantification.quantifier import available_quantifiers
+    from cellflow.contact_analysis.quantifier import available_quantifiers
 
     quantifiers = [cls() for cls in available_quantifiers()]
     referenced = sp.referenced_dependencies(quantifiers)
@@ -118,8 +118,8 @@ def test_position_inputs_from_record_maps_catalogue_keys():
 
 
 def test_output_for_record_routes_each_quantifier_to_its_own_artifact():
-    from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
-    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
+    from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+    from cellflow.contact_analysis.quantifiers.contacts import ContactsQuantifier
 
     # A record whose explicit (possibly nested) contacts path differs from the
     # bare default; contacts must honour the column, cell_shape must not.
@@ -169,8 +169,8 @@ def test_records_satisfying_filters_by_requires():
 
 def test_build_area_coverage_badges_and_run_callback(tmp_path):
     app = _app()
-    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
-    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+    from cellflow.contact_analysis.quantifiers.contacts import ContactsQuantifier
+    from cellflow.napari.contact_analysis.plugins import AnalysisContext
 
     captured: list = []
     quantifier = ContactsQuantifier()
@@ -223,8 +223,8 @@ def test_build_area_param_gating_blocks_until_param_set(tmp_path):
     # A metric with a required global param (pixel size) is not buildable until the
     # param is set, even when every file input is present. The chip dims when unset.
     app = _app()
-    from cellflow.aggregate_quantification.quantifiers.cell_shape import CellShapeQuantifier
-    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+    from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+    from cellflow.napari.contact_analysis.plugins import AnalysisContext
 
     params: dict = {"pixel_size_um": None}
     area = sp.BuildArea(
@@ -257,8 +257,8 @@ def test_build_area_check_all_toggles_buildable_metrics(tmp_path):
     # Bug 22: a single button checks every buildable metric, then flips to
     # "Uncheck all" and clears them; disabled (no-input) metrics are left alone.
     app = _app()
-    from cellflow.aggregate_quantification.quantifiers.contacts import ContactsQuantifier
-    from cellflow.napari.aggregate_quantification.plugins import AnalysisContext
+    from cellflow.contact_analysis.quantifiers.contacts import ContactsQuantifier
+    from cellflow.napari.contact_analysis.plugins import AnalysisContext
 
     quantifier = ContactsQuantifier()
     area = sp.BuildArea([quantifier], lambda *a: None)

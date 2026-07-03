@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.aggregate_quantification_params import SharedParamsWidget
+from cellflow.napari.contact_analysis_params import SharedParamsWidget
 
 
 def _app():

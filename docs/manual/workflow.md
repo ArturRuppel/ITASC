@@ -25,7 +25,7 @@ pos00/
    `2_nucleus/`.
 4. **Cell segmentation** (full `cellflow` app): turn cell foreground/contour
    maps plus tracked nucleus seeds into tracked cell labels under `3_cell/`.
-5. **Aggregate quantification** (`cellflow-aggregate`): export contacts, edges, and
+5. **Aggregate quantification** (`cellflow-contact-analysis`): export contacts, edges, and
    T1 events to HDF5 under `aggregate_quantification/` and inspect them in napari.
 
 ## Driving the napari plugin

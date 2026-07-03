@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.aggregate_quantification_run_area import (
+from cellflow.napari.contact_analysis_run_area import (
     RunArea,
     RunChoices,
     _group_label,

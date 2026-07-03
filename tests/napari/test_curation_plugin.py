@@ -7,11 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.aggregate_quantification.plugins import (
+from cellflow.napari.contact_analysis.plugins import (
     AnalysisContext,
     available_analysis_plugins,
 )
-from cellflow.napari.aggregate_quantification.plugins.curation import CurationWidget
+from cellflow.napari.contact_analysis.plugins.curation import CurationWidget
 
 
 def _app():
@@ -126,7 +126,7 @@ def test_exclude_frame_writes_through_to_csv(tmp_path, monkeypatch):
     plugin._reason_edit.setText("blurry")
     plugin._exclude_frame_btn.click()
 
-    from cellflow.aggregate_quantification.curation import read_curation
+    from cellflow.contact_analysis.curation import read_curation
     # Single position at <tmp>/study/p1 -> catalogue_root is <tmp>/study.
     csv_path = tmp_path / "study" / "curation.csv"
     back = read_curation(csv_path)

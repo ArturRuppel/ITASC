@@ -15,7 +15,7 @@ flowchart TD
     core["cellflow-core<br/><i>TIFF/path/label IO · lineage model · napari UI primitives</i>"]
     cp["cellflow-cellpose"]
     trk["cellflow-tracking"]
-    agg["cellflow-aggregate"]
+    agg["cellflow-contact-analysis"]
     cp --> core
     trk --> core
     agg --> core
@@ -25,7 +25,7 @@ flowchart TD
 
 Each top-level subpackage under `src/cellflow/` is one importable stage. Most map
 to a standalone distribution (`cellflow-cellpose`, `cellflow-tracking`,
-`cellflow-aggregate`, `cellflow-core`); `cellflow.segmentation` ships only inside
+`cellflow-contact-analysis`, `cellflow-core`); `cellflow.segmentation` ships only inside
 the full `cellflow` app.
 
 | Subpackage | Role |
@@ -35,7 +35,7 @@ the full `cellflow` app.
 | `cellflow.tracking_ultrack` | Ultrack candidate generation, database, linking, solving |
 | `cellflow.segmentation` | Divergence-based geodesic-Voronoi cell segmentation |
 | `cellflow.correction` | Interactive nucleus/cell label correction operations |
-| `cellflow.aggregate_quantification` | Pooling per-position sources into plottable quantities (contacts, T1 events, NLS classes) |
+| `cellflow.contact_analysis` | Pooling per-position sources into plottable quantities (contacts, T1 events, NLS classes) |
 | `cellflow.napari` | The Qt/napari UI layer that orchestrates the above into the unified workflow widget |
 
 :::{tip}

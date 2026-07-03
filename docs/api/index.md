@@ -19,5 +19,5 @@ rather than here.
    cellflow.segmentation
    cellflow.tracking_ultrack
    cellflow.correction
-   cellflow.aggregate_quantification
+   cellflow.contact_analysis
 ```

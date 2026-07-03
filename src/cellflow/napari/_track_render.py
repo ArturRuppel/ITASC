@@ -1,7 +1,7 @@
 """Shared napari track-rendering helpers.
 
 Pure numpy / napari colormap maths reused by both the contact-analysis
-visualization (``cellflow-aggregate``) and the nucleus-correction track overview
+visualization (``cellflow-contact-analysis``) and the nucleus-correction track overview
 (``cellflow-tracking``). It lives in ``cellflow-core`` so neither piece has to
 depend on the other.
 """

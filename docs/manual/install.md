@@ -24,7 +24,7 @@ Each tool installs on its own and shares the `cellflow.*` namespace, so
 ```bash
 pip install "cellflow-cellpose[cellpose,laptrack]"  # Cellpose segment + track
 pip install "cellflow-tracking[solve]"              # maps → tracks + correction
-pip install cellflow-aggregate                      # cell labels → contacts (HDF5)
+pip install cellflow-contact-analysis                      # cell labels → contacts (HDF5)
 pip install cellflow-core                           # shared library only
 ```
 

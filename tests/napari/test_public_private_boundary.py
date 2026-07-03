@@ -40,14 +40,14 @@ def test_pyproject_does_not_publish_personal_console_scripts():
 
 def test_public_contact_analysis_widget_has_no_nls_widget_coupling():
     for module_name in (
-        "cellflow.napari.aggregate_quantification_widget",
+        "cellflow.napari.contact_analysis_widget",
         "cellflow.napari.nls_classification_widget",
-        "cellflow.aggregate_quantification.contacts.nls_classification",
+        "cellflow.contact_analysis.contacts.nls_classification",
     ):
         sys.modules.pop(module_name, None)
 
-    module = importlib.import_module("cellflow.napari.aggregate_quantification_widget")
+    module = importlib.import_module("cellflow.napari.contact_analysis_widget")
 
-    assert not hasattr(module.AggregateQuantificationWidget, "nls_classification_widget")
+    assert not hasattr(module.ContactAnalysisWidget, "nls_classification_widget")
     assert "cellflow.napari.nls_classification_widget" not in sys.modules
-    assert "cellflow.aggregate_quantification.contacts.nls_classification" not in sys.modules
+    assert "cellflow.contact_analysis.contacts.nls_classification" not in sys.modules

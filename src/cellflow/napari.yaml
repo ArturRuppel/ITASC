@@ -8,7 +8,7 @@ contributions:
     # The full install folds the extracted tools' widgets into this single
     # manifest. npe2 requires a manifest's name to match the providing
     # distribution, so the standalone cellflow-cellpose / cellflow-tracking /
-    # cellflow-aggregate manifests cannot be re-registered from the cellflow
+    # cellflow-contact-analysis manifests cannot be re-registered from the cellflow
     # distribution; their contributions are mirrored here instead. The integrated
     # CellFlow app's own per-stage widgets (Cellpose map-building, Cell
     # Segmentation) live inside the CellFlow widget above and are not exposed as
@@ -16,16 +16,16 @@ contributions:
     - id: cellflow.nucleus_tracking_widget
       title: "Ultrack Segment + Track"
       python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
-    # In a full install this single Aggregate Quantification entry resolves to the
+    # In a full install this single Contact Analysis entry resolves to the
     # merged studio (catalog + per-position view + analysis plugins); the standalone
-    # cellflow-aggregate wheel resolves the same factory to the bare per-position
+    # cellflow-contact-analysis wheel resolves the same factory to the bare per-position
     # widget. Analysis plugins are NOT registered here — they are hosted
-    # inside the Aggregate Quantification widget, not exposed as top-level dock
+    # inside the Contact Analysis widget, not exposed as top-level dock
     # widgets, and register in-process by subclassing
-    # cellflow.napari.aggregate_quantification.plugins.AnalysisPlugin.
-    - id: cellflow.aggregate_quantification_widget
-      title: "Aggregate Quantification"
-      python_name: cellflow.napari.aggregate_quantification_widget:make_aggregate_quantification_widget
+    # cellflow.napari.contact_analysis.plugins.AnalysisPlugin.
+    - id: cellflow.contact_analysis_widget
+      title: "Contact Analysis"
+      python_name: cellflow.napari.contact_analysis_widget:make_contact_analysis_widget
     # The cellflow-cellpose distribution's *standalone* surface — native-mask
     # segment + laptrack track + embedded basic correction. It is not part of the
     # integrated pipeline (the pipeline uses the Cellpose widget above); it is
@@ -38,7 +38,7 @@ contributions:
       display_name: "CellFlow"
     - command: cellflow.nucleus_tracking_widget
       display_name: "Ultrack Segment + Track"
-    - command: cellflow.aggregate_quantification_widget
-      display_name: "Aggregate Quantification"
+    - command: cellflow.contact_analysis_widget
+      display_name: "Contact Analysis"
     - command: cellflow.cellpose_segment_track_widget
       display_name: "Cellpose Segment + Track"

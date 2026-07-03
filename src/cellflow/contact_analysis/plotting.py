@@ -1,0 +1,1355 @@
+"""Plotting backend for Contact Analysis — the layer that turns tidy
+per-object tables into pooled DataFrames, aggregated summaries, figures, and CSV.
+
+Quantity-agnostic and **headless** (no Qt / napari): it consumes tables that have
+already been read via :meth:`Quantifier.object_table`, so it never resolves
+catalogue paths itself and runs unchanged in scripts, notebooks, and the
+standalone wheel. The Cell Shape group plugin is the first UI consumer; contacts
+and NLS can reuse it as-is.
+
+Pipeline::
+
+    PositionSource(metadata, table[, join_table, join_columns])  one per position
+        │  pool_object_tables(...)
+        ▼
+    pooled DataFrame   (condition · date · position_id · frame · cell_id · descriptors [· class_label])
+        │  aggregate(df, spec)              build_figure(df, spec)        write_csv(df, path)
+        ▼                                   ▼                             ▼
+    grouped summary DataFrame           matplotlib Figure              CSV file
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping
+from dataclasses import asdict, dataclass, fields
+from pathlib import Path
+from typing import Any
+
+import matplotlib as mpl
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
+
+__all__ = [
+    "PlotSpec",
+    "StyleSpec",
+    "style_to_dict",
+    "style_from_dict",
+    "PickPoint",
+    "PositionSource",
+    "pool_object_tables",
+    "aggregate",
+    "summary_table",
+    "build_figure",
+    "pickable_points",
+    "plotted_table",
+    "write_csv",
+    "potential_landscape",
+    "effective_barrier",
+    "potential_table",
+    "adaptive_bin_edges",
+    "DISTRIBUTION_PLOTS",
+    "CURVE_PLOTS",
+    "PLOT_OPTIONS",
+    "plot_options",
+]
+
+#: The tidy keys every per-object table carries; joins and per-position grouping
+#: are keyed on these.
+KEY_COLUMNS = ("frame", "cell_id")
+#: Bucket label for cells with no classification (no contacts artifact, or the
+#: position was never classified).
+UNCLASSIFIED = "unclassified"
+
+#: The independent unit a comparison aggregates over, coarse→fine. ``cell`` now
+#: means the cell *track* (one value per cell, frames collapsed), not the cell
+#: *frame*; ``position`` and ``date`` climb to the field-of-view and the
+#: biological replicate.
+_LEVELS = ("cell", "position", "date")
+#: Biological nesting that sits below the comparison groups, coarse→fine. The
+#: per-frame ``frame`` axis is always collapsed first (it is never a unit key);
+#: ``level`` then chooses how far down this chain the independent unit sits, and
+#: the reduction equal-weights each parent's children at every step (a long-lived
+#: cell counts once, a crowded position counts once). A column absent from the
+#: pooled table is simply skipped.
+_NESTING = ("date", "position_id", "cell_id")
+#: level -> the nesting column whose distinct values are the independent unit.
+_LEVEL_ENTITY = {"cell": "cell_id", "position": "position_id", "date": "date"}
+#: Distribution-family plots — rendered through seaborn, with the group-by /
+#: ``class_label`` model mapped onto its ``hue=``. ``strip``/``swarm`` are the
+#: new per-cell scatter members.
+DISTRIBUTION_PLOTS = ("hist", "box", "violin", "strip", "swarm")
+#: Attribute stamped on a drawn point collection holding the positional row index
+#: (``.iloc`` into the figure's source ``df``) for each marker, aligned to the
+#: collection's offsets. The panel reads it by projecting the offsets to pixels
+#: and taking the marker nearest the click (see ``PlotPanel._nearest_pickable``),
+#: so picking is exact, never collides equal-valued points, and survives zoom.
+_PICK_ROWS_ATTR = "_cellflow_pick_rows"
+#: Curve-family plots — a distribution Boltzmann-inverted into a ``U(x) = −ln P``
+#: curve over the same Shape-reduced table as the distribution family (so ``hist``
+#: and ``potential`` differ only in the −ln transform); see :func:`_plot_potential`.
+CURVE_PLOTS = ("potential",)
+_PLOTS = (*DISTRIBUTION_PLOTS, "bar", "line", *CURVE_PLOTS)
+_STATS = ("mean", "median", "count")
+_ERRORS = ("sd", "sem", "none")
+#: How the ``potential`` mode lays out its histogram bins.
+_BIN_MODES = ("uniform", "adaptive")
+
+#: Plot-specific option keys each plot type supports — the controls that only
+#: make sense for *some* plots, so the panel can show exactly the relevant ones
+#: and hide the rest (everything in the general Style tabs — colours, axes,
+#: ticks, legend, grid, figure — applies to every plot type and is never gated).
+#: Keys name the option, not the widget; the panel maps each to its control.
+PLOT_OPTIONS: dict[str, tuple[str, ...]] = {
+    "hist": ("bins", "hist_element", "hist_cumulative"),
+    "box": ("box_whis", "box_showfliers", "box_notch"),
+    "violin": ("violin_inner",),
+    "strip": ("marker_size",),
+    "swarm": (),
+    "bar": ("error",),
+    "line": ("markers", "marker_size"),
+    "potential": ("bins", "adaptive_bins", "markers", "marker_size"),
+}
+
+
+def plot_options(plot: str) -> tuple[str, ...]:
+    """Plot-specific option keys *plot* supports (see :data:`PLOT_OPTIONS`).
+
+    Unknown plot names return ``()`` so a caller can drive control visibility
+    without special-casing."""
+    return PLOT_OPTIONS.get(plot, ())
+#: Default concentration of ``adaptive`` bins toward ``x = 0`` (higher ⇒ tighter).
+_ADAPTIVE_SHARPNESS = 3.0
+
+
+@dataclass(frozen=True)
+class PositionSource:
+    """One position's contribution to a pooled table.
+
+    ``metadata`` (condition, date, position_id, …) is broadcast onto every row.
+    ``table`` is the quantity's :meth:`Quantifier.object_table`. ``join_table``
+    (optional) supplies ``join_columns`` to left-join *within this position* (so
+    cell ids never collide across positions) on whichever key columns it carries:
+    a per-frame source joins on ``(frame, cell_id)``; a per-track source — e.g.
+    the NLS sidecar CSV's ``{cell_id, class_label}`` — joins on ``cell_id`` alone
+    and broadcasts its label across every frame of that cell.
+    """
+
+    metadata: Mapping[str, Any]
+    table: Mapping[str, np.ndarray]
+    join_table: Mapping[str, np.ndarray] | None = None
+    join_columns: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlotSpec:
+    """What to plot / aggregate over a pooled table."""
+
+    value: str
+    group_by: tuple[str, ...] = ()
+    # The independent unit: "cell" (per track) | "position" | "date" (replicate).
+    # Frames are always collapsed to one value per track first, so no level ever
+    # treats a frame as an independent datapoint. Used only when ``collapse`` is
+    # empty — an explicit reduce pipeline overrides the level convenience.
+    level: str = "cell"
+    plot: str = "hist"  # hist | box | violin | bar | line
+    stat: str = "mean"  # mean | median | count
+    error: str = "sd"  # sd | sem | none
+    bins: int = 30
+    # How the ``potential`` mode bins: "uniform", or "adaptive" for sinh-spaced
+    # bins tighter near x=0 (the transition state). Ignored by every other plot.
+    bin_mode: str = "uniform"
+    # An explicit reduce pipeline of ``collapse`` steps (see
+    # :mod:`cellflow.contact_analysis.reduce`) — the dock's Shape section.
+    # When non-empty it *is* the reduction every plot draws over, so the careful
+    # nested statistics become user-visible composition. When empty: the comparison
+    # plots fall back to the ``level`` convenience (``reduce_to_units``), while the
+    # distribution-shape plots (``hist`` / ``potential``) bin the rows as given —
+    # no hidden collapse (``shaped_rows``); see :func:`_plot_rows`.
+    collapse: tuple = ()
+
+    def __post_init__(self) -> None:
+        for name, value, allowed in (
+            ("level", self.level, _LEVELS),
+            ("plot", self.plot, _PLOTS),
+            ("stat", self.stat, _STATS),
+            ("error", self.error, _ERRORS),
+            ("bin_mode", self.bin_mode, _BIN_MODES),
+        ):
+            if value not in allowed:
+                raise ValueError(f"{name} must be one of {allowed}, got {value!r}")
+
+
+@dataclass(frozen=True)
+class StyleSpec:
+    """Presentation knobs threaded through :func:`build_figure`.
+
+    Every field defaults to today's look, so ``build_figure(df, spec)`` (no
+    ``style_spec``) reproduces the previous output; touching a field is the only
+    way to change it. The dataclass is plain data — Qt-free and unit-testable —
+    so the panel builds it from its styling controls and hands it down.
+    """
+
+    #: Named qualitative palette applied across groups (any seaborn/matplotlib
+    #: palette name, e.g. ``tab10``, ``Set2``, ``colorblind``).
+    palette: str = "tab10"
+    #: Optional text overrides; blank keeps the auto label.
+    title: str = ""
+    xlabel: str = ""
+    ylabel: str = ""
+    #: Matplotlib style sheet (``default``, ``ggplot``, ``seaborn-v0_8`` …).
+    style: str = "default"
+    #: Figure dimensions in inches.
+    width: float = 6.0
+    height: float = 4.0
+    grid: bool = False
+    legend: bool = True
+    legend_loc: str = "best"
+    #: Base font size; titles/labels/ticks scale off it.
+    font_size: float = 10.0
+    #: Optional axis limits; ``None`` keeps matplotlib's autoscaled bound. Each
+    #: side is independent, so e.g. only ``ymin`` may be pinned.
+    xmin: float | None = None
+    xmax: float | None = None
+    ymin: float | None = None
+    ymax: float | None = None
+
+    # -- Box-plot knobs (ignored by every other plot type) -------------------
+    #: Whisker reach as a multiple of the IQR (matplotlib/seaborn ``whis``):
+    #: 1.5 is the Tukey default; larger values push the whiskers toward the
+    #: full data range, leaving fewer points flagged as outliers.
+    box_whis: float = 1.5
+    #: Draw points beyond the whiskers as individual outlier markers.
+    box_showfliers: bool = True
+    #: Notch the box around the median to show its ~95% confidence interval.
+    box_notch: bool = False
+
+    # -- Figure --------------------------------------------------------------
+    #: Output resolution (dots per inch); raises raster-export sharpness.
+    dpi: int = 100
+    #: Font family applied to every text artist; ``""`` keeps the style sheet's.
+    font_family: str = ""
+    #: Figure / axes background colour (any matplotlib colour); ``""`` keeps the
+    #: style sheet's default.
+    facecolor: str = ""
+
+    # -- Axes ----------------------------------------------------------------
+    #: Log-scale either axis. Non-positive data is clipped by matplotlib.
+    xlog: bool = False
+    ylog: bool = False
+    #: Tick label size; ``None`` keeps the font-size-derived default.
+    tick_label_size: float | None = None
+    #: Tick mark length in points (matplotlib default 3.5).
+    tick_length: float = 3.5
+    #: Tick mark direction: ``out`` | ``in`` | ``inout``.
+    tick_direction: str = "out"
+    #: Rotate x tick labels (degrees); ``None`` keeps each plot's own default
+    #: (the bar chart slants its category labels 30°).
+    xtick_rotation: float | None = None
+    #: Which axis spines (borders) to draw; drop a side to hide that border.
+    spines: tuple[str, ...] = ("left", "bottom", "top", "right")
+    #: Spine (border) line width in points (matplotlib default 0.8).
+    spine_width: float = 0.8
+
+    # -- Colours -------------------------------------------------------------
+    #: Per-group colour overrides as ``(group_label, colour)`` pairs, layered
+    #: over :attr:`palette` — the label is the ``" · "``-joined group key shown
+    #: in the legend. A label with no entry keeps its palette colour.
+    color_overrides: tuple[tuple[str, str], ...] = ()
+    #: Patch / marker opacity; ``None`` keeps each plot's default (histograms
+    #: draw their bars at 0.5 so overlaps read through).
+    alpha: float | None = None
+    #: Edge colour for patches / markers; ``""`` keeps the default.
+    edge_color: str = ""
+    #: Line width for line / potential curves; ``None`` keeps matplotlib's 1.5.
+    line_width: float | None = None
+
+    # -- Legend (extends ``legend`` / ``legend_loc`` above) ------------------
+    legend_title: str = ""
+    legend_frame: bool = True
+    legend_ncol: int = 1
+
+    # -- Grid (extends ``grid`` above) ---------------------------------------
+    #: Which axes the grid spans when ``grid`` is on: ``both`` | ``x`` | ``y``.
+    grid_axis: str = "both"
+    grid_alpha: float = 1.0
+    #: Grid line style: ``-`` | ``--`` | ``:`` | ``-.``.
+    grid_linestyle: str = "-"
+
+    # -- Markers (line / potential / distribution) ---------------------------
+    #: Draw point markers on line / potential curves.
+    markers: bool = True
+    #: Marker size; ``None`` keeps each plot's default (line 6, potential 4).
+    marker_size: float | None = None
+    #: Violin interior: ``box`` | ``quartile`` | ``point`` | ``stick`` | ``none``.
+    violin_inner: str = "box"
+    #: Histogram element: ``bars`` | ``step`` | ``poly``; and a cumulative toggle.
+    hist_element: str = "bars"
+    hist_cumulative: bool = False
+
+
+def style_to_dict(style: StyleSpec) -> dict[str, Any]:
+    """A :class:`StyleSpec` as a JSON-serialisable dict — a saveable style theme.
+
+    Tuples (``spines``, ``color_overrides``) become lists; :func:`style_from_dict`
+    restores them. Carries no plot/value, so a theme applies to any plot."""
+    return asdict(style)
+
+
+def style_from_dict(data: Mapping[str, Any]) -> StyleSpec:
+    """Rebuild a :class:`StyleSpec` from a saved theme dict.
+
+    Unknown keys are ignored and missing ones fall back to defaults, so a theme
+    written by an older or newer build still loads (forward/backward compatible).
+    JSON's lists are coerced back to the tuple-typed fields."""
+    known = {f.name for f in fields(StyleSpec)}
+    kw = {k: v for k, v in data.items() if k in known}
+    if kw.get("spines") is not None:
+        kw["spines"] = tuple(kw["spines"])
+    if kw.get("color_overrides") is not None:
+        kw["color_overrides"] = tuple(tuple(pair) for pair in kw["color_overrides"])
+    return StyleSpec(**kw)
+
+
+def pool_object_tables(sources: Iterable[PositionSource]) -> pd.DataFrame:
+    """Concatenate per-position tables into one annotated, tidy DataFrame.
+
+    Each source's table becomes a frame with its metadata columns prepended; an
+    optional per-position left-join attaches classification columns. Returns an
+    empty DataFrame when there are no sources.
+    """
+    frames: list[pd.DataFrame] = []
+    join_columns: list[str] = []
+    for source in sources:
+        frame = pd.DataFrame({k: np.asarray(v) for k, v in source.table.items()})
+        if source.join_columns:
+            join_columns.extend(source.join_columns)
+            frame = _join_position(frame, source.join_table or {}, source.join_columns)
+        for key, value in source.metadata.items():
+            frame.insert(0, key, value)
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame()
+    pooled = pd.concat(frames, ignore_index=True)
+    # A column declared by only some positions is NaN for the others after the
+    # concat; treat those (and any blank label) as the unclassified bucket.
+    for column in dict.fromkeys(join_columns):
+        if column not in pooled.columns:
+            pooled[column] = UNCLASSIFIED
+        else:
+            pooled[column] = pooled[column].replace("", UNCLASSIFIED).fillna(UNCLASSIFIED)
+    return pooled
+
+
+def _join_position(
+    frame: pd.DataFrame,
+    join_table: Mapping[str, np.ndarray],
+    join_columns: tuple[str, ...],
+) -> pd.DataFrame:
+    join_df = pd.DataFrame({k: np.asarray(v) for k, v in join_table.items()})
+    # Join on whichever key columns the join table carries — but it must at least
+    # key on ``cell_id``. A per-frame source keys on ``(frame, cell_id)``; a
+    # per-track source (e.g. the NLS sidecar CSV, one row per cell) keys on
+    # ``cell_id`` alone and broadcasts its label across every frame of that cell.
+    keys = [key for key in KEY_COLUMNS if key in join_df.columns]
+    # A position without a usable join source (no artifact / CSV) yields no
+    # ``cell_id`` key; leave its rows unjoined (filled to UNCLASSIFIED after the
+    # concat).
+    if "cell_id" not in keys:
+        return frame
+    keep = [c for c in (*keys, *join_columns) if c in join_df.columns]
+    join_df = join_df[keep].drop_duplicates(subset=keys)
+    return frame.merge(join_df, on=keys, how="left")
+
+
+def aggregate(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Tidy summary keyed by ``spec.group_by`` with ``n``, ``value``, ``error``.
+
+    The *unit* of aggregation is the cell track (``level="cell"``), the position
+    (``level="position"``), or the biological replicate (``level="date"``).
+    Whatever the level, frames are first collapsed to one value per track — no
+    level ever treats a frame as an independent datapoint — and each step up the
+    nesting (track→position→date) equal-weights its children, so a comparison
+    aggregates the chosen unit and not its (correlated) sub-samples. ``value``
+    and ``error`` are the central tendency and spread *across the units* at
+    ``level``; ``n`` is how many of them there are.
+
+    The within-unit collapse follows ``spec.stat`` end to end: ``mean`` averages,
+    ``median`` takes medians, at every level. ``count`` is special — it counts
+    *cells* (distinct tracks), never cell-frames: at cell level a pooled tally
+    per group (no spread); at position/date level the per-unit cell count becomes
+    a datapoint and the cohort is summarised across units (e.g. cells/position).
+
+    Columns: the group keys, ``n`` (units aggregated), ``value`` (the central
+    number), ``error`` (sd/sem across units; NaN/0 when undefined).
+    """
+    group = list(spec.group_by)
+    if df.empty:
+        return pd.DataFrame(columns=[*group, "n", "value", "error"])
+
+    if spec.stat == "count":
+        return _aggregate_count(df, spec)
+
+    units = reduce_to_units(df, spec)
+    central = "median" if spec.stat == "median" else "mean"
+    rows: list[dict[str, Any]] = []
+    grouped = units.groupby(group, dropna=False) if group else [(None, units)]
+    for key, chunk in grouped:
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").dropna()
+        rows.append({
+            **_group_key_to_dict(group, key),
+            "n": int(len(values)),
+            "value": float(getattr(values, central)()) if len(values) else float("nan"),
+            "error": _spread(values, spec.error),
+        })
+    return pd.DataFrame(rows, columns=[*group, "n", "value", "error"])
+
+
+def summary_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Per-group descriptive statistics of ``spec.value`` over exactly the rows
+    the figure draws (:func:`_plot_rows`) — the numbers behind the plot, as a tidy
+    table.
+
+    For the comparison plots that is the per-unit reduction (frames collapsed, each
+    parent equal-weighting its children), so ``n`` is the count of independent
+    units — not raw cell-frames. For the distribution-shape plots (``hist`` /
+    ``potential``) it is the raw Shape-pipeline rows, so ``n`` matches the
+    histogram's bin total. Columns: the group keys, ``n``, ``mean``, ``median``, ``sd`` (ddof=1),
+    ``sem``, ``min``, ``max``. ``sd``/``sem`` are NaN for a single-unit group.
+    Empty when *df* lacks ``spec.value`` or carries no finite samples.
+    """
+    group = list(spec.group_by)
+    columns = [*group, "n", "mean", "median", "sd", "sem", "min", "max"]
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=columns)
+    # Same rows the figure draws (see :func:`_plot_rows`), so ``n`` matches the
+    # histogram's bin total rather than reporting a per-unit count it never showed.
+    units = _plot_rows(df, spec)
+    rows: list[dict[str, Any]] = []
+    grouped = units.groupby(group, dropna=False) if group else [(None, units)]
+    for key, chunk in grouped:
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").dropna()
+        n = int(len(values))
+        sd = float(values.std(ddof=1)) if n > 1 else float("nan")
+        rows.append({
+            **_group_key_to_dict(group, key),
+            "n": n,
+            "mean": float(values.mean()) if n else float("nan"),
+            "median": float(values.median()) if n else float("nan"),
+            "sd": sd,
+            "sem": sd / float(np.sqrt(n)) if n > 1 else float("nan"),
+            "min": float(values.min()) if n else float("nan"),
+            "max": float(values.max()) if n else float("nan"),
+        })
+    return pd.DataFrame(rows, columns=columns)
+
+
+def _nesting_keys(df: pd.DataFrame) -> list[str]:
+    """The :data:`_NESTING` columns actually present in *df*, coarse→fine."""
+    return [k for k in _NESTING if k in df.columns]
+
+
+def _dedup(keys: Iterable[str]) -> list[str]:
+    """Order-preserving de-duplication — so a group-by column that is *also* a
+    nesting key (``date`` / ``position_id``) appears once in a groupby, instead of
+    raising ``cannot insert <col>, already exists`` on ``reset_index``."""
+    return list(dict.fromkeys(keys))
+
+
+def _unit_keys(df: pd.DataFrame, spec: PlotSpec) -> list[str]:
+    """Nesting columns retained at the chosen unit.
+
+    With an explicit ``spec.collapse`` pipeline the unit is whatever the *last*
+    collapse keeps, so the retained nesting keys are the present nesting columns
+    that step still groups by. Otherwise it is the ``spec.level`` prefix of the
+    present nesting down to (and including) the level's entity; when that entity
+    column is missing, fall back to the finest nesting available."""
+    present = _nesting_keys(df)
+    if spec.collapse:
+        from .reduce import Collapse
+
+        # The Shape pipeline interleaves filters and collapses; the unit is fixed
+        # by the *last collapse* (a trailing filter only narrows it). With no
+        # collapse at all (filter-only pipeline) the rows stay at native grain.
+        collapses = [s for s in spec.collapse if isinstance(s, Collapse)]
+        if not collapses:
+            return present
+        last_by = set(collapses[-1].by)
+        return [k for k in present if k in last_by]
+    target = _LEVEL_ENTITY[spec.level]
+    if target in present:
+        return present[: present.index(target) + 1]
+    return present
+
+
+def shaped_rows(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The rows a *distribution-shape* plot (``hist`` / ``potential``) bins —
+    the explicit Shape pipeline only, with **no hidden collapse**.
+
+    Unlike :func:`reduce_to_units`, this never falls back to the ``level`` chain:
+    when ``spec.collapse`` is empty the rows are returned unchanged (raw samples),
+    so a histogram / potential shows the within-sample distribution rather than a
+    per-unit summary. When the user composes a Shape pipeline its steps apply in
+    order, exactly as for the comparison plots — the two render the identical
+    sample, differing only in ``hist``'s count axis vs ``potential``'s −ln P.
+    """
+    if spec.collapse:
+        from .reduce import run_pipeline
+
+        return run_pipeline(df, spec.collapse)
+    return df
+
+
+#: Distribution-*shape* plots: they bin the raw Shape-pipeline rows
+#: (:func:`shaped_rows`, no hidden collapse) rather than the per-unit reduction the
+#: comparison plots use — so a histogram matches its potential curve point for point.
+_SHAPE_ONLY_PLOTS = ("hist", "potential")
+
+
+def _plot_rows(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The rows a plot draws / summarises over, by family: distribution-shape
+    plots (:data:`_SHAPE_ONLY_PLOTS`) bin the Shape pipeline output with no hidden
+    collapse; every other plot reduces to independent units. The one switch the
+    draw, the CSV export, and the stats read-out all share, so they never disagree.
+    """
+    if spec.plot in _SHAPE_ONLY_PLOTS:
+        return shaped_rows(df, spec)
+    return reduce_to_units(df, spec)
+
+
+def reduce_to_units(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Collapse the pooled per-frame table to one row per independent unit.
+
+    Reduces frames → track → … → ``spec.level`` along :data:`_NESTING`, applying
+    ``spec.stat`` (``median``, else ``mean``) at every collapse so each parent
+    equal-weights its children. Returns the group keys, the retained nesting
+    keys, and ``spec.value`` — one row per unit. When the table carries none of
+    the nesting columns (no cell_id/position_id/date), each row is already its
+    own unit and the frame is returned unchanged.
+
+    When ``spec.collapse`` is non-empty it overrides the ``level`` chain: the
+    explicit reduce pipeline *is* the unit reduction (the panel composes it from
+    the Shape editor), so the nested statistics become user-visible steps. This
+    drives the *comparison* plots (box / violin / strip / swarm / bar / line) and
+    the stats read-out, where the per-unit pseudoreplication guard applies — the
+    distribution-shape plots use :func:`shaped_rows` instead.
+    """
+    if spec.collapse:
+        from .reduce import run_pipeline
+
+        return run_pipeline(df, spec.collapse)
+    present = _nesting_keys(df)
+    if not present:
+        return df
+    group = list(spec.group_by)
+    unit = _unit_keys(df, spec)
+    agg = "median" if spec.stat == "median" else "mean"
+    work = df
+    levels = present
+    # First pass collapses the frame axis (``frame`` is never a key, so grouping
+    # on group+nesting averages a track's frames to one value); each later pass
+    # drops the finest nesting key and climbs one level toward ``unit``.
+    while True:
+        keys = _dedup(group + levels)
+        work = work.groupby(keys, dropna=False)[spec.value].agg(agg).reset_index()
+        if len(levels) <= len(unit):
+            return work
+        levels = levels[:-1]
+
+
+def _aggregate_count(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """Count distinct cells (tracks), never cell-frames. See :func:`aggregate`."""
+    group = list(spec.group_by)
+    present = _nesting_keys(df)
+    # One row per distinct cell within each group; without nesting keys every row
+    # already stands for a distinct unit.
+    cells = df[_dedup(group + present)].drop_duplicates() if present else df
+
+    if spec.level == "cell" or not present:
+        # Pooled distinct-cell tally per group; no spread.
+        counts = (
+            cells.groupby(group, dropna=False).size().reset_index(name="value")
+            if group
+            else pd.DataFrame([{"value": len(cells)}])
+        )
+        counts["n"] = counts["value"].astype(int)
+        counts["error"] = float("nan")
+        return counts[[*group, "n", "value", "error"]]
+
+    # Per-unit cell counts, then summarise across units (mean ± spread).
+    unit = _unit_keys(df, spec)
+    per_unit = cells.groupby(_dedup(group + unit), dropna=False).size().reset_index(name="_count")
+    rows: list[dict[str, Any]] = []
+    grouped = per_unit.groupby(group, dropna=False) if group else [(None, per_unit)]
+    for key, chunk in grouped:
+        values = chunk["_count"].astype(float)
+        rows.append({
+            **_group_key_to_dict(group, key),
+            "n": int(len(values)),
+            "value": float(values.mean()) if len(values) else float("nan"),
+            "error": _spread(values, spec.error),
+        })
+    return pd.DataFrame(rows, columns=[*group, "n", "value", "error"])
+
+
+def _spread(values: pd.Series, error: str) -> float:
+    if error == "none" or len(values) < 2:
+        return 0.0 if error == "none" else float("nan")
+    sd = float(values.std(ddof=1))
+    return sd if error == "sd" else sd / float(np.sqrt(len(values)))
+
+
+def _group_key_to_dict(group: list[str], key: Any) -> dict[str, Any]:
+    if not group:
+        return {}
+    # pandas yields a 1-tuple for a single-column groupby key; normalize both.
+    if not isinstance(key, tuple):
+        key = (key,)
+    return dict(zip(group, key))
+
+
+def potential_landscape(
+    values: np.ndarray,
+    *,
+    bins: int | np.ndarray,
+    value_range: tuple[float, float] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Boltzmann-invert a 1-D sample into an effective potential ``U = −ln P``.
+
+    Bins *values* into ``P(x) = counts / N`` and returns ``(centers, U, counts)``
+    over the **occupied** bins only — an empty bin has ``P = 0`` ⇒ ``U = ∞`` and
+    is dropped (the reference's ``probabilities > 0`` mask). ``U`` is in units of
+    kT: with the natural log, ``P ∝ exp(−U/kT)`` ⇒ ``U/kT = −ln P + const``.
+    *bins* is an integer count or an explicit array of edges (e.g. from
+    :func:`adaptive_bin_edges`); *value_range* pins the extent for the integer
+    case so several groups share one binning (ignored when *bins* is an edge
+    array). Returns three empty arrays when no finite sample survives.
+    """
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        empty = np.empty(0, dtype=float)
+        return empty, empty, np.empty(0, dtype=np.int64)
+    counts, edges = np.histogram(finite, bins=bins, range=value_range)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    occupied = counts > 0
+    u = -np.log(counts[occupied] / finite.size)
+    return centers[occupied], u, counts[occupied]
+
+
+def adaptive_bin_edges(
+    lo: float, hi: float, bins: int, *, sharpness: float = _ADAPTIVE_SHARPNESS
+) -> np.ndarray:
+    """``bins + 1`` histogram edges over ``[lo, hi]`` spaced tighter near ``x = 0``.
+
+    Edges are placed uniformly in ``asinh(k · x)`` space and mapped back through
+    ``sinh`` (the reference / v1 sinh-binning trick), with ``k = sharpness /
+    max(|lo|, |hi|)``. Because ``d/dx asinh(k·x)`` is largest at ``x = 0``, equal
+    steps in that warped space become the **narrowest** value-bins at zero and
+    widen toward the extremes — concentrating resolution at the transition state
+    of a potential landscape. *sharpness* sets the concentration (higher ⇒
+    tighter near 0); ``sharpness → 0`` reduces to uniform. The real range
+    ``[lo, hi]`` is preserved, so an asymmetric span wastes no bins; a degenerate
+    or non-bracketing range falls back to uniform edges.
+    """
+    bins = max(int(bins), 1)
+    if not (hi > lo):
+        return np.linspace(lo, lo + 1.0, bins + 1)
+    scale = max(abs(lo), abs(hi))
+    k = (sharpness / scale) if (scale > 0 and sharpness > 0) else 0.0
+    if k <= 0.0:
+        return np.linspace(lo, hi, bins + 1)
+    edges = np.sinh(np.linspace(np.arcsinh(k * lo), np.arcsinh(k * hi), bins + 1)) / k
+    # Pin the ends exactly (the asinh/sinh round-trip can drift by a float ulp),
+    # so np.histogram never drops a sample sitting on the boundary.
+    edges[0], edges[-1] = lo, hi
+    return edges
+
+
+def _potential_bins(spec: PlotSpec, value_range: tuple[float, float] | None):
+    """The ``bins`` argument for :func:`potential_landscape` under *spec*.
+
+    An ``adaptive`` ``bin_mode`` with a finite shared range returns sinh-spaced
+    **edges** (one binning shared across groups so curves stay comparable);
+    otherwise the integer count, with uniform binning left to ``np.histogram``.
+    """
+    if spec.bin_mode == "adaptive" and value_range is not None:
+        return adaptive_bin_edges(value_range[0], value_range[1], spec.bins)
+    return spec.bins
+
+
+def effective_barrier(centers: np.ndarray, u: np.ndarray) -> float:
+    """``ΔE_eff`` [kT] = ``U`` interpolated at ``x = 0`` minus ``min(U)``.
+
+    Operates on the occupied ``(centers, U)`` from :func:`potential_landscape`.
+    The transition state is ``x = 0`` (a junction length → 0, the four-fold
+    vertex); the well is the curve minimum (the most-probable value). ``U(0)`` is
+    linearly interpolated between the occupied bins straddling zero (the v1
+    ``_compute_energy_barrier`` approach) so a sparse zero-bin does not bias it.
+    Returns NaN when there are fewer than two occupied bins or ``0`` is not
+    bracketed by the occupied range — i.e. the data never reached the transition
+    state.
+    """
+    centers = np.asarray(centers, dtype=float)
+    u = np.asarray(u, dtype=float)
+    if u.size < 2 or centers.min() > 0.0 or centers.max() < 0.0:
+        return float("nan")
+    order = np.argsort(centers)
+    transition = float(np.interp(0.0, centers[order], u[order]))
+    return transition - float(u.min())
+
+
+def _shared_range(df: pd.DataFrame, spec: PlotSpec) -> tuple[float, float] | None:
+    """Common ``(min, max)`` over ``spec.value`` so every group bins identically;
+    ``None`` (let numpy pick per call) when there is no finite spread."""
+    values = pd.to_numeric(df[spec.value], errors="coerce").to_numpy()
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None
+    lo, hi = float(values.min()), float(values.max())
+    return (lo, hi) if lo < hi else None
+
+
+def potential_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The plotted potential curve(s) as a tidy table, for CSV export.
+
+    One block of rows per group (``group`` is the ``" · "``-joined group-by, or
+    ``"all"`` when none): ``group, center, U, counts, delta_e_eff``. The barrier
+    ``delta_e_eff`` is repeated down a group's rows and matches the per-curve
+    legend annotation in :func:`build_figure`. Empty when *df* lacks
+    ``spec.value`` or has no finite samples.
+    """
+    columns = ["group", "center", "U", "counts", "delta_e_eff"]
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=columns)
+    # Mirror the draw: invert exactly the rows the Shape pipeline yields (raw
+    # when it is empty — no hidden collapse), not a per-unit summary.
+    units = _plot_rows(df, spec)
+    value_range = _shared_range(units, spec)
+    bins = _potential_bins(spec, value_range)
+    blocks: list[pd.DataFrame] = []
+    for label, chunk in _group_series(units, list(spec.group_by)):
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
+        centers, u, counts = potential_landscape(values, bins=bins, value_range=value_range)
+        if centers.size == 0:
+            continue
+        blocks.append(pd.DataFrame({
+            "group": label,
+            "center": centers,
+            "U": u,
+            "counts": counts,
+            "delta_e_eff": effective_barrier(centers, u),
+        }))
+    return pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=columns)
+
+
+def build_figure(
+    df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec | None = None
+) -> Figure:
+    """Render *spec* over *df* with *style_spec*; return a `Figure` with an Agg
+    canvas attached so ``fig.savefig(...)`` works headlessly (the Qt frontend
+    reattaches its own).
+
+    Distribution-family plots (``DISTRIBUTION_PLOTS``) route through seaborn,
+    whose ``hue=`` maps onto the group-by / ``class_label`` model. The comparison
+    plots draw the per-unit table (the pseudoreplication guard); the
+    distribution-shape plots (``hist`` / ``potential``) bin the Shape-pipeline rows
+    with no hidden collapse — see :func:`_plot_rows`. ``bar``/``line`` stay custom
+    matplotlib driven by :func:`aggregate`."""
+    style_spec = style_spec or StyleSpec()
+    with mpl.style.context([style_spec.style, _rc_overrides(style_spec)]):
+        fig = Figure(
+            figsize=(style_spec.width, style_spec.height), dpi=style_spec.dpi,
+            tight_layout=True,
+        )
+        FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
+        if style_spec.facecolor:
+            fig.set_facecolor(style_spec.facecolor)
+            ax.set_facecolor(style_spec.facecolor)
+        # A count bar/line tallies tracks and needs no value column; every other
+        # path reads ``spec.value``. Guard a column the table doesn't carry (e.g.
+        # a stale build missing a newer quantity) with a legible placeholder
+        # rather than a KeyError from deep in the aggregation.
+        needs_value = not (spec.stat == "count" and spec.plot not in DISTRIBUTION_PLOTS)
+        if df.empty or (needs_value and spec.value not in df.columns):
+            ax.set_title(style_spec.title or "No data in scope")
+            return fig
+
+        if spec.plot in DISTRIBUTION_PLOTS:
+            _plot_distribution(ax, df, spec, style_spec)
+        elif spec.plot == "potential":
+            _plot_potential(ax, df, spec, style_spec)
+        elif spec.plot == "bar":
+            _plot_bar(ax, df, spec, style_spec)
+        else:  # line
+            _plot_line(ax, df, spec, style_spec)
+        _apply_style(ax, spec, style_spec)
+    return fig
+
+
+def _rc_overrides(style_spec: StyleSpec) -> dict[str, Any]:
+    """rcParams derived from the base font size, applied within the style sheet
+    context so every text artist created inside picks them up."""
+    base = style_spec.font_size
+    tick = base * 0.9 if style_spec.tick_label_size is None else style_spec.tick_label_size
+    rc = {
+        "font.size": base,
+        "axes.titlesize": base * 1.2,
+        "axes.labelsize": base,
+        "xtick.labelsize": tick,
+        "ytick.labelsize": tick,
+        "legend.fontsize": base * 0.9,
+    }
+    if style_spec.font_family:
+        rc["font.family"] = style_spec.font_family
+    return rc
+
+
+def _apply_style(ax, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    """Apply text overrides, grid, and legend after the plot is drawn. A blank
+    text override keeps the auto label (title defaults to the value column)."""
+    ax.set_title(style_spec.title or spec.value)
+    if style_spec.xlabel:
+        ax.set_xlabel(style_spec.xlabel)
+    if style_spec.ylabel:
+        ax.set_ylabel(style_spec.ylabel)
+
+    # Spines (borders): hide any side not listed; set the width on every spine.
+    for side, spine in ax.spines.items():
+        spine.set_visible(side in style_spec.spines)
+        spine.set_linewidth(style_spec.spine_width)
+
+    # Ticks: length/direction always; rotation only when the user pinned one, so
+    # the bar chart keeps its own 30° slant by default.
+    ax.tick_params(length=style_spec.tick_length, direction=style_spec.tick_direction)
+    if style_spec.xtick_rotation is not None:
+        ha = "right" if style_spec.xtick_rotation else "center"
+        for label in ax.get_xticklabels():
+            label.set_rotation(style_spec.xtick_rotation)
+            label.set_horizontalalignment(ha)
+
+    if style_spec.grid:
+        ax.grid(True, axis=style_spec.grid_axis, alpha=style_spec.grid_alpha,
+                linestyle=style_spec.grid_linestyle)
+    else:
+        ax.grid(False)
+
+    # Log scales before limits so the limits apply in the scaled space; limits sit
+    # before the legend branch's early return so they always apply.
+    if style_spec.xlog:
+        ax.set_xscale("log")
+    if style_spec.ylog:
+        ax.set_yscale("log")
+    if style_spec.xmin is not None or style_spec.xmax is not None:
+        ax.set_xlim(left=style_spec.xmin, right=style_spec.xmax)
+    if style_spec.ymin is not None or style_spec.ymax is not None:
+        ax.set_ylim(bottom=style_spec.ymin, top=style_spec.ymax)
+
+    existing = ax.get_legend()
+    if not style_spec.legend:
+        if existing is not None:
+            existing.remove()
+        return
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(
+            handles, labels, loc=style_spec.legend_loc, fontsize="small",
+            title=style_spec.legend_title or None, frameon=style_spec.legend_frame,
+            ncol=max(1, style_spec.legend_ncol),
+        )
+    elif existing is not None:  # seaborn-managed legend (e.g. histplot)
+        existing.set_loc(style_spec.legend_loc)
+        if style_spec.legend_title:
+            existing.set_title(style_spec.legend_title)
+        existing.set_frame_on(style_spec.legend_frame)
+
+
+def _group_label_column(df: pd.DataFrame, group: list[str]) -> tuple[pd.DataFrame, str | None]:
+    """Add a single combined group-label column (``" · "``-joined) when there is
+    a group-by, so seaborn's single-column ``hue=``/``x=`` can carry a multi-axis
+    grouping. Returns the (copied) frame and the hue column name (None when no
+    group-by)."""
+    if not group:
+        return df, None
+    data = df.copy()
+    data["_group"] = data[group].astype(str).agg(" · ".join, axis=1)
+    return data, "_group"
+
+
+@dataclass(frozen=True)
+class PickPoint:
+    """One clickable plotted point mapped back to its source row.
+
+    ``category`` is the hue label the point sits under ("" when there is no
+    group-by); ``value`` is the plotted measurement; ``row_index`` is the index
+    into the DataFrame ``build_figure`` was given.
+    """
+
+    category: str
+    value: float
+    row_index: int
+
+
+def pickable_points(df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> list[PickPoint]:
+    """Plotted points mapped back to a representative source row, for click-to-select.
+
+    Each drawn point is one independent unit (per ``spec.level``), matching what
+    :func:`_plot_distribution` renders. ``strip``/``swarm`` expose every
+    finite-value unit; ``box`` exposes only the Tukey outliers (``whis`` from
+    *style_spec*); all other plots expose none. The category string matches the
+    x-axis tick label seaborn draws (see :func:`_group_label_column`), so the UI
+    can scope a click to one category.
+
+    ``row_index`` is positional (``.iloc``) into the **original pooled** *df*: a
+    coarse unit (e.g. a position) resolves to one representative source row, whose
+    identity columns load that unit. The pooled tables from
+    ``pool_object_tables`` carry a default ``RangeIndex``.
+    """
+    if spec.plot not in ("strip", "swarm", "box") or df.empty:
+        return []
+    units = reduce_to_units(df, spec)
+    row_for = _representative_row(df, spec)
+    data, hue = _group_label_column(units, list(spec.group_by))
+    values = pd.to_numeric(data[spec.value], errors="coerce")
+    cats = (
+        data[hue].astype(str)
+        if hue is not None
+        else pd.Series([""] * len(data), index=data.index)
+    )
+    finite = values.notna()
+    if spec.plot in ("strip", "swarm"):
+        return [
+            PickPoint(str(cats[i]), float(values[i]), row_for(data.loc[i]))
+            for i in values.index[finite]
+        ]
+    # box: outliers only, per category (matplotlib's Tukey flier rule).
+    out: list[PickPoint] = []
+    for cat, members in values[finite].groupby(cats[finite]):
+        q1, q3 = members.quantile(0.25), members.quantile(0.75)
+        iqr = q3 - q1
+        lo, hi = q1 - style_spec.box_whis * iqr, q3 + style_spec.box_whis * iqr
+        for i, v in members.items():
+            if v < lo or v > hi:
+                out.append(PickPoint(str(cat), float(v), row_for(data.loc[i])))
+    return out
+
+
+def _representative_row(df: pd.DataFrame, spec: PlotSpec):
+    """A callable mapping a reduced unit row to a positional index into *df*.
+
+    With nesting keys, each unit maps to the original row (frame) whose own
+    ``spec.value`` is closest to the unit's plotted value — the same ``spec.stat``
+    central tendency the reduction collapses frames with. Loading that row then
+    shows a frame that actually *looks like* the clicked point: the first frame of
+    a track is routinely unrepresentative (a cell just appearing is tiny even when
+    its mean area is the largest in the plot), so picking by closeness, not by
+    frame order, is what makes "click the biggest point" land on a big cell. Ties
+    (and all-NaN units) fall back to the earliest frame.
+
+    Without nesting keys the reduction is the identity, so a unit row *is* an
+    original row and its own index (positional on a default ``RangeIndex``) is used.
+    """
+    present = _nesting_keys(df)
+    if not present:
+        return lambda row: int(row.name)
+    keys = _dedup(list(spec.group_by) + _unit_keys(df, spec))
+    work = df.reset_index(drop=True)
+    central = "median" if spec.stat == "median" else "mean"
+    value = pd.to_numeric(work[spec.value], errors="coerce")
+    target = value.groupby([work[k] for k in keys], dropna=False).transform(central)
+    # Closest frame first; NaN distances (missing values) sort last so a unit with
+    # no finite value still resolves — to its earliest frame, the old behaviour.
+    # The stable sort breaks ties by original (frame) order, so equal-value frames
+    # deterministically pick the earliest.
+    ordered = (
+        pd.DataFrame({"_dist": (value - target).abs()})
+        .assign(**{k: work[k] for k in keys})
+        .sort_values("_dist", kind="stable", na_position="last")
+    )
+    rep = ordered.reset_index().groupby(keys, dropna=False)["index"].first()
+
+    def row_for(row: pd.Series) -> int:
+        key = tuple(row[k] for k in keys)
+        return int(rep.loc[key[0] if len(keys) == 1 else key])
+
+    return row_for
+
+
+#: UI violin-inner names → seaborn's ``inner=`` values.
+_VIOLIN_INNER = {"box": "box", "quartile": "quart", "point": "point",
+                 "stick": "stick", "none": None}
+
+
+def _group_colors(labels: list, style_spec: StyleSpec) -> tuple[list, dict]:
+    """Palette colours for *labels* with per-group overrides layered on top.
+
+    Samples :attr:`StyleSpec.palette` for one colour per label, then swaps in any
+    :attr:`StyleSpec.color_overrides` keyed by the label string. Returns the
+    colour list (aligned to *labels*) and a ``{label: colour}`` dict for seaborn's
+    ``palette=`` (which keys on the same string labels it draws)."""
+    base = sns.color_palette(style_spec.palette, n_colors=max(len(labels), 1))
+    overrides = dict(style_spec.color_overrides)
+    colors = [overrides.get(str(lab), base[i]) for i, lab in enumerate(labels)]
+    return colors, {str(lab): col for lab, col in zip(labels, colors)}
+
+
+def _alpha_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.alpha is None else {"alpha": style_spec.alpha}
+
+
+def _size_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.marker_size is None else {"size": style_spec.marker_size}
+
+
+def _linewidth_kw(style_spec: StyleSpec) -> dict:
+    return {} if style_spec.line_width is None else {"linewidth": style_spec.line_width}
+
+
+def _plot_distribution(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    group = list(spec.group_by)
+    # The comparison plots (box / violin / strip / swarm) show one point per
+    # independent unit (the pseudoreplication guard); the histogram is a
+    # distribution-*shape* plot that bins what the Shape pipeline yields with no
+    # hidden collapse — see :func:`_plot_rows`.
+    units = _plot_rows(df, spec)
+    data, hue = _group_label_column(units, group)
+    data = data.assign(**{spec.value: pd.to_numeric(data[spec.value], errors="coerce")})
+    data = data.dropna(subset=[spec.value])
+    if data.empty:
+        ax.set_title("No data in scope")
+        return
+    # Pin the category order so each drawn point collection maps positionally to a
+    # known slice of ``data`` (verified: seaborn emits one PathCollection per hue
+    # level, offsets in input-row order). That exact mapping is what
+    # ``_tag_point_collections`` stamps for click-to-select.
+    order = list(pd.unique(data[hue])) if hue is not None else None
+    # Palette as a {label: colour} dict so per-group overrides bite; no hue → the
+    # single seaborn default colour.
+    palette = _group_colors(order, style_spec)[1] if hue is not None else None
+    if spec.plot == "hist":
+        hist_kw = {} if not style_spec.edge_color else {"edgecolor": style_spec.edge_color}
+        sns.histplot(
+            data=data, x=spec.value, hue=hue, bins=spec.bins,
+            alpha=style_spec.alpha if style_spec.alpha is not None else 0.5,
+            palette=palette, ax=ax, element=style_spec.hist_element,
+            cumulative=style_spec.hist_cumulative, **hist_kw,
+        )
+        ax.set_ylabel("count")
+    elif spec.plot == "box":
+        sns.boxplot(
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
+            whis=style_spec.box_whis, showfliers=style_spec.box_showfliers,
+            notch=style_spec.box_notch, **_linewidth_kw(style_spec),
+        )
+        _overlay_box_picks(ax, df, data, hue, spec, style_spec, order)
+    elif spec.plot == "violin":
+        sns.violinplot(
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
+            inner=_VIOLIN_INNER.get(style_spec.violin_inner, "box"),
+            **_linewidth_kw(style_spec),
+        )
+    elif spec.plot == "strip":
+        sns.stripplot(
+            data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+            palette=palette, ax=ax, legend=False,
+            **_alpha_kw(style_spec), **_size_kw(style_spec),
+        )
+        _tag_point_collections(ax, df, data, hue, spec, order)
+    else:  # swarm
+        _plot_swarm(ax, data, hue, spec, palette, order)
+        _tag_point_collections(ax, df, data, hue, spec, order)
+
+
+def _category_groups(
+    data: pd.DataFrame, hue: str | None, order: list | None
+) -> list[pd.DataFrame]:
+    """The per-category row slices of *data*, in the drawn collection order.
+
+    One entry per category in *order* (the whole frame when there is no hue),
+    each preserving *data*'s row order — so slice *k* lines up positionally with
+    the k-th drawn point collection."""
+    if hue is None or not order:
+        return [data]
+    return [data[data[hue].astype(str) == str(cat)] for cat in order]
+
+
+def _tag_point_collections(
+    ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
+    order: list | None,
+) -> None:
+    """Stamp each drawn strip/swarm point collection with its source row indices,
+    aligned to its offsets, so a click resolves to an exact row (the panel does
+    the hit-testing — see :data:`_PICK_ROWS_ATTR`).
+
+    Relies on seaborn drawing one PathCollection per category, offsets in
+    input-row order. If the layout doesn't match that expectation (collection
+    count or per-collection point count off), tagging is skipped rather than risk
+    a wrong mapping."""
+    point_cols = [c for c in ax.collections if len(c.get_offsets())]
+    groups = _category_groups(data, hue, order)
+    if len(point_cols) != len(groups):
+        return
+    row_for = _representative_row(df, spec)
+    tagged = []
+    for col, sub in zip(point_cols, groups):
+        if len(col.get_offsets()) != len(sub):
+            return
+        rows = np.fromiter(
+            (row_for(r) for _, r in sub.iterrows()), dtype=int, count=len(sub)
+        )
+        tagged.append((col, rows))
+    for col, rows in tagged:
+        setattr(col, _PICK_ROWS_ATTR, rows)
+
+
+def _overlay_box_picks(
+    ax, df: pd.DataFrame, data: pd.DataFrame, hue: str | None, spec: PlotSpec,
+    style_spec: StyleSpec, order: list | None,
+) -> None:
+    """Overlay a transparent scatter carrying row indices on the box-plot outliers.
+
+    seaborn draws fliers at the category centre with no jitter, so an invisible
+    scatter placed at ``(category_centre, value)`` sits exactly on each flier and
+    carries its row index — the panel hit-tests it like any other point collection
+    (see :data:`_PICK_ROWS_ATTR`). Skipped when fliers are hidden."""
+    if not style_spec.box_showfliers:
+        return
+    xticks = list(ax.get_xticks())
+    row_for = _representative_row(df, spec)
+    xs: list[float] = []
+    ys: list[float] = []
+    rows: list[int] = []
+    for k, sub in enumerate(_category_groups(data, hue, order)):
+        values = pd.to_numeric(sub[spec.value], errors="coerce")
+        finite = values.dropna()
+        if finite.empty:
+            continue
+        q1, q3 = finite.quantile(0.25), finite.quantile(0.75)
+        iqr = q3 - q1
+        lo, hi = q1 - style_spec.box_whis * iqr, q3 + style_spec.box_whis * iqr
+        cat_x = xticks[k] if k < len(xticks) else float(k)
+        for idx, value in values.items():
+            if pd.notna(value) and (value < lo or value > hi):
+                xs.append(cat_x)
+                ys.append(float(value))
+                rows.append(row_for(sub.loc[idx]))
+    if not rows:
+        return
+    sc = ax.scatter(xs, ys, facecolors="none", edgecolors="none", zorder=5)
+    setattr(sc, _PICK_ROWS_ATTR, np.array(rows, dtype=int))
+
+
+def _plot_swarm(
+    ax, data: pd.DataFrame, hue: str | None, spec: PlotSpec, palette, order: list | None,
+) -> None:
+    """Swarm plot that never silently drops points.
+
+    seaborn's swarmplot lays its markers out without overlap and *omits* any it
+    cannot place when the column is crowded — and it emits that "X% of the points
+    cannot be placed" warning at **draw** time, not when ``swarmplot`` is called.
+    So we force a draw to detect the overflow: shrink the markers once to try to
+    fit them all, and if it still overflows fall back to a stripplot (jittered,
+    but it draws every point) so no datapoint disappears."""
+    import warnings
+
+    def _overflows(size: float) -> bool:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sns.swarmplot(
+                data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+                palette=palette, ax=ax, legend=False, size=size,
+            )
+            # The overlap check runs in swarmplot's draw callback, so provoke a
+            # draw now to learn whether every marker fits at this figure size.
+            canvas = ax.figure.canvas
+            if canvas is not None:
+                canvas.draw()
+        return any("cannot be placed" in str(w.message) for w in caught)
+
+    for size in (5.0, 3.0):
+        if not _overflows(size):
+            return
+        ax.clear()
+    sns.stripplot(
+        data=data, x=hue, y=spec.value, hue=hue, order=order, hue_order=order,
+        palette=palette, ax=ax, legend=False,
+    )
+
+
+def _plot_potential(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    """Render the effective potential ``U(x) = −ln P(x)`` curve per group.
+
+    Renders over the **same** Shape-reduced table as the distribution family
+    (:func:`reduce_to_units`), so ``hist`` and ``potential`` draw the identical
+    sample, differing only in the ``U = −ln P`` transform: the Shape section is the
+    single source of truth for which rows feed the plot. To Boltzmann-invert the
+    raw within-sample fluctuation distribution (no per-unit collapse), clear the
+    Shape pipeline's collapse step. Every group shares one binning
+    (``_shared_range``) so curves are comparable, and each curve's effective
+    barrier ``ΔE_eff`` rides in its legend label."""
+    group = list(spec.group_by)
+    units = _plot_rows(df, spec)
+    value_range = _shared_range(units, spec)
+    bins = _potential_bins(spec, value_range)
+    series_list = list(_group_series(units, group))
+    colors, _ = _group_colors([lbl for lbl, _ in series_list], style_spec)
+    marker = "o" if style_spec.markers else ""
+    markersize = style_spec.marker_size if style_spec.marker_size is not None else 4
+    spans_zero = value_range is not None and value_range[0] <= 0.0 <= value_range[1]
+    drew = False
+    for color, (label, chunk) in zip(colors, series_list):
+        values = pd.to_numeric(chunk[spec.value], errors="coerce").to_numpy()
+        centers, u, _ = potential_landscape(values, bins=bins, value_range=value_range)
+        if centers.size == 0:
+            continue
+        barrier = effective_barrier(centers, u)
+        barrier_txt = f"{barrier:.2f} kT" if np.isfinite(barrier) else "n/a"
+        ax.plot(
+            centers, u, marker=marker, linestyle="-", markersize=markersize, color=color,
+            label=f"{label} (ΔE_eff={barrier_txt})", **_linewidth_kw(style_spec),
+        )
+        drew = True
+    if not drew:
+        ax.set_title("No data in scope")
+        return
+    if spans_zero:
+        ax.axvline(0.0, color="red", linestyle="--", linewidth=1.2, alpha=0.7)
+    ax.set_xlabel(spec.value)
+    ax.set_ylabel("U = −ln P  [kT]")
+
+
+def _plot_bar(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    summary = aggregate(df, spec)
+    group = list(spec.group_by)
+    labels = [
+        " · ".join(str(summary.iloc[i][g]) for g in group) if group else "all"
+        for i in range(len(summary))
+    ]
+    x = np.arange(len(summary))
+    errors = summary["error"].fillna(0.0).to_numpy()
+    colors, _ = _group_colors(labels, style_spec)
+    bar_kw: dict = {}
+    if style_spec.alpha is not None:
+        bar_kw["alpha"] = style_spec.alpha
+    if style_spec.edge_color:
+        bar_kw["edgecolor"] = style_spec.edge_color
+    if style_spec.line_width is not None:
+        bar_kw["linewidth"] = style_spec.line_width
+    ax.bar(x, summary["value"].to_numpy(), yerr=errors, capsize=4, color=colors, **bar_kw)
+    ax.set_xticks(x)
+    # Slanted by default for legible multi-word categories; the style's
+    # ``xtick_rotation`` (when set) overrides this in :func:`_apply_style`.
+    ax.set_xticklabels(labels, rotation=30, ha="right")
+    ax.set_ylabel(_bar_ylabel(spec))
+
+
+def _bar_ylabel(spec: PlotSpec) -> str:
+    if spec.stat == "count":
+        if spec.level == "position":
+            return "cells per position"
+        if spec.level == "date":
+            return "cells per date"
+        return "cell count"
+    return f"{spec.stat} {spec.value}"
+
+
+def _plot_line(ax, df: pd.DataFrame, spec: PlotSpec, style_spec: StyleSpec) -> None:
+    group = list(spec.group_by)
+    series_list = list(_group_series(df, group))
+    colors, _ = _group_colors([lbl for lbl, _ in series_list], style_spec)
+    marker = "o" if style_spec.markers else ""
+    marker_kw = {} if style_spec.marker_size is None else {"markersize": style_spec.marker_size}
+    for color, (label, chunk) in zip(colors, series_list):
+        if spec.stat == "count":
+            series = chunk.groupby("frame", dropna=False).size()
+        else:
+            agg = "mean" if spec.stat == "mean" else "median"
+            series = chunk.groupby("frame", dropna=False)[spec.value].agg(agg)
+        series = series.sort_index()
+        ax.plot(
+            series.index.to_numpy(), series.to_numpy(), marker=marker, label=label,
+            color=color, **_linewidth_kw(style_spec), **marker_kw,
+        )
+    ax.set_xlabel("frame")
+    ax.set_ylabel("count" if spec.stat == "count" else f"{spec.stat} {spec.value}")
+
+
+def _group_series(df: pd.DataFrame, group: list[str]):
+    """Yield ``(label, sub_df)`` per group combination (one group when none)."""
+    if not group:
+        yield "all", df
+        return
+    for key, chunk in df.groupby(group, dropna=False):
+        parts = key if isinstance(key, tuple) else (key,)
+        yield " · ".join(str(p) for p in parts), chunk
+
+
+def plotted_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The exact data drawn by :func:`build_figure` for *spec*, as a tidy table.
+
+    One table per plot family, so a single CSV export reproduces the figure
+    elsewhere with no further processing:
+
+    * ``potential`` → the per-group ``U(x)`` curve (:func:`potential_table`).
+    * ``bar`` → the per-group aggregate (value ± error, n) (:func:`aggregate`).
+    * ``line`` → the per-group, per-frame series actually plotted.
+    * distribution (``hist``/``box``/``violin``/``strip``/``swarm``) → the
+      per-unit values that feed the distribution: the group-by columns plus the
+      plotted value, one row per independent unit (:func:`reduce_to_units`).
+    """
+    if spec.plot == "potential":
+        return potential_table(df, spec)
+    if spec.plot == "bar":
+        return aggregate(df, spec)
+    if spec.plot == "line":
+        return _line_table(df, spec)
+    # distribution family: the samples the plot is built from — the histogram bins
+    # the raw Shape-pipeline rows (no hidden collapse), the comparison plots their
+    # per-unit reduction (see :func:`_plot_rows`).
+    group = list(spec.group_by)
+    if df.empty or spec.value not in df.columns:
+        return pd.DataFrame(columns=[*group, spec.value])
+    units = _plot_rows(df, spec)
+    keep = [c for c in group if c in units.columns] + [spec.value]
+    out = units[keep].copy()
+    out[spec.value] = pd.to_numeric(out[spec.value], errors="coerce")
+    return out.dropna(subset=[spec.value]).reset_index(drop=True)
+
+
+def _line_table(df: pd.DataFrame, spec: PlotSpec) -> pd.DataFrame:
+    """The per-group, per-frame series :func:`_plot_line` draws, as a tidy table
+    (``group``, ``frame``, ``value``)."""
+    columns = ["group", "frame", "value"]
+    if df.empty or "frame" not in df.columns:
+        return pd.DataFrame(columns=columns)
+    blocks: list[pd.DataFrame] = []
+    for label, chunk in _group_series(df, list(spec.group_by)):
+        if spec.stat == "count":
+            series = chunk.groupby("frame", dropna=False).size()
+        elif spec.value not in chunk.columns:
+            continue
+        else:
+            agg = "median" if spec.stat == "median" else "mean"
+            series = chunk.groupby("frame", dropna=False)[spec.value].agg(agg)
+        series = series.sort_index()
+        blocks.append(pd.DataFrame({
+            "group": label,
+            "frame": series.index.to_numpy(),
+            "value": series.to_numpy(),
+        }))
+    return pd.concat(blocks, ignore_index=True) if blocks else pd.DataFrame(columns=columns)
+
+
+def write_csv(df: pd.DataFrame, path: str | Path) -> Path:
+    """Write *df* to CSV, ensuring a ``.csv`` suffix (Qt's save dialog often omits
+    it). Returns the final path."""
+    path = Path(path)
+    if path.suffix.lower() != ".csv":
+        path = path.with_name(path.name + ".csv")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(path, index=False)
+    return path

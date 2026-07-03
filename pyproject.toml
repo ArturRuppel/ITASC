@@ -86,7 +86,7 @@ docs = [
 # requires its name to match the distribution. The full install therefore
 # exposes the extracted pieces' widgets by folding their contributions into the
 # single cellflow manifest (see src/cellflow/napari.yaml) rather than
-# registering the standalone cellflow-aggregate / cellflow-tracking manifests.
+# registering the standalone cellflow-contact-analysis / cellflow-tracking manifests.
 cellflow = "cellflow:napari.yaml"
 
 [tool.hatch.build.targets.wheel]

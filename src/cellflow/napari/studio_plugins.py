@@ -1,4 +1,4 @@
-"""The Aggregate Quantification studio's flat plugin list.
+"""The Contact Analysis studio's flat plugin list.
 
 One flat plugin list hosts three plugin *roles* uniformly:
 
@@ -29,15 +29,15 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.aggregate_quantification.quantifier import (
+from cellflow.contact_analysis.quantifier import (
     Quantifier,
 )
-from cellflow.aggregate_quantification.records import (
+from cellflow.contact_analysis.records import (
     output_for_record,
     position_inputs_from_record,
     records_satisfying,
 )
-from cellflow.napari.aggregate_quantification.plugins import (
+from cellflow.napari.contact_analysis.plugins import (
     AnalysisContext,
     available_analysis_plugins,
 )

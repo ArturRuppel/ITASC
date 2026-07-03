@@ -15,7 +15,7 @@ from cellflow.napari.widgets import PipelineFilesWidget
 #   Cellpose          → cellpose_widget._PIPELINE_FILES
 #   Nucleus Workflow  → nucleus_workflow_widget._NUCLEUS_PIPELINE_FILE_GROUPS
 #   Cell Workflow     → cell_workflow_widget (CellWorkflowWidget._setup_ui)
-#   Contact Analysis  → contact_analysis_widget (AggregateQuantificationWidget)
+#   Contact Analysis  → contact_analysis_widget (ContactAnalysisWidget)
 _TRACKED_FILE_GROUPS = [
     ("Input Data", [
         ("0_input/nucleus_zavg.tif", "Nucleus z-avg"),
