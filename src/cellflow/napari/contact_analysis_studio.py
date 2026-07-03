@@ -21,12 +21,11 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Qt
+from qtpy.QtCore import QSize, Qt
 from qtpy.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -48,7 +47,7 @@ from cellflow.contact_analysis.catalog import (
 )
 from cellflow.contact_analysis.pipeline import author_config, run
 from cellflow.contact_analysis.shape_tables import catalogue_root
-from cellflow.napari._catalog_table import CatalogRowSpec, CatalogTable
+from cellflow.napari._experiments_panel import ExperimentsPanel
 from cellflow.napari._stage_loader import load_stage
 from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.contact_analysis.plugins import AnalysisContext
@@ -60,7 +59,13 @@ from cellflow.napari.studio_plugins import (
     available_tool_plugins,
     records_satisfying,
 )
-from cellflow.napari.ui_style import action_button, status_label
+from cellflow.napari._icons import stage_action_icon
+from cellflow.napari.ui_style import (
+    action_button,
+    muted_accent,
+    stage_accent,
+    status_label,
+)
 from cellflow.napari.widgets import CollapsibleSection
 
 
@@ -124,10 +129,6 @@ class ContactAnalysisStudioWidget(QWidget):
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = viewer
-        #: Full catalog (normalized records from cellflow.contact_analysis.catalog).
-        self._records: list[dict] = []
-        #: Last discovered (not-yet-added) collection awaiting metadata.
-        self._pending_entries: list[dict] = []
         #: Cache so plugins don't each re-open the same HDF5.
         self._analysis_cache: dict[Path, Any] = {}
         #: Reader feeding analysis-plugin contexts (contacts is the only quantity today).
@@ -157,174 +158,81 @@ class ContactAnalysisStudioWidget(QWidget):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignTop)
 
-        # One Catalogue region: discover/add (nested, collapsed) + the positions
-        # table + the per-position visualizer (nested). Plugins are the second
-        # region.
+        # One Catalogue region: the shared ExperimentsPanel (Setup → Discover →
+        # Add → list) + a small Load/Save/Clear action row beneath it. The panel
+        # owns the displayed catalog; the studio reads it for scope / run / save.
         catalogue = QWidget()
         cat_col = QVBoxLayout(catalogue)
         cat_col.setContentsMargins(0, 0, 0, 0)
         cat_col.setSpacing(4)
-        self._build_discover_section(cat_col)
-        self._build_catalog_section(cat_col)
+        self._build_catalogue_section(cat_col)
         layout.addWidget(CollapsibleSection("Catalogue", catalogue, expanded=True))
 
         # One shared parameter bar above both areas: builds and plots read the
         # same pixel size / frame interval (plus plot-only FOV / shuffles).
         self._shared_params = SharedParamsWidget()
         self._shared_params.changed.connect(self._push_context)
-        layout.addWidget(
-            CollapsibleSection("Parameters", self._shared_params, expanded=True)
+        self._params_section = CollapsibleSection(
+            "Parameters", self._shared_params, expanded=True
         )
+        layout.addWidget(self._params_section)
 
         # Tools on top, then the Run area.
         # (Plotting is Iris-only — no in-napari Plot area.)
         self._build_tools_section(layout)
         self._build_run_section(layout)
 
+        # Progressive disclosure: Parameters / Tools / Run only make sense once
+        # the catalogue holds positions, so they stay hidden until it does — an
+        # empty studio shows only the Catalogue front door.
+        self._gated_sections = (
+            self._params_section,
+            self._tools_section,
+            self._run_section,
+        )
+        self._panel.records_changed.connect(self._update_disclosure)
+
         self._reload_plugins()
-        self._refresh_table()
+        self._push_context()
+        self._update_disclosure()
+
+    def _update_disclosure(self) -> None:
+        """Reveal the downstream sections only once the catalogue is non-empty."""
+        has_rows = bool(self._panel.keys())
+        for section in self._gated_sections:
+            section.setVisible(has_rows)
 
     # ----------------------------------------------------------------- catalog UI
-    def _make_field_row(self, layout, label: str, default: str = "", placeholder: str = "") -> QLineEdit:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
-        lbl = QLabel(label)
-        lbl.setFixedWidth(150)
-        edit = QLineEdit()
-        if default:
-            edit.setText(default)
-        if placeholder:
-            edit.setPlaceholderText(placeholder)
-        row.addWidget(lbl)
-        row.addWidget(edit, 1)
-        layout.addLayout(row)
-        return edit
+    def _build_catalogue_section(self, layout) -> None:
+        """Mount the shared ExperimentsPanel + a Load/Save/Clear action row.
 
-    def _build_discover_section(self, layout) -> None:
-        """Discover positions by file name, name each folder-nesting level, then add.
-
-        Each position inherits its metadata from its own path: a named nesting
-        level becomes a column whose value is that folder's name (folder-derived
-        columns). Levels named with the recognized identity axes (``condition`` /
-        ``experiment_id`` / ``position_id``) drive pooling; any other level name is
-        an extra descriptor. A manual *+ Add column* unit supplies batch-wide
-        constant tags not encoded in the folder tree.
+        The panel reproduces napariTFM's ExperimentsList flow (Setup → Discover a
+        root → stage previews → Add to list → an editable-column list with a
+        per-position status rail). It owns the displayed catalog and its own
+        Delete-selected button; the studio only reads it (for scope / run / save)
+        and reacts to its signals. Discovery inputs default to the committed final
+        outputs (``cell_labels.tif`` / ``nucleus_labels.tif``) so a finalized
+        position is auto-discovered; override to a working stage file when
+        uncommitted.
         """
-        container = QWidget()
-        col = QVBoxLayout(container)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(2)
-
-        #: Discovered-but-not-added entries; each carries its folder ``levels``.
-        self._pending_entries = []
-        #: Manual (name, value) constant-tag fields, copied onto every added row.
-        self._manual_column_fields: list[tuple[QLineEdit, QLineEdit]] = []
-        #: Per-level name fields, rebuilt to the discovered depth.
-        self._level_name_fields: list[QLineEdit] = []
-
-        root_row = QHBoxLayout()
-        root_row.setContentsMargins(0, 0, 0, 0)
-        root_row.setSpacing(2)
-        self._root_edit = QLineEdit()
-        self._root_edit.setPlaceholderText("Root folder to scan…")
-        browse_btn = QPushButton("Browse…")
-        action_button(browse_btn)
-        browse_btn.clicked.connect(self._on_browse_root)
-        root_row.addWidget(QLabel("Root:"))
-        root_row.addWidget(self._root_edit, 1)
-        root_row.addWidget(browse_btn)
-        col.addLayout(root_row)
-
-        # Names or relative paths (relative to each position folder). These are the
-        # discovery **inputs** — a position is any folder with at least one of them.
-        # Contact analysis (like every shape / NLS quantity) is a derived Contact
-        # Analysis output, built later via a builder plugin — never an input here.
-        # Default to the committed final outputs (nucleus_labels.tif /
-        # cell_labels.tif) so a finalized position is auto-discovered; override to
-        # a working stage file (e.g. 3_cell/tracked_labels.tif) when uncommitted.
-        self._cell_name_edit = self._make_field_row(
-            col, "Cell labels (optional):",
-            placeholder="e.g. cell_labels.tif (final) or 3_cell/tracked_labels.tif",
+        self._panel = ExperimentsPanel(
+            title="Positions",
+            input_fields=[
+                ("cell", "Cell labels", "cell_labels.tif"),
+                ("nucleus", "Nucleus labels", "nucleus_labels.tif"),
+            ],
+            discover_fn=self._discover,
+            status_fn=self._status,
+            show_calibration=False,
+            show_run=False,
+            show_manual_columns=True,
+            show_output_dir=False,
         )
-        self._cell_name_edit.setText("cell_labels.tif")
-        self._nucleus_name_edit = self._make_field_row(
-            col, "Nucleus labels (optional):",
-            placeholder="e.g. nucleus_labels.tif (final) or 2_nucleus/tracked_labels.tif",
-        )
-        self._nucleus_name_edit.setText("nucleus_labels.tif")
-        for edit in (self._cell_name_edit, self._nucleus_name_edit):
-            edit.textChanged.connect(lambda _t: self._update_discover_tooltip())
-
-        self._discover_btn = QPushButton("Discover")
-        action_button(self._discover_btn, expand=True)
-        self._discover_btn.clicked.connect(self._on_discover)
-        col.addWidget(self._discover_btn)
-        self._update_discover_tooltip()
-
-        # Discovered positions no longer live in a separate list — they appear as
-        # dimmed *preview rows* in the catalog table below, individually removable.
-
-        # Levels editor: one name field per detected nesting level, anchored at the
-        # root. Editable before committing; renaming re-derives that column on the
-        # staged rows. Rebuilt to the discovered depth in ``_rebuild_level_fields``.
-        col.addWidget(QLabel("Folder levels (root → position):"))
-        self._levels_box = QVBoxLayout()
-        self._levels_box.setContentsMargins(12, 0, 0, 0)
-        self._levels_box.setSpacing(2)
-        col.addLayout(self._levels_box)
-        self._levels_hint = QLabel("Discover first to name the folder levels.")
-        status_label(self._levels_hint, muted=True)
-        col.addWidget(self._levels_hint)
-
-        # Manual constant columns (batch-wide tags not in the folder tree).
-        self._manual_columns_box = QVBoxLayout()
-        self._manual_columns_box.setContentsMargins(12, 0, 0, 0)
-        self._manual_columns_box.setSpacing(2)
-        col.addLayout(self._manual_columns_box)
-        add_col_btn = QPushButton("+ Add column")
-        add_col_btn.setToolTip(
-            "Tag every added position with a constant column not in the folder tree, "
-            "e.g. operator or treatment."
-        )
-        action_button(add_col_btn)
-        add_col_btn.clicked.connect(lambda: self._add_manual_column())
-        col.addWidget(add_col_btn)
-
-        self._add_btn = QPushButton("Add to catalogue")
-        action_button(self._add_btn, expand=True)
-        self._add_btn.setEnabled(False)
-        self._add_btn.clicked.connect(self._on_add_to_catalogue)
-        col.addWidget(self._add_btn)
-
-        self._discover_status_lbl = QLabel("")
-        self._discover_status_lbl.setWordWrap(True)
-        status_label(self._discover_status_lbl)
-        col.addWidget(self._discover_status_lbl)
-
-        # Setup-y and occasional → nested and collapsed by default.
-        layout.addWidget(CollapsibleSection("Discover & add", container, expanded=False))
-
-    def _build_catalog_section(self, layout) -> None:
-        container = QWidget()
-        col = QVBoxLayout(container)
-        col.setContentsMargins(0, 0, 0, 0)
-        col.setSpacing(2)
-
-        # Custom-widget rows (not a QTableWidget) so each position carries a live
-        # status rail. The table is internally bounded + scrolls; the whole studio
-        # already lives in a scroll area.
-        self._table = CatalogTable()
-        self._table.selectionChanged.connect(self._on_selection_changed)
-        self._table.dotClicked.connect(self._on_stage_dot_clicked)
-        self._table.deleteRequested.connect(self._on_remove_selected)
-        self._table.previewRemoveRequested.connect(self._on_remove_preview)
-        col.addWidget(self._table, 1)
-
-        # Count / meta line under the table.
-        self._count_lbl = QLabel("")
-        status_label(self._count_lbl, muted=True)
-        col.addWidget(self._count_lbl)
+        self._panel.discover_requested.connect(self._on_discover_requested)
+        self._panel.selection_changed.connect(self._push_context)
+        self._panel.records_changed.connect(self._push_context)
+        self._panel.stage_load_requested.connect(self._on_stage_load_requested)
+        layout.addWidget(self._panel)
 
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 0, 0, 0)
@@ -335,24 +243,100 @@ class ContactAnalysisStudioWidget(QWidget):
         save_btn = QPushButton("Save CSV…")
         action_button(save_btn)
         save_btn.clicked.connect(self._on_save_csv)
-        remove_btn = QPushButton("Remove selected")
-        remove_btn.setToolTip("Drop the selected position(s) from the catalogue.")
-        action_button(remove_btn)
-        remove_btn.clicked.connect(self._on_remove_selected)
         clear_btn = QPushButton("Clear")
         action_button(clear_btn)
         clear_btn.clicked.connect(self._on_clear_catalog)
-        for btn in (load_btn, save_btn, remove_btn, clear_btn):
+        for btn in (load_btn, save_btn, clear_btn):
             actions_row.addWidget(btn)
-        col.addLayout(actions_row)
+        layout.addLayout(actions_row)
 
         self._catalog_status_lbl = QLabel("")
         self._catalog_status_lbl.setWordWrap(True)
         status_label(self._catalog_status_lbl)
-        col.addWidget(self._catalog_status_lbl)
+        layout.addWidget(self._catalog_status_lbl)
 
-        # The positions table is the always-visible core of the Catalogue region.
-        layout.addWidget(container)
+    # -------------------------------------------------------- panel host contract
+    def _discover(self, root: str, input_names: dict) -> list[dict]:
+        """Panel ``discover_fn``: stage every position folder found under *root*.
+
+        Each entry carries folder-derived columns (one per named nesting level,
+        seeded with the recognized identity axes) plus a ``position_id`` pinned to
+        the innermost folder name so positions keep distinct identities. Manual
+        batch-wide tags are *not* added here — the panel bakes those at commit.
+        """
+        cell = input_names.get("cell") or None
+        nucleus = input_names.get("nucleus") or None
+        if not cell and not nucleus:
+            return []
+        entries = discover_catalog_entries(root, cell_name=cell, nucleus_name=nucleus)
+        staged: list[dict] = []
+        for entry in entries:
+            levels = relative_levels(root, entry["position_path"])
+            columns = columns_from_levels(_seed_level_names(len(levels)), levels)
+            columns.setdefault("position_id", levels[-1] if levels else entry["id"])
+            staged.append(
+                {
+                    "key": str(entry["position_path"]),
+                    "columns": columns,
+                    "payload": entry,
+                }
+            )
+        return staged
+
+    def _status(self, payload) -> dict:
+        """Panel ``status_fn``: the per-stage rail status for one row's payload."""
+        pos_dir = payload.get("position_path") if isinstance(payload, dict) else None
+        return position_stage_status(pos_dir)
+
+    def _on_discover_requested(self) -> None:
+        """Discover button: pick a root, guard uniform depth, then stage it."""
+        root = QFileDialog.getExistingDirectory(self, "Select root folder to scan")
+        if not root:
+            return
+        names = self._panel.input_names()
+        cell = names.get("cell") or None
+        nucleus = names.get("nucleus") or None
+        try:
+            entries = discover_catalog_entries(root, cell_name=cell, nucleus_name=nucleus)
+        except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
+            self._set_catalog_status(f"Discover error: {exc}")
+            return
+        if entries and discovered_level_depth(
+            root, [e["position_path"] for e in entries]
+        ) is None:
+            self._set_catalog_status(
+                "Discovered positions sit at differing folder depths; the levels "
+                "cannot line up. Scan a root where every position is equally nested."
+            )
+            return
+        self._panel.discover(root)
+
+    def _on_stage_load_requested(self, payload, stage: str) -> None:
+        """A rail dot click → load that stage's output(s) for the position."""
+        pos_dir = payload.get("position_path") if isinstance(payload, dict) else None
+        if pos_dir is None:
+            ident = payload.get("id", "position") if isinstance(payload, dict) else "position"
+            self._set_catalog_status(f"{ident}: no canonical folder, cannot load.")
+            return
+        loaded = load_stage(self.viewer, pos_dir, stage)
+        if loaded:
+            self._set_catalog_status(f"Loaded {', '.join(loaded)}.")
+        elif stage == "contacts":
+            self._set_catalog_status(
+                "Contact analysis has no image to load — use Visualize Contacts."
+            )
+        else:
+            self._set_catalog_status(f"Nothing to load for {stage} yet.")
+
+    def _all_records(self) -> list[dict]:
+        """Every committed row as a normalized catalog record (row order)."""
+        return merge_catalog_records([], self._panel.records())
+
+    def _records_in_scope(self) -> list[dict]:
+        """Selected rows define scope; an empty selection means the whole catalog."""
+        return merge_catalog_records(
+            [], self._panel.selected_records() or self._panel.records()
+        )
 
     def _build_tools_section(self, layout) -> None:
         container = QWidget()
@@ -365,7 +349,11 @@ class ContactAnalysisStudioWidget(QWidget):
         header.setSpacing(2)
         header.addWidget(QLabel("Use a tool:"))
         header.addStretch(1)
-        reload_btn = QPushButton("↻")
+        reload_btn = QPushButton()
+        reload_btn.setIcon(
+            stage_action_icon("reset", muted_accent(stage_accent("contact_analysis")), size=16)
+        )
+        reload_btn.setIconSize(QSize(16, 16))
         reload_btn.setToolTip("Re-scan for tools and metrics.")
         action_button(reload_btn)
         reload_btn.clicked.connect(self._reload_plugins)
@@ -383,7 +371,8 @@ class ContactAnalysisStudioWidget(QWidget):
         self._plugin_host_layout.setAlignment(Qt.AlignTop)
         col.addWidget(self._plugin_host)
 
-        layout.addWidget(CollapsibleSection("Tools", container, expanded=False))
+        self._tools_section = CollapsibleSection("Tools", container, expanded=False)
+        layout.addWidget(self._tools_section)
 
     def _build_run_section(self, layout) -> None:
         """The single Run area: author catalog.csv + config.toml from the whole
@@ -399,7 +388,8 @@ class ContactAnalysisStudioWidget(QWidget):
         self._run_host_layout.setSpacing(0)
         self._run_area: RunArea | None = None
         col.addWidget(self._run_host)
-        layout.addWidget(CollapsibleSection("Run", container, expanded=True))
+        self._run_section = CollapsibleSection("Run", container, expanded=True)
+        layout.addWidget(self._run_section)
 
     def _reload_run_area(self) -> None:
         """(Re)create the Run area body from the quantifier registry."""
@@ -423,18 +413,19 @@ class ContactAnalysisStudioWidget(QWidget):
         flat beside the config). Blank falls back to the catalogue root.
         """
         chosen = (choices.out_dir or "").strip()
-        project_dir = Path(chosen) if chosen else catalogue_root(self._records)
+        records = self._all_records()
+        project_dir = Path(chosen) if chosen else catalogue_root(records)
         params = self._shared_params.build_params()
         return author_config(
             project_dir,
-            self._records,
+            records,
             tables_dir="." if chosen else None,
             quantities=choices.quantities,
             params=params,
         )
 
     def _on_run_save(self, choices) -> None:
-        if not self._records:
+        if not self._panel.keys():
             self._run_area.set_status("Add positions to the catalogue first.")
             return
         try:
@@ -448,7 +439,7 @@ class ContactAnalysisStudioWidget(QWidget):
         if self._run_worker is not None:
             self._run_area.set_status("A run is already in progress.")
             return
-        if not self._records:
+        if not self._panel.keys():
             self._run_area.set_status("Add positions to the catalogue first.")
             return
         try:
@@ -487,200 +478,6 @@ class ContactAnalysisStudioWidget(QWidget):
     def _set_catalog_status(self, message: str) -> None:
         self._catalog_status_lbl.setText(message)
 
-    def _on_browse_root(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select root folder to scan")
-        if path:
-            self._root_edit.setText(path)
-
-    def _set_discover_status(self, message: str) -> None:
-        self._discover_status_lbl.setText(message)
-
-    def _discover_tooltip_text(self) -> str:
-        """Plain-language scan description naming the filled input-file fields."""
-        names = [
-            edit.text().strip()
-            for edit in (self._cell_name_edit, self._nucleus_name_edit)
-            if edit.text().strip()
-        ]
-        if not names:
-            return "Enter at least one input file name, then scan a root folder."
-        joined = names[0] if len(names) == 1 else f"{' and '.join(names)}"
-        return (
-            "Find every folder under the root that contains "
-            f"{joined}, and stage each as a position."
-        )
-
-    def _update_discover_tooltip(self) -> None:
-        self._discover_btn.setToolTip(self._discover_tooltip_text())
-
-    def _on_discover(self) -> None:
-        root = self._root_edit.text().strip()
-        cell = self._cell_name_edit.text().strip()
-        nucleus = self._nucleus_name_edit.text().strip()
-        if not root:
-            self._set_discover_status("Enter a root folder to scan first.")
-            return
-        if not cell and not nucleus:
-            self._set_discover_status("Enter at least one input file name (cell or nucleus).")
-            return
-        try:
-            entries = discover_catalog_entries(
-                root,
-                cell_name=cell or None,
-                nucleus_name=nucleus or None,
-            )
-        except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
-            self._set_discover_status(f"Discover error: {exc}")
-            return
-
-        # Each entry carries its nesting levels (root → position folder) so a
-        # named level maps to that folder's name per position.
-        for entry in entries:
-            entry["levels"] = list(relative_levels(root, entry["position_path"]))
-        depth = discovered_level_depth(root, [e["position_path"] for e in entries])
-        if entries and depth is None:
-            self._pending_entries = []
-            self._refresh_table()
-            self._rebuild_level_fields(0)
-            self._add_btn.setEnabled(False)
-            self._set_discover_status(
-                "Discovered positions sit at differing folder depths; the levels "
-                "cannot line up. Scan a root where every position is equally nested."
-            )
-            return
-
-        self._pending_entries = entries
-        self._rebuild_level_fields(depth or 0)
-        self._populate_discovered()
-
-    def _rebuild_level_fields(self, depth: int) -> None:
-        """(Re)build one name field per nesting level, seeded by recognized axes."""
-        while self._levels_box.count():
-            item = self._levels_box.takeAt(0)
-            sub = item.layout()
-            if sub is not None:
-                while sub.count():
-                    w = sub.takeAt(0).widget()
-                    if w is not None:
-                        w.deleteLater()
-            elif item.widget() is not None:
-                item.widget().deleteLater()
-        self._level_name_fields = []
-        if depth <= 0:
-            self._levels_hint.setVisible(True)
-            return
-        self._levels_hint.setVisible(False)
-        for level, seed in enumerate(_seed_level_names(depth), start=1):
-            row = QHBoxLayout()
-            row.setContentsMargins(0, 0, 0, 0)
-            row.setSpacing(2)
-            lbl = QLabel(f"Level {level}:")
-            lbl.setFixedWidth(60)
-            edit = QLineEdit(seed)
-            edit.textChanged.connect(lambda _t: self._reapply_levels())
-            row.addWidget(lbl)
-            row.addWidget(edit, 1)
-            self._levels_box.addLayout(row)
-            self._level_name_fields.append(edit)
-
-    def _level_names(self) -> list[str]:
-        return [edit.text().strip() for edit in self._level_name_fields]
-
-    def _add_manual_column(self, name: str = "", value: str = "") -> None:
-        """Append a manual (name, value) constant-column field to the batch."""
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
-        name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText("column")
-        value_edit = QLineEdit(value)
-        value_edit.setPlaceholderText("value")
-        for edit in (name_edit, value_edit):
-            edit.textChanged.connect(lambda _t: self._reapply_levels())
-        row.addWidget(name_edit, 1)
-        row.addWidget(value_edit, 1)
-        self._manual_columns_box.addLayout(row)
-        self._manual_column_fields.append((name_edit, value_edit))
-
-    def _manual_columns(self) -> dict[str, str]:
-        columns: dict[str, str] = {}
-        for name_edit, value_edit in self._manual_column_fields:
-            name = name_edit.text().strip()
-            if name:
-                columns[name] = value_edit.text().strip()
-        return columns
-
-    def _columns_for_entry(self, entry: dict) -> dict[str, str]:
-        """Folder-derived columns for one entry, plus the manual constant tags.
-
-        ``position_id`` always resolves to the innermost folder name so positions
-        keep distinct identities even if the user renames that level away."""
-        segments = tuple(entry.get("levels", ()))
-        columns = columns_from_levels(self._level_names(), segments)
-        if segments:
-            columns.setdefault("position_id", segments[-1])
-        columns.update(self._manual_columns())
-        return columns
-
-    def _reapply_levels(self) -> None:
-        """Re-derive the staged preview as level names / manual tags change."""
-        if self._pending_entries:
-            self._populate_discovered()
-
-    def _preview_spec(self, entry: dict, preview_index: int) -> CatalogRowSpec:
-        """A dimmed catalog preview row for one discovered-not-yet-added entry."""
-        columns = self._columns_for_entry(entry)
-        return CatalogRowSpec(
-            record_index=None,
-            preview_index=preview_index,
-            values=(
-                str(columns.get("condition", "")),
-                str(columns.get("date", "")),
-                str(columns.get("position_id", entry.get("id", ""))),
-                _inputs_label(entry),
-                "",
-            ),
-            status=position_stage_status(entry.get("position_path")),
-        )
-
-    def _populate_discovered(self) -> None:
-        """Refresh the staged previews (they render in the catalog table below)."""
-        n = len(self._pending_entries)
-        self._add_btn.setEnabled(n > 0)
-        if not n:
-            self._set_discover_status("No matching positions found under the root.")
-        else:
-            self._set_discover_status(
-                f"{n} position(s) staged below — remove any with ✕, name the levels, "
-                "then Add to catalogue."
-            )
-        self._refresh_table()
-
-    def _on_remove_preview(self, preview_index: int) -> None:
-        """Drop one staged position before it is committed to the catalogue."""
-        if 0 <= preview_index < len(self._pending_entries):
-            del self._pending_entries[preview_index]
-            self._populate_discovered()
-
-    def _on_add_to_catalogue(self) -> None:
-        """Register the discovered positions — building is a builder-plugin action."""
-        if not self._pending_entries:
-            self._set_discover_status("Discover positions before adding.")
-            return
-        annotated = [
-            {**entry, "columns": self._columns_for_entry(entry)}
-            for entry in self._pending_entries
-        ]
-        added = len(annotated)
-        # Clear the staging *before* refreshing so the previews give way to the
-        # committed rows in one redraw.
-        self._pending_entries = []
-        self._add_btn.setEnabled(False)
-        self._merge_records(annotated, source=f"added {added} from discovery")
-        self._set_discover_status(
-            f"Added {added} position(s). Check a builder plugin to compute quantities."
-        )
-
     def _on_load_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Load catalog CSV", filter="CSV files (*.csv)"
@@ -689,15 +486,28 @@ class ContactAnalysisStudioWidget(QWidget):
             self._load_csv_from(Path(path))
 
     def _load_csv_from(self, path: Path) -> None:
+        """Merge a CSV catalog into the panel's current rows."""
         try:
             loaded = load_catalog(path)
         except Exception as exc:  # noqa: BLE001 - surface load errors in the UI
             self._set_catalog_status(f"Load error: {exc}")
             return
-        self._merge_records(loaded, source=f"loaded {len(loaded)} from CSV")
+        merged = merge_catalog_records(self._panel.records(), loaded)
+        entries = [
+            {
+                "key": str(rec.get("position_path") or rec["id"]),
+                "columns": dict(rec.get("columns") or {}),
+                "payload": rec,
+            }
+            for rec in merged
+        ]
+        self._panel.set_records(entries)
+        self._set_catalog_status(
+            f"Catalog: {len(merged)} position(s) (loaded {len(loaded)} from CSV)."
+        )
 
     def _on_save_csv(self) -> None:
-        if not self._records:
+        if not self._panel.keys():
             self._set_catalog_status("Nothing to save: the catalog is empty.")
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -711,150 +521,26 @@ class ContactAnalysisStudioWidget(QWidget):
             self._save_csv_to(Path(path))
 
     def _save_csv_to(self, path: Path) -> None:
+        records = self._all_records()
         try:
-            save_catalog(path, self._records)
+            save_catalog(path, records)
         except Exception as exc:  # noqa: BLE001 - surface save errors in the UI
             self._set_catalog_status(f"Save error: {exc}")
             return
-        self._set_catalog_status(f"Saved {len(self._records)} record(s) to {path.name}.")
-
-    def _on_remove_selected(self) -> None:
-        rows = self._selected_rows()
-        if not rows:
-            self._set_catalog_status("Select one or more positions to remove first.")
-            return
-        drop = {row for row in rows if 0 <= row < len(self._records)}
-        for record in (self._records[row] for row in drop):
-            path = record.get("contact_analysis_path")
-            if path is not None:
-                self._analysis_cache.pop(Path(path), None)
-        removed = len(drop)
-        self._records = [
-            record for row, record in enumerate(self._records) if row not in drop
-        ]
-        self._refresh_table()
-        self._set_catalog_status(
-            f"Removed {removed} position(s); {len(self._records)} remaining."
-        )
+        self._set_catalog_status(f"Saved {len(records)} record(s) to {path.name}.")
 
     def _on_clear_catalog(self) -> None:
-        self._records = []
+        self._panel.set_records([])
         self._analysis_cache.clear()
-        self._refresh_table()
         self._set_catalog_status("Catalog cleared.")
 
-    def _merge_records(self, incoming: list[dict], *, source: str) -> None:
-        self._records = merge_catalog_records(self._records, incoming)
-        self._refresh_table()
-        self._set_catalog_status(f"Catalog: {len(self._records)} position(s) ({source}).")
-
-    # --------------------------------------------------------------- table + scope
-    def _group_caption(self, record: dict) -> str:
-        """Bold-separator caption for a record's batch: its columns bar position_id."""
-        columns = record.get("columns") or {}
-        return "  ·  ".join(
-            f"{k}: {v}" for k, v in columns.items() if k != "position_id" and v
-        )
-
-    def _refresh_table(self) -> None:
-        """Rebuild the catalog rows: group separators + one status-rail row each.
-
-        Each position's rail is derived from its canonical position directory
-        (``position_path``); a row with none (a hand-authored CSV row with no
-        common root) gets an all-``unknown`` rail.
-        """
-        specs: list[CatalogRowSpec] = []
-        last_caption: str | None = None
-        for ridx, record in enumerate(self._records):
-            caption = self._group_caption(record)
-            if caption and caption != last_caption:
-                specs.append(CatalogRowSpec(record_index=None, caption=caption))
-            last_caption = caption
-            specs.append(
-                CatalogRowSpec(
-                    record_index=ridx,
-                    values=(
-                        str(record.get("condition", "")),
-                        str(record.get("date", "")),
-                        str(record.get("id", "")),
-                        _inputs_label(record),
-                        str(record.get("notes", "")),
-                    ),
-                    status=position_stage_status(record.get("position_path")),
-                )
-            )
-        # Staged (discovered-not-yet-added) positions ride below as dimmed previews.
-        if self._pending_entries:
-            specs.append(
-                CatalogRowSpec(
-                    record_index=None,
-                    caption=f"Staged — not yet added ({len(self._pending_entries)})",
-                )
-            )
-            for pidx, entry in enumerate(self._pending_entries):
-                specs.append(self._preview_spec(entry, pidx))
-        self._table.set_rows(specs)
-        #: Display-row → record-index map (``None`` for separators); mirrors the
-        #: table's own mapping so tests and callers keep a single source.
-        self._row_to_record = self._table.row_to_record
-        self._update_count()
-        self._push_context()
-
-    def _update_count(self) -> None:
-        n = len(self._records)
-        selected = len(self._selected_rows())
-        if not n:
-            self._count_lbl.setText("")
-            return
-        text = f"{n} position{'s' if n != 1 else ''}"
-        if selected:
-            text += f" · {selected} selected"
-        self._count_lbl.setText(text)
-
-    def _selected_rows(self) -> list[int]:
-        """Selected *record* indices — separator rows never select."""
-        return self._table.selected_record_indices()
-
-    def _on_stage_dot_clicked(self, record_index: int, stage: str) -> None:
-        """Click a rail dot → load that stage's output(s) for the position."""
-        if not (0 <= record_index < len(self._records)):
-            return
-        record = self._records[record_index]
-        pos_dir = record.get("position_path")
-        if pos_dir is None:
-            self._set_catalog_status(
-                f"{record.get('id', 'position')}: no canonical folder, cannot load."
-            )
-            return
-        loaded = load_stage(self.viewer, pos_dir, stage)
-        if loaded:
-            self._set_catalog_status(f"Loaded {', '.join(loaded)}.")
-        elif stage == "contacts":
-            self._set_catalog_status(
-                "Contact analysis has no image to load — use Visualize Contacts."
-            )
-        else:
-            self._set_catalog_status(f"Nothing to load for {stage} yet.")
-
-    def _records_in_scope(self) -> list[dict]:
-        """Selected rows define scope; an empty selection means the whole catalog."""
-        selected_rows = self._selected_rows()
-        if not selected_rows:
-            return list(self._records)
-        return [self._records[row] for row in selected_rows if 0 <= row < len(self._records)]
-
+    # --------------------------------------------------------------- scope
     def _scoped_records(self) -> list[dict]:
         """In-scope records stamped with the shared build params (pixel size /
         frame interval), so building and gating both see a manual override."""
         records = self._records_in_scope()
         shared = getattr(self, "_shared_params", None)
         return shared.stamp(records) if shared is not None else records
-
-    def _on_selection_changed(self) -> None:
-        # The single-position visualizer is now the Visualize Contacts plugin; it
-        # reads the in-scope rows from the context like every other plugin.
-        self._update_count()
-        self._push_context()
 
     # -------------------------------------------------------------- plugin hosting
     def _reload_plugins(self) -> None:

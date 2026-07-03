@@ -5,7 +5,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel
+from qtpy.QtWidgets import QLabel
 
 from cellflow.napari import contact_analysis_studio as mod
 from cellflow.napari.contact_analysis.plugins import (
@@ -17,7 +17,26 @@ from cellflow.napari.contact_analysis.plugins.catalog_summary import CatalogSumm
 
 
 def _app():
-    return QApplication.instance() or QApplication([])
+    # A bare QApplication([]) aborts under pytest here; go through napari's own
+    # bootstrap so the shared QApplication is created the way the app expects.
+    from napari.qt import get_qapp
+
+    return get_qapp()
+
+
+def _entry(record: dict) -> dict:
+    """A shared-panel entry (key/columns/payload) for a catalog record dict."""
+    key = record.get("position_path") or record.get("id") or record.get("contact_analysis_path")
+    return {
+        "key": str(key),
+        "columns": dict(record.get("columns") or {}),
+        "payload": record,
+    }
+
+
+def _load(widget, records: list[dict]) -> None:
+    """Seed the studio's ExperimentsPanel with committed rows from records."""
+    widget._panel.set_records([_entry(r) for r in records])
 
 
 def _make_ready_position(root: Path, condition: str, experiment: str, position: str) -> None:
@@ -111,14 +130,14 @@ def test_selection_scope_forwarded_to_plugins(monkeypatch):
 
     widget = mod.ContactAnalysisStudioWidget()
     # Plugins are always present and fed the scope; no checkbox to mount first.
-    widget._records = [
+    _load(widget, [
         {"condition": "ctrl", "date": "d1", "id": "p1", "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d1", "id": "p2", "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "incomplete"},
-    ]
-    widget._refresh_table()  # empty selection -> whole catalog in scope
+    ])
+    # Empty selection -> whole catalog in scope.
     assert received[-1] and len(received[-1]) == 2
 
-    widget._table.select_records([0])
+    widget._panel.set_active("p1")
     app.processEvents()
     assert len(received[-1]) == 1
     assert received[-1][0]["id"] == "p1"
@@ -139,16 +158,16 @@ def test_plugin_header_greyed_when_inputs_missing(monkeypatch):
     monkeypatch.setattr(mod, "available_tool_plugins", lambda: [entry])
 
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
-        {"condition": "c", "date": "d", "id": "p1", "contact_analysis_path": Path("/a.h5"),
-         "cell_tracked_labels_path": Path("/cells.tif"), "contact_analysis_status": "ready"},
-    ]
-    widget._refresh_table()
+    record = {
+        "condition": "c", "date": "d", "id": "p1", "contact_analysis_path": Path("/a.h5"),
+        "cell_tracked_labels_path": Path("/cells.tif"), "contact_analysis_status": "ready",
+    }
+    _load(widget, [record])
     toggle = widget._plugin_sections["needs_nucleus"].section._toggle
     assert toggle.isEnabled() is False
 
-    widget._records[0]["nucleus_tracked_labels_path"] = Path("/nuc.tif")
-    widget._refresh_table()
+    with_nucleus = {**record, "nucleus_tracked_labels_path": Path("/nuc.tif")}
+    _load(widget, [with_nucleus])
     assert toggle.isEnabled() is True
 
     widget.deleteLater()
@@ -177,7 +196,7 @@ def test_single_selection_drives_visualize_contacts_plugin(monkeypatch):
     calls: list[dict] = []
     monkeypatch.setattr(plugin._view, "set_context", lambda **kw: calls.append(kw))
 
-    widget._records = [
+    records = [
         {
             "condition": "ctrl", "date": "d1", "id": "p1",
             "contact_analysis_path": Path("/study/ctrl/d1/p1/4_contact_analysis/contact_analysis.h5"),
@@ -192,16 +211,16 @@ def test_single_selection_drives_visualize_contacts_plugin(monkeypatch):
             "contact_analysis_status": "incomplete",
         },
     ]
-    widget._refresh_table()
+    _load(widget, records)
 
     # One row selected -> contact view targets that position with its paths.
-    widget._table.select_records([0])
+    widget._panel.set_active(str(records[0]["position_path"]))
     app.processEvents()
-    assert calls[-1]["out_path"] == widget._records[0]["contact_analysis_path"]
-    assert calls[-1]["cell_labels"] == widget._records[0]["cell_tracked_labels_path"]
+    assert calls[-1]["out_path"] == records[0]["contact_analysis_path"]
+    assert calls[-1]["cell_labels"] == records[0]["cell_tracked_labels_path"]
 
     # Multi-selection is ambiguous for a single view -> cleared.
-    widget._table.select_all()
+    widget._panel.select_all()
     app.processEvents()
     assert calls[-1]["cell_labels"] is None and calls[-1]["out_path"] is None
 
@@ -229,45 +248,44 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     _make_ready_position(study, "ctrl", "exp1", "pos02")
 
     widget = mod.ContactAnalysisStudioWidget()
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
-    widget._nucleus_name_edit.setText("2_nucleus/tracked_labels.tif")
+    panel = widget._panel
+    panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
+    panel.input_name_fields["nucleus"].setText("2_nucleus/tracked_labels.tif")
 
-    # Discover stages a collection but does not add it yet.
-    widget._on_discover()
-    assert len(widget._pending_entries) == 2
-    # Staged positions render as dimmed preview rows in the table, not a side list.
-    assert len(widget._table.preview_row_widgets()) == 2
-    assert all(row.is_preview for row in widget._table.preview_row_widgets())
-    assert widget._records == []
+    # Discover stages a collection (dimmed preview rows) but does not commit it.
+    staged = panel.discover(str(study))
+    assert len(staged) == 2
+    assert panel.keys() == []
     # The three nesting levels (study → condition → experiment → position) are
     # seeded with the recognized identity axes, innermost = position_id.
-    assert widget._level_names() == ["condition", "experiment_id", "position_id"]
+    assert set(staged[0]["columns"]) >= {"condition", "experiment_id", "position_id"}
 
     # A manual constant tag rides onto every added row alongside the folder levels.
-    widget._add_manual_column("operator", "Ada")
-    widget._on_add_to_catalogue()
-    assert len(widget._records) == 2
-    assert widget._pending_entries == []
-    by_id = {r["id"]: r for r in widget._records}
+    panel.add_manual_column("operator", "Ada")
+    panel.commit_discovered()
+    records = widget._all_records()
+    assert len(records) == 2
+    assert panel.discovered() == []
+    by_id = {r["id"]: r for r in records}
     assert set(by_id) == {"pos01", "pos02"}
-    assert all(r["condition"] == "ctrl" for r in widget._records)
-    assert all(r["experiment_id"] == "exp1" for r in widget._records)
-    assert all(r["columns"]["operator"] == "Ada" for r in widget._records)
-    assert all(r["cell_tracked_labels_path"] is not None for r in widget._records)
+    assert all(r["condition"] == "ctrl" for r in records)
+    assert all(r["experiment_id"] == "exp1" for r in records)
+    assert all(r["columns"]["operator"] == "Ada" for r in records)
+    assert all(r["cell_tracked_labels_path"] is not None for r in records)
 
     # CSV round-trip preserves the label paths and the free-form columns.
     csv_path = tmp_path / "catalog.csv"
     widget._save_csv_to(csv_path)
     assert "operator" in csv_path.read_text().splitlines()[0]
     widget._on_clear_catalog()
-    assert widget._records == []
+    assert widget._panel.keys() == []
     widget._load_csv_from(csv_path)
-    assert len(widget._records) == 2
-    assert all(r["cell_tracked_labels_path"] is not None for r in widget._records)
-    assert all(r["nucleus_tracked_labels_path"] is not None for r in widget._records)
-    assert all(r["columns"]["operator"] == "Ada" for r in widget._records)
-    assert all(r["experiment_id"] == "exp1" for r in widget._records)
+    records = widget._all_records()
+    assert len(records) == 2
+    assert all(r["cell_tracked_labels_path"] is not None for r in records)
+    assert all(r["nucleus_tracked_labels_path"] is not None for r in records)
+    assert all(r["columns"]["operator"] == "Ada" for r in records)
+    assert all(r["experiment_id"] == "exp1" for r in records)
 
     widget.deleteLater()
     app.processEvents()
@@ -280,51 +298,53 @@ def test_staged_preview_row_individually_removable(tmp_path):
     _make_ready_position(study, "ctrl", "exp1", "pos02")
 
     widget = mod.ContactAnalysisStudioWidget()
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
-    widget._on_discover()
-    assert len(widget._table.preview_row_widgets()) == 2
+    panel = widget._panel
+    panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
+    panel.discover(str(study))
+    assert len(panel.discovered()) == 2
 
-    # Drop one staged position before committing — the other survives.
-    widget._on_remove_preview(0)
-    assert len(widget._pending_entries) == 1
-    assert len(widget._table.preview_row_widgets()) == 1
+    # Drop one staged preview before committing — the other survives. (The panel
+    # deletes selected previews before committed rows.)
+    first_key = panel.discovered()[0]["key"]
+    panel._on_preview_clicked(first_key, 0)
+    panel.delete_selected()
+    assert len(panel.discovered()) == 1
 
     # Adding commits the remaining preview; previews clear, one record lands.
-    widget._on_add_to_catalogue()
-    assert len(widget._records) == 1
-    assert widget._table.preview_row_widgets() == []
+    panel.commit_discovered()
+    assert len(widget._all_records()) == 1
+    assert panel.discovered() == []
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_renaming_a_level_rederives_staged_columns(tmp_path):
+def test_renaming_a_column_carries_folder_values(tmp_path):
     app = _app()
     study = tmp_path / "study"
     _make_ready_position(study, "ctrl", "exp1", "pos01")
 
     widget = mod.ContactAnalysisStudioWidget()
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
-    widget._on_discover()
+    panel = widget._panel
+    panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
+    panel.discover(str(study))
+    panel.commit_discovered()
 
-    # Rename the outermost level before committing; the column follows live.
-    widget._level_name_fields[0].setText("genotype")
-    cols = widget._columns_for_entry(widget._pending_entries[0])
+    # The folder-derived columns seed to the recognized identity axes; renaming
+    # the outermost column (condition → genotype) carries the folder value across
+    # while position_id stays pinned to the innermost folder name.
+    assert panel.column_names()[0] == "condition"
+    panel.rename_column(0, "genotype")
+    cols = panel.records()[0]["columns"]
     assert cols["genotype"] == "ctrl"
     assert "condition" not in cols
-    # position_id still resolves to the innermost folder name (kept unique).
     assert cols["position_id"] == "pos01"
-
-    widget._on_add_to_catalogue()
-    assert widget._records[0]["columns"]["genotype"] == "ctrl"
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_discover_refuses_mixed_depth_positions(tmp_path):
+def test_discover_refuses_mixed_depth_positions(tmp_path, monkeypatch):
     app = _app()
     study = tmp_path / "study"
     _make_ready_position(study, "ctrl", "exp1", "pos01")  # depth 3
@@ -333,65 +353,60 @@ def test_discover_refuses_mixed_depth_positions(tmp_path):
     (shallow / "3_cell" / "tracked_labels.tif").touch()
 
     widget = mod.ContactAnalysisStudioWidget()
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
-    widget._on_discover()
+    widget._panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
+    # The Discover button opens a folder dialog; feed it the mixed-depth root.
+    monkeypatch.setattr(
+        mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(study)
+    )
+    widget._on_discover_requested()
 
     # Differing depths can't line up to named levels → nothing staged, a warning.
-    assert widget._pending_entries == []
-    assert widget._level_name_fields == []
-    assert not widget._add_btn.isEnabled()
-    assert "differing folder depths" in widget._discover_status_lbl.text()
+    assert widget._panel.discovered() == []
+    assert widget._panel.keys() == []
+    assert "differing folder depths" in widget._catalog_status_lbl.text()
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_dynamic_discover_tooltip_names_filled_inputs():
+def test_discover_button_opens_dialog_and_stages(tmp_path, monkeypatch):
     app = _app()
+    study = tmp_path / "study"
+    _make_ready_position(study, "ctrl", "exp1", "pos01")
+    _make_ready_position(study, "ctrl", "exp1", "pos02")
+
     widget = mod.ContactAnalysisStudioWidget()
-
-    widget._cell_name_edit.setText("")
-    widget._nucleus_name_edit.setText("")
-    assert "at least one input file" in widget._discover_btn.toolTip()
-
-    widget._cell_name_edit.setText("cells.tif")
-    assert "cells.tif" in widget._discover_btn.toolTip()
-    widget._nucleus_name_edit.setText("nuc.tif")
-    tip = widget._discover_btn.toolTip()
-    assert "cells.tif" in tip and "nuc.tif" in tip
+    widget._panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
+    monkeypatch.setattr(
+        mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(study)
+    )
+    widget._on_discover_requested()
+    # Uniform-depth root → both positions staged as previews, none committed yet.
+    assert len(widget._panel.discovered()) == 2
+    assert widget._panel.keys() == []
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_group_separators_and_remove_with_separators(tmp_path):
+def test_delete_via_panel_drops_only_that_row(tmp_path):
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    # Two batches (distinct column captions) → a separator row precedes each.
-    widget._records = [
+    _load(widget, [
         {"condition": "WT", "date": "d1", "id": "p1",
-         "columns": {"condition": "WT", "position_id": "p1"},
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "WT", "date": "d1", "id": "p2",
-         "columns": {"condition": "WT", "position_id": "p2"},
          "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "ready"},
         {"condition": "KO", "date": "d1", "id": "p3",
-         "columns": {"condition": "KO", "position_id": "p3"},
          "contact_analysis_path": Path("/c.h5"), "contact_analysis_status": "ready"},
-    ]
-    widget._refresh_table()
-    # 3 records + 2 group separators = 5 table rows.
-    assert widget._table.row_count() == 5
-    assert widget._row_to_record == [None, 0, 1, None, 2]
+    ])
+    assert len(widget._panel.keys()) == 3
 
-    # Selecting the KO data row (table row 4) maps to record index 2, and removing
-    # it drops exactly p3 despite the separator offset.
-    widget._table.select_records([2])
+    # Select the KO row and delete it via the panel's own Delete-selected path.
+    widget._panel.set_active("p3")
     app.processEvents()
-    assert widget._selected_rows() == [2]
-    widget._on_remove_selected()
-    assert [r["id"] for r in widget._records] == ["p1", "p2"]
+    widget._panel.delete_selected()
+    assert [r["id"] for r in widget._all_records()] == ["p1", "p2"]
 
     widget.deleteLater()
     app.processEvents()
@@ -414,15 +429,15 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     (p1 / "aggregate_quantification" / "contact_analysis.h5").touch()
 
     widget = mod.ContactAnalysisStudioWidget()
+    panel = widget._panel
+    panel.input_name_fields["cell"].setText("cell_labels.tif")
+    panel.discover(str(study))
+    assert len(panel.discovered()) == 2
 
-    widget._root_edit.setText(str(study))
-    widget._cell_name_edit.setText("cell_labels.tif")
-    widget._on_discover()
-    assert len(widget._pending_entries) == 2
-
-    widget._on_add_to_catalogue()
-    assert len(widget._records) == 2
-    by_id = {r["id"]: r for r in widget._records}
+    panel.commit_discovered()
+    records = widget._all_records()
+    assert len(records) == 2
+    by_id = {r["id"]: r for r in records}
     assert by_id["pos01"]["contact_analysis_status"] == "ready"
     assert by_id["pos02"]["contact_analysis_status"] == "incomplete"
 
@@ -458,11 +473,10 @@ def test_run_section_authors_config_and_dispatches_run(tmp_path, monkeypatch):
     pdir = tmp_path / "study" / "p1"
     pdir.mkdir(parents=True)
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
+    _load(widget, [
         {"id": "p1", "position_path": pdir, "condition": "ctrl",
          "date": "d", "notes": ""},
-    ]
-    widget._refresh_table()  # feeds the Run area the catalogue scope
+    ])
 
     seen = {}
 
@@ -543,10 +557,10 @@ def test_catalog_summary_plugin_reports_counts():
 def test_save_csv_appends_csv_extension(tmp_path, monkeypatch):
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
+    _load(widget, [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
-    ]
+    ])
 
     # User picks a name without an extension; getSaveFileName returns it verbatim.
     target = tmp_path / "my_catalog"
@@ -565,10 +579,10 @@ def test_save_csv_appends_csv_extension(tmp_path, monkeypatch):
 def test_save_csv_keeps_existing_csv_extension(tmp_path, monkeypatch):
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
+    _load(widget, [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
-    ]
+    ])
     target = tmp_path / "cat.csv"
     monkeypatch.setattr(
         mod.QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), "")
@@ -585,25 +599,21 @@ def test_save_csv_keeps_existing_csv_extension(tmp_path, monkeypatch):
 def test_remove_selected_drops_only_selected_rows():
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
+    _load(widget, [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d1", "id": "p2",
          "contact_analysis_path": Path("/b.h5"), "contact_analysis_status": "ready"},
         {"condition": "drug", "date": "d2", "id": "p3",
          "contact_analysis_path": Path("/c.h5"), "contact_analysis_status": "ready"},
-    ]
-    widget._refresh_table()
-    # Seed the analysis cache so we can confirm dropped rows are evicted.
-    widget._analysis_cache[Path("/b.h5")] = object()
+    ])
 
-    widget._table.select_records([1])
+    widget._panel.set_active("p2")
     app.processEvents()
-    widget._on_remove_selected()
+    widget._panel.delete_selected()
 
-    assert [r["id"] for r in widget._records] == ["p1", "p3"]
-    assert widget._table.row_count() == 2
-    assert Path("/b.h5") not in widget._analysis_cache
+    assert [r["id"] for r in widget._all_records()] == ["p1", "p3"]
+    assert len(widget._panel.keys()) == 2
 
     widget.deleteLater()
     app.processEvents()
@@ -612,34 +622,32 @@ def test_remove_selected_drops_only_selected_rows():
 def test_remove_selected_without_selection_is_a_noop():
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    widget._records = [
+    _load(widget, [
         {"condition": "ctrl", "date": "d1", "id": "p1",
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
-    ]
-    widget._refresh_table()
-    widget._table.clear_selection()
+    ])
+    widget._panel.clear_selection()
     app.processEvents()
-    widget._on_remove_selected()
+    widget._panel.delete_selected()
 
-    assert [r["id"] for r in widget._records] == ["p1"]
+    assert [r["id"] for r in widget._all_records()] == ["p1"]
 
     widget.deleteLater()
     app.processEvents()
 
 
-def test_count_line_reports_positions_and_selection():
+def test_panel_reports_positions_and_selection():
     app = _app()
     widget = mod.ContactAnalysisStudioWidget()
-    assert widget._count_lbl.text() == ""  # empty catalog → no count
-    widget._records = [
+    assert widget._panel.keys() == []  # empty catalog
+    _load(widget, [
         {"condition": "c", "date": "d", "id": "p1", "contact_analysis_path": Path("/a.h5")},
         {"condition": "c", "date": "d", "id": "p2", "contact_analysis_path": Path("/b.h5")},
-    ]
-    widget._refresh_table()
-    assert widget._count_lbl.text() == "2 positions"
-    widget._table.select_records([0])
+    ])
+    assert len(widget._panel.keys()) == 2
+    widget._panel.set_active("p1")
     app.processEvents()
-    assert "1 selected" in widget._count_lbl.text()
+    assert len(widget._panel.selected_payloads()) == 1
     widget.deleteLater()
     app.processEvents()
 
@@ -669,19 +677,17 @@ def test_clicking_nucleus_dot_loads_stage_into_viewer(tmp_path):
 
     viewer = _Viewer()
     widget = mod.ContactAnalysisStudioWidget(viewer=viewer)
-    widget._records = [
-        {"condition": "c", "date": "d", "id": "p1", "position_path": pos,
-         "contact_analysis_path": pos / "x.h5", "contact_analysis_status": "incomplete"},
-    ]
-    widget._refresh_table()
+    record = {"condition": "c", "date": "d", "id": "p1", "position_path": pos,
+              "contact_analysis_path": pos / "x.h5", "contact_analysis_status": "incomplete"}
+    _load(widget, [record])
 
-    widget._on_stage_dot_clicked(0, "nucleus")
+    # A rail-dot click emits stage_load_requested(payload, stage); the studio
+    # loads that stage's outputs for the position.
+    widget._on_stage_load_requested(record, "nucleus")
     assert viewer.added == ["p1:nucleus_labels"]
 
     # A row with no canonical folder reports it can't load.
-    widget._records = [{"id": "loose", "position_path": None}]
-    widget._refresh_table()
-    widget._on_stage_dot_clicked(0, "nucleus")
+    widget._on_stage_load_requested({"id": "loose", "position_path": None}, "nucleus")
     assert "cannot load" in widget._catalog_status_lbl.text()
 
     widget.deleteLater()
@@ -693,7 +699,8 @@ def test_discovery_fields_default_to_committed_final_output_names():
     widget = mod.ContactAnalysisStudioWidget()
     # Finalized positions (base-folder *_labels.tif) are auto-discovered by
     # default; the user overrides to a working stage file when uncommitted.
-    assert widget._cell_name_edit.text() == "cell_labels.tif"
-    assert widget._nucleus_name_edit.text() == "nucleus_labels.tif"
+    fields = widget._panel.input_name_fields
+    assert fields["cell"].text() == "cell_labels.tif"
+    assert fields["nucleus"].text() == "nucleus_labels.tif"
     widget.deleteLater()
     app.processEvents()

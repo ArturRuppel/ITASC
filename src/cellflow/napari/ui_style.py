@@ -182,6 +182,61 @@ def stage_header_disabled_action_color(stage_key: str) -> str:
     return color.name()
 
 
+# ── Designed-surface tokens (napariTFM ExperimentsList parity) ────────────
+# Theme-agnostic so the experiments panel sits on any host background: selected
+# rows are a translucent white "lift", text uses a grey ramp, inputs are pills.
+COMPACT_SPACING = 4
+TEXT_BRIGHT = "#e6edf3"
+TEXT_MID = "#aeb6c0"
+TEXT_DIM = "#6b7484"
+ROW_LIFT_BG = "rgba(255, 255, 255, 13)"   # a selected/raised row surface
+HAIRLINE = "rgba(255, 255, 255, 18)"
+
+# Experiment-row overall-status word -> color (amber running, green done, dim queued).
+EXPERIMENT_STATUS_COLORS = {
+    "run": "#e3b341",
+    "done": "#3fb950",
+    "queued": TEXT_DIM,
+}
+
+
+def experiment_status_color(label: str) -> str:
+    """Color for an experiment row's overall-status word (run/done/queued)."""
+    return EXPERIMENT_STATUS_COLORS.get(label, TEXT_DIM)
+
+
+def experiment_name_color(selected: bool) -> str:
+    """Brighten the active row's name; dim the rest."""
+    return TEXT_BRIGHT if selected else TEXT_MID
+
+
+def experiment_row_style(selected: bool, accent: str) -> str:
+    """Row container style: a raised, accent-bordered surface when selected."""
+    if not selected:
+        return (
+            "QWidget#experiment_row { background: transparent; "
+            "border: 1px solid transparent; border-radius: 8px; }"
+        )
+    r, g, b, _ = QColor(accent).getRgb()
+    return (
+        "QWidget#experiment_row { "
+        f"background: {ROW_LIFT_BG}; "
+        f"border: 1px solid rgba({r}, {g}, {b}, 130); "
+        "border-radius: 8px; }"
+    )
+
+
+def mono_input_style() -> str:
+    """Themed pill style for a QLineEdit, so config fields aren't raw Qt."""
+    return (
+        "QLineEdit { "
+        "background: rgba(255, 255, 255, 8); "
+        f"border: 1px solid {HAIRLINE}; border-radius: 6px; "
+        f"padding: 3px 7px; color: {TEXT_BRIGHT}; }} "
+        "QLineEdit:focus { border-color: rgba(255, 255, 255, 38); }"
+    )
+
+
 def _fixed_widget(widget, width=None):
     if width is not None:
         widget.setMaximumWidth(width)

@@ -6,14 +6,12 @@ from pathlib import Path
 
 import napari
 from napari.utils.notifications import show_error, show_info, show_warning
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
-    QPushButton,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -21,6 +19,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.contact_analysis.catalog import columns_from_levels, relative_levels
+from cellflow.napari._experiments_panel import ExperimentsPanel
+from cellflow.napari._icons import stage_action_icon
+from cellflow.napari._stage_loader import load_stage
+from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
@@ -34,14 +37,69 @@ from cellflow.napari._widget_helpers import tool_btn
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
     active_theme_name,
-    icon_button,
+    muted_accent,
     muted_label,
     refresh_stage_header_labels,
     set_active_theme,
     stage_accent,
     theme_names,
-    tiny_button,
 )
+
+
+#: Innermost nesting levels seeded with the recognized identity axes (innermost =
+#: position_id), so the common ``condition / experiment_id / pos`` layout names
+#: itself; deeper levels get generic ``level_k`` placeholders.
+_SEED_LEVEL_NAMES = ("condition", "experiment_id", "position_id")
+
+
+def _seed_level_names(depth: int) -> list[str]:
+    """Default name for each of *depth* nesting levels (anchored at the root)."""
+    names = [f"level_{i + 1}" for i in range(depth)]
+    for offset, seed in enumerate(reversed(_SEED_LEVEL_NAMES), start=1):
+        if offset <= depth:
+            names[depth - offset] = seed
+    return names
+
+
+def _discover_positions(root: str, input_names: dict[str, str]) -> list[dict]:
+    """Find CellFlow position folders under *root* by their raw input files.
+
+    A *position* is any folder containing at least one named raw input — the
+    nucleus and/or cell image (each a bare file name or a path relative to the
+    position folder, e.g. ``0_input/nucleus_3dt.tif``; the ``_3dt`` suffix varies
+    with dimensionality — ``2d`` / ``2dt`` / ``3dt``). Each match becomes a panel
+    entry whose columns are derived from its nesting under *root* (folder-derived
+    columns, seeded with the recognized identity axes)."""
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return []
+    names = [n for n in input_names.values() if n]
+    if not names:
+        return []
+
+    by_position: dict[Path, set[str]] = {}
+    for name in names:
+        rel = Path(name)
+        for match in sorted(root_path.rglob(rel.name)):
+            if not match.is_file():
+                continue
+            if len(rel.parts) > 1 and match.parts[-len(rel.parts):] != rel.parts:
+                continue
+            pos = match
+            for _ in rel.parts:
+                pos = pos.parent
+            by_position.setdefault(pos.resolve(), set()).add(name)
+
+    entries: list[dict] = []
+    for pos in sorted(by_position):
+        levels = relative_levels(root_path, pos)
+        columns = columns_from_levels(_seed_level_names(len(levels)), levels)
+        if levels:
+            columns.setdefault("position_id", levels[-1])
+        entries.append(
+            {"key": str(pos), "columns": columns, "payload": {"position_path": pos}}
+        )
+    return entries
 
 
 class CellFlowMainWidget(QWidget):
@@ -132,6 +190,28 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("contact_analysis"),
         )
 
+        # Positions panel (napariTFM ExperimentsList parity): discover a study
+        # root, add its position folders to a list, and select one to drive the
+        # detail sections below. The five stage sections ARE the selected
+        # position's detail pane — selecting a row sets ``_pos_dir``.
+        self._positions_panel = ExperimentsPanel(
+            title="Positions",
+            input_fields=[
+                ("nucleus", "Nucleus image", "0_input/nucleus_3dt.tif"),
+                ("cell", "Cell image", "0_input/cell_3dt.tif"),
+            ],
+            discover_fn=_discover_positions,
+            status_fn=lambda payload: position_stage_status(
+                payload.get("position_path") if payload else None
+            ),
+            show_calibration=True,  # pixel size / frame length live in Setup
+            show_manual_columns=True,
+            show_run=False,  # batch Run selected is a later (stage-spine) pass
+        )
+        self._positions_panel.active_changed.connect(self._on_active_position)
+        self._positions_panel.discover_requested.connect(self._on_discover_positions)
+        self._positions_panel.stage_load_requested.connect(self._on_position_stage_load)
+
         # Viewer-activity banner sits at the top level, above Project Status, so
         # the "exit the active mode" hint is visible regardless of which section
         # holds the active viewer owner (correction / db-browser / live preview).
@@ -148,19 +228,24 @@ class CellFlowMainWidget(QWidget):
         )
         self.scroll_layout.addWidget(self.viewer_activity_banner)
 
+        self.scroll_layout.addWidget(self._positions_panel)
         self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
 
-        for section in (
+        # The five stage sections ARE the selected-position detail pane: they
+        # stay hidden until a position is active (progressive disclosure — an
+        # empty workspace shows only the toolbar + the positions panel).
+        self._stage_sections = (
             self.data_section,
             self.cellpose_section,
             self.nucleus_section,
             self.cell_section,
             self.contact_analysis_section,
-        ):
+        )
+        for section in self._stage_sections:
             section.set_status("not_started")
 
         # Add stretch at the end
@@ -179,6 +264,18 @@ class CellFlowMainWidget(QWidget):
 
         self.gate.changed.connect(self._update_activity_banner)
         self._update_activity_banner()
+        self._update_disclosure()
+
+    def _update_disclosure(self) -> None:
+        """Reveal the stage sections only once a position is active.
+
+        Empty workspace → only the toolbar and the positions panel show; the
+        five stage sections (the selected-position detail pane) appear the moment
+        a row is selected and hide again when the selection is cleared.
+        """
+        tuning = self._pos_dir is not None
+        for section in self._stage_sections:
+            section.setVisible(tuning)
 
     def _connect_label_selection_sync(self) -> None:
         """Synchronize selected cell/nucleus IDs across correction widgets."""
@@ -280,65 +377,75 @@ class CellFlowMainWidget(QWidget):
         self.theme_btn.setToolTip(f"Theme: {current}")
 
     def _setup_project_ui(self, layout: QVBoxLayout) -> None:
-        """Create the top-level project metadata and buttons."""
-        proj_widget = QWidget()
-        proj_lay = QVBoxLayout(proj_widget)
-        proj_lay.setContentsMargins(0, 0, 0, 0)
-        proj_lay.setSpacing(4)
+        """The top toolbar: a title + compact Project / Params action buttons.
 
-        # Row 1: Metadata
-        meta_row = QHBoxLayout()
-        meta_row.setSpacing(4)
-        
-        meta_row.addWidget(QLabel("px:"))
-        self.px_edit = QLineEdit()
-        self.px_edit.setFixedWidth(40)
-        meta_row.addWidget(self.px_edit)
+        Calibration (pixel size / frame length) has moved into the positions
+        panel's Setup section; the single manual "Position Folder…" pick remains
+        here as a fallback to the panel's Discover-and-select flow, alongside the
+        per-position config save/load and a global refresh.
+        """
+        bar = QWidget()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
 
-        meta_row.addWidget(QLabel("dt:"))
-        self.dt_edit = QLineEdit()
-        self.dt_edit.setFixedWidth(40)
-        meta_row.addWidget(self.dt_edit)
+        title = QLabel("CellFlow")
+        title.setStyleSheet("font-weight: bold;")
+        row.addWidget(title)
 
-        meta_row.addWidget(QLabel("C:"))
-        self.cond_edit = QLineEdit()
-        meta_row.addWidget(self.cond_edit)
+        row.addWidget(self._toolbar_group_label("Project"))
+        # ``new`` = open/start work on a position folder (the front door); the
+        # config load/save pair reuse napariTFM's load/save glyphs — the caption
+        # and the arrow direction disambiguate the two groups on purpose.
+        self.project_btn = self._toolbar_icon_btn("new", "Select a position folder…")
+        self.load_btn = self._toolbar_icon_btn("load", "Load config from the position folder")
+        self.save_btn = self._toolbar_icon_btn("save", "Save config into the position folder")
+        for btn in (self.project_btn, self.load_btn, self.save_btn):
+            row.addWidget(btn)
 
-        self.refresh_btn = QPushButton("↺")
-        icon_button(self.refresh_btn)
-        self.refresh_btn.setToolTip("Refresh all status")
-        meta_row.addWidget(self.refresh_btn)
-        
-        proj_lay.addLayout(meta_row)
+        row.addWidget(self._toolbar_group_label("Params"))
+        self.load_from_btn = self._toolbar_icon_btn("load", "Load config from a file…")
+        self.save_as_btn = self._toolbar_icon_btn("save", "Save config to a file…")
+        for btn in (self.load_from_btn, self.save_as_btn):
+            row.addWidget(btn)
 
-        # Row 2: Project Actions
-        project_row = QHBoxLayout()
-        project_row.setSpacing(4)
-        self.project_btn = QPushButton("Position Folder...")
-        tiny_button(self.project_btn)
-        project_row.addWidget(self.project_btn)
-        proj_lay.addLayout(project_row)
+        row.addStretch()
+        self.refresh_btn = self._toolbar_icon_btn("reset", "Refresh all status")
+        row.addWidget(self.refresh_btn)
 
-        # Row 3: Config Actions
-        config_row = QHBoxLayout()
-        config_row.setSpacing(4)
-        self.save_btn = QPushButton("Save Config")
-        self.save_as_btn = QPushButton("Save Config As...")
-        self.load_btn = QPushButton("Load Config")
-        self.load_from_btn = QPushButton("Load Config From...")
-        
-        for btn in (self.save_btn, self.save_as_btn, self.load_btn, self.load_from_btn):
-            tiny_button(btn)
-            config_row.addWidget(btn)
-        proj_lay.addLayout(config_row)
+        layout.addWidget(bar)
 
-        # Row 4: Path Label
         self.path_label = QLabel("[no folder]")
         muted_label(self.path_label)
         self.path_label.setWordWrap(True)
-        proj_lay.addWidget(self.path_label)
+        layout.addWidget(self.path_label)
 
-        layout.addWidget(proj_widget)
+    #: Toolbar icon geometry — matches napariTFM's title-row buttons.
+    _TOOLBAR_ICON_SIZE = 18
+    _TOOLBAR_ICON_STROKE = 2.0
+
+    def _toolbar_icon_btn(self, icon_name: str, tooltip: str) -> QToolButton:
+        """A compact, icon-only, auto-raised toolbar button (napariTFM parity)."""
+        button = QToolButton()
+        accent = stage_accent("project_status")
+        button.setIcon(
+            stage_action_icon(
+                icon_name,
+                muted_accent(accent),
+                disabled_color=muted_accent(muted_accent(accent)),
+                size=self._TOOLBAR_ICON_SIZE,
+                stroke_width=self._TOOLBAR_ICON_STROKE,
+            )
+        )
+        button.setIconSize(QSize(self._TOOLBAR_ICON_SIZE, self._TOOLBAR_ICON_SIZE))
+        button.setToolTip(tooltip)
+        button.setAutoRaise(True)
+        return button
+
+    def _toolbar_group_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        muted_label(label)
+        return label
 
     def _on_set_position_folder(self) -> None:
         """Pick a position folder and load its config if present.
@@ -354,6 +461,7 @@ class CellFlowMainWidget(QWidget):
         def action() -> None:
             p = Path(path)
             self._pos_dir = p
+            self._update_disclosure()
             self.path_label.setText(str(p))
             self.path_label.setToolTip(str(p))
 
@@ -366,13 +474,48 @@ class CellFlowMainWidget(QWidget):
 
         self._change_context(action)
 
+    def _on_discover_positions(self) -> None:
+        """Discover button on the positions panel: pick a study root and scan it."""
+        path = QFileDialog.getExistingDirectory(self, "Select study root to scan")
+        if path:
+            self._positions_panel.discover(path)
+
+    def _on_active_position(self, payload) -> None:
+        """A positions-panel row was activated: make it the working ``pos_dir``.
+
+        The selected position folder *is* ``pos_dir`` — the detail sections below
+        retarget to it, exactly as the manual folder picker does. Routed through
+        ``_change_context`` so an active viewer owner is offered an exit first.
+        """
+        if not payload or not payload.get("position_path"):
+            return
+        pos = Path(payload["position_path"])
+
+        def action() -> None:
+            self._pos_dir = pos
+            self._update_disclosure()
+            self.path_label.setText(str(pos))
+            self.path_label.setToolTip(str(pos))
+            config_path = pos / "cellflow_config.json"
+            if config_path.exists():
+                self._load_config(str(config_path))
+            self._refresh_all()
+
+        self._change_context(action)
+
+    def _on_position_stage_load(self, payload, stage: str) -> None:
+        """Click a row's rail dot → load that stage's output(s) into the viewer."""
+        if not payload or not payload.get("position_path"):
+            return
+        load_stage(self.viewer, Path(payload["position_path"]), stage)
+
     def get_state(self) -> dict:
         """Return the current UI state as a dictionary."""
+        calibration = self._positions_panel.calibration_values()
         return {
             "metadata": {
-                "pixel_size_um": self.px_edit.text(),
-                "time_interval_s": self.dt_edit.text(),
-                "condition": self.cond_edit.text(),
+                "pixel_size_um": calibration.get("pixel_size_um", ""),
+                "time_interval_s": calibration.get("time_interval_s", ""),
             },
             "cellpose": self._cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
@@ -383,11 +526,11 @@ class CellFlowMainWidget(QWidget):
         """Update the UI state from a dictionary."""
         if "metadata" in state:
             m = state["metadata"]
-            if "pixel_size_um" in m: self.px_edit.setText(str(m["pixel_size_um"]))
-            if "time_interval_s" in m: self.dt_edit.setText(str(m["time_interval_s"]))
-            if "condition" in m: self.cond_edit.setText(str(m["condition"]))
-            # ``position`` from legacy project-root configs is intentionally
-            # ignored: the picked folder now carries identity.
+            # Calibration now lives in the positions panel's Setup section.
+            self._positions_panel.set_calibration_values(m)
+            # Legacy ``condition`` / ``position`` keys are intentionally ignored:
+            # condition is a folder-derived per-position column, and the selected
+            # folder carries position identity.
 
         if "cellpose" in state:
             self._cellpose_widget.set_state(state["cellpose"])

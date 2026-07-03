@@ -65,6 +65,30 @@ def _fake_viewer():
     return viewer
 
 
+def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
+    """Discover finds position folders; activating a row sets ``_pos_dir``."""
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    for cond, pos in (("WT", "p1"), ("WT", "p2"), ("KO", "p1")):
+        raw = tmp_path / cond / pos / "0_input"
+        raw.mkdir(parents=True)
+        (raw / "nucleus_3dt.tif").touch()  # the discovery input file
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    staged = w._positions_panel.discover(str(tmp_path))
+    assert len(staged) == 3
+    assert w._positions_panel.keys() == []  # staging does not commit
+    w._positions_panel.commit_discovered()
+    keys = w._positions_panel.keys()
+    assert len(keys) == 3
+
+    target = str(tmp_path / "WT" / "p2")
+    w._positions_panel.set_active(target)
+    assert w._pos_dir == (tmp_path / "WT" / "p2")
+    assert w.path_label.text() == target
+    w.deleteLater()
+
+
 def test_main_widget_constructs_new_cellpose_widget():
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
@@ -112,9 +136,10 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
     w = main_mod.CellFlowMainWidget(_fake_viewer())
 
     cfg = tmp_path / "cellflow_config.json"
-    cfg.write_text('{"metadata": {"condition": "loaded"}}')
+    cfg.write_text('{"metadata": {"pixel_size_um": "0.5"}}')
     w._pos_dir = tmp_path
-    w.cond_edit.setText("original")
+    # Calibration now lives in the positions panel's Setup section.
+    w._positions_panel.set_calibration_values({"pixel_size_um": "0.123"})
 
     w.gate.register_owner("stub_owner", "stub mode", exit_fn=lambda: None)
     w.gate.claim_viewer("stub_owner")
@@ -124,7 +149,8 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
     w._on_load_config()
 
     assert prompted == ["stub mode"]  # the user was asked
-    assert w.cond_edit.text() == "original"  # but nothing was loaded
+    # Nothing was loaded — the panel's pixel size is untouched.
+    assert w._positions_panel.calibration_values()["pixel_size_um"] == "0.123"
     assert w.gate.owner == "stub_owner"
 
     w.deleteLater()
