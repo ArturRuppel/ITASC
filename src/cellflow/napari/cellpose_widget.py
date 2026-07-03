@@ -146,36 +146,46 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         root.setSpacing(6)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
-        # ── Standalone input/output pickers (hidden when orchestrated) ──
-        # The full app drives this piece through refresh(pos_dir) and the staged
-        # 0_input/1_cellpose layout; standalone instead takes the two raw input
-        # stacks explicitly and writes every map into a chosen output directory.
+        # ── Input pickers (both modes) + standalone output dir ─────────
+        # Inputs are the user's raw data, so they are user-definable in BOTH
+        # modes. Integrated: a blank field means the default 0_input/*_3dt.tif
+        # name; a value (absolute, or relative to the position dir) overrides it.
+        # Standalone: the two inputs are explicit and required. The output-dir
+        # picker is standalone-only — the integrated app always writes maps into
+        # <pos_dir>/1_cellpose/.
         self._paths_container = QWidget()
         paths_col = QVBoxLayout(self._paths_container)
         paths_col.setContentsMargins(0, 0, 0, 0)
         self._nucleus_edit = self._add_path_row(
             paths_col,
             "Nucleus channel",
-            "raw nucleus stack (.tif)",
+            ("raw nucleus stack (.tif)" if self._standalone
+             else "default: 0_input/nucleus_3dt.tif — or pick any .tif"),
             self._on_browse_nucleus,
-            self._apply_standalone_paths,
+            self._on_input_paths_changed,
         )
         self._cell_edit = self._add_path_row(
             paths_col,
             "Cell channel",
-            "raw cell stack (.tif)",
+            ("raw cell stack (.tif)" if self._standalone
+             else "default: 0_input/cell_3dt.tif — or pick any .tif"),
             self._on_browse_cell,
-            self._apply_standalone_paths,
+            self._on_input_paths_changed,
         )
+        self._output_dir_row = QWidget()
+        out_col = QVBoxLayout(self._output_dir_row)
+        out_col.setContentsMargins(0, 0, 0, 0)
         self._output_dir_edit = self._add_path_row(
-            paths_col,
+            out_col,
             "Output dir",
             "directory for Cellpose maps",
             self._on_browse_output_dir,
             self._apply_standalone_paths,
         )
+        paths_col.addWidget(self._output_dir_row)
         root.addWidget(self._paths_container)
-        self._paths_container.setVisible(self._standalone)
+        # Input rows show in both modes; the output-dir row is standalone-only.
+        self._output_dir_row.setVisible(self._standalone)
 
         # ── Pipeline files ─────────────────────────────────────────────
         self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
@@ -370,8 +380,16 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             return self._sa_nucleus if channel == "nucleus" else self._sa_cell
         if self._pos_dir is None:
             return None
-        name = "nucleus_3dt.tif" if channel == "nucleus" else "cell_3dt.tif"
-        return self._pos_dir / "0_input" / name
+        # Integrated: the input field overrides the default 0_input name. A blank
+        # field falls back to the canonical name; a relative override resolves
+        # under the position dir, an absolute one is used verbatim.
+        edit = self._nucleus_edit if channel == "nucleus" else self._cell_edit
+        default_name = "nucleus_3dt.tif" if channel == "nucleus" else "cell_3dt.tif"
+        text = edit.text().strip()
+        if text:
+            override = Path(text)
+            return override if override.is_absolute() else self._pos_dir / override
+        return self._pos_dir / "0_input" / default_name
 
     def _output_dir(self) -> Path | None:
         if self._standalone:
@@ -402,8 +420,22 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             self._nucleus_edit, "Select nucleus channel", self._on_nucleus_selected
         )
 
+    def _on_input_paths_changed(self) -> None:
+        """Input-field edit handler.
+
+        Standalone reads all three pickers together (inputs + output dir);
+        integrated reads the two input fields lazily in :meth:`_input_path`, so a
+        light status refresh is enough — and calling the standalone apply here
+        would wrongly clobber ``_pos_dir`` with the (empty) output-dir field.
+        """
+        if self._standalone:
+            self._apply_standalone_paths()
+        else:
+            self._files_widget.refresh(self._pos_dir)
+            self.gate.recompute()
+
     def _on_nucleus_selected(self) -> None:
-        self._apply_standalone_paths()
+        self._on_input_paths_changed()
         self._autoselect_layout("nucleus")
 
     def _on_browse_cell(self) -> None:
@@ -412,7 +444,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         )
 
     def _on_cell_selected(self) -> None:
-        self._apply_standalone_paths()
+        self._on_input_paths_changed()
         self._autoselect_layout("cell")
 
     def _on_browse_output_dir(self) -> None:
