@@ -2,7 +2,7 @@
 
 Three :class:`CandidateColumn` blocks are stacked top-to-bottom — extend-backward
 · swap · extend-forward — each a titled block whose clickable thumbnails (built
-from a :class:`~cellflow.napari._correction_candidates.CandidateStrip`) flow
+from a :class:`~cellflow.napari.correction._correction_candidates.CandidateStrip`) flow
 left→right and wrap onto new rows. The whole strip scrolls as one. Clicking a
 thumbnail emits ``candidate_activated(which, key)`` so the controller can apply
 that extend/swap; the pixels themselves come from the pure builder, so this stays
@@ -22,8 +22,8 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._correction_candidates import CandidateStrip, CandidateTile
-from cellflow.napari._correction_track_accordion import rgb_to_qimage
+from cellflow.napari.correction._correction_candidates import CandidateStrip, CandidateTile
+from cellflow.napari.correction._correction_track_accordion import rgb_to_qimage
 from cellflow.napari._flow_layout import FlowLayout
 
 _TILE_PX = 64
@@ -82,7 +82,7 @@ class _ClickableTile(QFrame):
     def key(self) -> int:
         return self._key
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         if event.button() == Qt.LeftButton and self.rect().contains(event.pos()):
             self.clicked.emit(self._key)
@@ -247,7 +247,7 @@ class _GalleryScroll(QScrollArea):
         super().__init__(panel)
         self._panel = panel
 
-    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.ControlModifier:
             step = _ZOOM_STEP if event.angleDelta().y() > 0 else -_ZOOM_STEP
             self._panel.set_tile_size(self._panel._tile_px + step)

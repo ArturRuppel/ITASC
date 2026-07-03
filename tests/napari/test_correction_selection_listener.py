@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import types
 
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.correction.correction_widget import CorrectionWidget
 
 
 def _stub(callback=None, listeners=None):

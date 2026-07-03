@@ -6,7 +6,7 @@ the toolbar and the signal wiring — is kept here so the widget module is about
 behaviour rather than scaffolding. :func:`build_nucleus_correction_ui` populates
 the passed widget in place (setting the same ``w.<name>`` attributes the rest of
 the class reads), mirroring how the shared header / toolbar builders in
-:mod:`cellflow.napari._correction_ui` already work.
+:mod:`cellflow.napari.correction._correction_ui` already work.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
-from cellflow.napari._correction_ui import (
+from cellflow.napari.correction._correction_ui import (
     build_correction_header,
     build_correction_toolbar,
     build_shortcuts_widget,
@@ -35,7 +35,7 @@ from cellflow.napari._correction_ui import (
 )
 from cellflow.napari.ui_style import danger_button
 from cellflow.napari.widgets import CollapsibleSection
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.correction.correction_widget import CorrectionWidget
 
 
 def build_nucleus_correction_ui(w) -> None:

@@ -16,8 +16,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-import cellflow.napari.nucleus_correction_widget as mod
-from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+import cellflow.napari.correction.nucleus_correction_widget as mod
+from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 
 
 def test_reassign_ids_done_rebuilds_canvas(wired_stub) -> None:

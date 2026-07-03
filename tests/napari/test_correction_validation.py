@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari._correction_validation import (
+from cellflow.napari.correction._correction_validation import (
     SelectedCorrectionTarget,
     correction_for_label_frame,
     corrections_for_label_frames,

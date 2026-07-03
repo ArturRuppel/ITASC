@@ -12,11 +12,11 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
-from cellflow.napari._correction_navigation import center_viewer_on_cell
-from cellflow.napari._correction_keymap import HeldKeyRepeater, KEY_REPEAT_DELAY_MS
-from cellflow.napari._correction_playback import (
+from cellflow.napari.correction._correction_navigation import center_viewer_on_cell
+from cellflow.napari.correction._correction_keymap import HeldKeyRepeater, KEY_REPEAT_DELAY_MS
+from cellflow.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
     playback_fps,
     playback_loops,

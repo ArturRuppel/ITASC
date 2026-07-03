@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari._correction_utils import (
+from cellflow.napari.correction._correction_utils import (
     frame_view_2d,
     reassign_ids_ordered,
     reassign_ids_stack,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari._correction_protection import (
+from cellflow.napari.correction._correction_protection import (
     protected_cell_ids_at_frame,
     protected_cell_mask,
 )

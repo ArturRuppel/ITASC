@@ -4,11 +4,11 @@ Owns the correction accordion panel: it builds the per-track swimlane bars
 (present runs from :func:`~cellflow.segmentation.lineage.build_lineage`, status
 frames from the project's validation records) and, for the *selected* track only,
 the per-frame thumbnail band (via
-:func:`~cellflow.napari._correction_track_path.build_track_film_strip`). Building
+:func:`~cellflow.napari.correction._correction_track_path.build_track_film_strip`). Building
 crops for a single track keeps refresh cheap no matter how many tracks exist.
 
 The bar assembly and crops are pure/testable; this is the glue that reads layers,
-owns the single :class:`~cellflow.napari._correction_track_accordion.TrackAccordionPanel`
+owns the single :class:`~cellflow.napari.correction._correction_track_accordion.TrackAccordionPanel`
 (embedded by the host into its workspace splitter), and turns a bar/thumbnail
 click into a viewer jump + cell selection via ``on_activate``.
 """
@@ -21,8 +21,8 @@ from collections.abc import Callable
 import numpy as np
 
 from cellflow.tracking_ultrack.validation_state import read_corrections, read_validated_tracks
-from cellflow.napari._correction_track_accordion import LaneView, TrackAccordionPanel
-from cellflow.napari._correction_track_path import (
+from cellflow.napari.correction._correction_track_accordion import LaneView, TrackAccordionPanel
+from cellflow.napari.correction._correction_track_path import (
     TrackFilmStrip,
     build_track_film_strip,
 )

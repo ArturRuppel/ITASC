@@ -380,7 +380,7 @@ class ContactAnalysisWidget(QWidget):
             jobs = discover_contact_batch_jobs(
                 root, cell_name=cell_name, h5_name=h5_name, nucleus_name=nucleus_name
             )
-        except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
+        except Exception as exc:
             self.batch_status_lbl.setText(f"Discovery error: {exc}")
             return
         self._discovered_jobs = jobs
@@ -478,8 +478,8 @@ class ContactAnalysisWidget(QWidget):
         while a viewer owner (correction / live preview) is active.
         """
         g = self.gate
-        running = lambda: self._build_worker is not None  # noqa: E731
-        batch_running = lambda: self._batch_worker is not None  # noqa: E731
+        running = lambda: self._build_worker is not None
+        batch_running = lambda: self._batch_worker is not None
         # Visualize/Recompute write the viewer (they show overlays) and build
         # first; both need inputs and no in-flight build. Recompute additionally
         # forces a rebuild, but its enablement gates the same way.

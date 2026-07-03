@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.correction.correction_widget import CorrectionWidget
 
 
 def _edit_stub(*, selected_label):

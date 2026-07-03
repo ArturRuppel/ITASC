@@ -37,8 +37,8 @@ def wired_stub():
     args to override any slot / supply extra attributes. Emitting an event on
     ``stub.events`` then runs the genuine subscriber set.
     """
-    from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
-    from cellflow.napari._correction_events import CorrectionEvents
+    from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
+    from cellflow.napari.correction._correction_events import CorrectionEvents
 
     def _make(*, bind=(), **attrs):
         stub = _WidgetStub()

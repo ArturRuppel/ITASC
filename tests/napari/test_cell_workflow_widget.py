@@ -266,7 +266,7 @@ def test_inline_contour_edit_marks_panel_dirty_and_prompts_on_exit(monkeypatch):
     assert c._correction_dirty is True
 
     # Leaving correction mode with unsaved edits prompts the save/discard dialog.
-    import cellflow.napari.cell_correction_widget as ccw_mod
+    import cellflow.napari.correction.cell_correction_widget as ccw_mod
     calls = []
     monkeypatch.setattr(
         ccw_mod, "confirm_unsaved_before_deactivate",

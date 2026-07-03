@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.correction.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     stage_header_action_button,
     stage_header_label,

@@ -24,12 +24,12 @@ from qtpy.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from qtpy.QtGui import QWheelEvent  # noqa: E402
 from qtpy.QtWidgets import QApplication, QGraphicsLineItem  # noqa: E402
 
-from cellflow.napari._correction_track_accordion import (  # noqa: E402
+from cellflow.napari.correction._correction_track_accordion import (  # noqa: E402
     _LEFT_GUTTER,
     LaneView,
     TrackAccordionPanel,
 )
-from cellflow.napari._correction_track_path import FilmStripTile, TrackFilmStrip  # noqa: E402
+from cellflow.napari.correction._correction_track_path import FilmStripTile, TrackFilmStrip  # noqa: E402
 
 
 @pytest.fixture(scope="module")

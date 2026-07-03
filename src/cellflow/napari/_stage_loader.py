@@ -89,7 +89,7 @@ def load_stage(viewer, pos_dir: Path | str | None, stage: str) -> list[str]:
                 viewer.layers[name].data = data
                 loaded.append(name)
                 continue
-            except Exception:  # noqa: BLE001 - fall back to a fresh layer
+            except Exception:
                 viewer.layers.remove(viewer.layers[name])
         if target.as_labels:
             viewer.add_labels(data, name=name)

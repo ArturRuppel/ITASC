@@ -23,23 +23,23 @@ from cellflow.correction.labels import (
 )
 from cellflow.core.tiff import imwrite_grayscale
 from cellflow.core.label_store import read_full_tracked_stack
-from cellflow.napari._correction_utils import frame_view_2d, remove_unvalidated_labels
+from cellflow.napari.correction._correction_utils import frame_view_2d, remove_unvalidated_labels
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
 from cellflow.napari._widget_helpers import (
     make_status as _make_status,
     tool_btn as _tool_btn,
 )
-from cellflow.napari._correction_layer_lifecycle import (
+from cellflow.napari.correction._correction_layer_lifecycle import (
     CorrectionViewStateMixin,
     LayerViewState,
     hide_all_layers,
 )
-from cellflow.napari._correction_ui import (
+from cellflow.napari.correction._correction_ui import (
     build_correction_toolbar,
     confirm_unsaved_before_deactivate,
     set_checked_without_signal,
 )
-from cellflow.napari.correction_widget import CorrectionWidget
+from cellflow.napari.correction.correction_widget import CorrectionWidget
 from cellflow.napari.ui_style import (
     add_block_pair_row,
     block_grid,

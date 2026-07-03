@@ -65,8 +65,8 @@ from cellflow.napari.ui_style import (
     status_label,
 )
 from cellflow.napari.widgets import CollapsibleSection
-from cellflow.napari._correction_utils import frame_view_2d
-from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+from cellflow.napari.correction._correction_utils import frame_view_2d
+from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 from cellflow.cellpose import joint as joint_mod
 from cellflow.cellpose.flow_following import FlowFollowingParams

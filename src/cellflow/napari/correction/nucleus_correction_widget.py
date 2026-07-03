@@ -23,42 +23,42 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.napari._correction_centroids import (
+from cellflow.napari.correction._correction_centroids import (
     apply_neutral_label_colormap,
     ensure_label_colormap_entries,
     refresh_label_colormap,
 )
-from cellflow.napari._correction_anchor import (
+from cellflow.napari.correction._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
 )
-from cellflow.napari._correction_utils import (
+from cellflow.napari.correction._correction_utils import (
     frame_view_2d,
     reassign_ids_ordered,
     retrack_stack_direction,
     track_order_by_frame_and_size,
 )
-from cellflow.napari._correction_commit import (
+from cellflow.napari.correction._correction_commit import (
     prepare_committed_labels,
     remove_unvalidated_from_data,
 )
-from cellflow.napari._correction_layer_lifecycle import (
+from cellflow.napari.correction._correction_layer_lifecycle import (
     CorrectionViewStateMixin,
     LayerViewState,
     detach_higher_dim_stacks,
     hide_all_layers,
     reattach_layers,
 )
-from cellflow.napari._correction_layer_loader import (
+from cellflow.napari.correction._correction_layer_loader import (
     add_correction_image_layer,
     add_tracked_labels_and_track_layer,
     remove_other_correction_label_layers,
 )
-from cellflow.napari._correction_protection import (
+from cellflow.napari.correction._correction_protection import (
     protected_cell_ids_at_frame,
     protected_cell_mask,
 )
-from cellflow.napari._correction_validation import (
+from cellflow.napari.correction._correction_validation import (
     correction_for_label_frame,
     corrections_for_label_frames,
     selected_correction_target,
@@ -89,20 +89,20 @@ from cellflow.napari.validated_overlay_controller import (
 from cellflow.napari.track_path_controller import AllTracksController
 from cellflow.napari.lineage_canvas_controller import LineageCanvasController
 from cellflow.napari.candidate_gallery_controller import CandidateGalleryController
-from cellflow.napari._correction_takeover import (
+from cellflow.napari.correction._correction_takeover import (
     hide_native_docks,
     restore_native_docks,
 )
-from cellflow.napari._correction_ui_nucleus import build_nucleus_correction_ui
-from cellflow.napari._correction_paint import paint_assignments
-from cellflow.napari._correction_events import CorrectionEvents
-from cellflow.napari._correction_keymap import HeldKeyRepeater
-from cellflow.napari._correction_navigation import center_viewer_on_cell
-from cellflow.napari._correction_playback import (
+from cellflow.napari.correction._correction_ui_nucleus import build_nucleus_correction_ui
+from cellflow.napari.correction._correction_paint import paint_assignments
+from cellflow.napari.correction._correction_events import CorrectionEvents
+from cellflow.napari.correction._correction_keymap import HeldKeyRepeater
+from cellflow.napari.correction._correction_navigation import center_viewer_on_cell
+from cellflow.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
     playback_loops,
 )
-from cellflow.napari._correction_ui import (
+from cellflow.napari.correction._correction_ui import (
     CollapsiblePane,
     confirm_unsaved_before_deactivate,
     set_checked_without_signal,
@@ -1838,7 +1838,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
 
     def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
         """Frame the selected track in the viewer (camera math lives in
-        :func:`cellflow.napari._correction_navigation.center_viewer_on_cell`)."""
+        :func:`cellflow.napari.correction._correction_navigation.center_viewer_on_cell`)."""
         center_viewer_on_cell(
             self.viewer, self._correction_tracked_layer(), t, cell_id
         )

@@ -6,7 +6,7 @@ segmentations on offer. Where :func:`build_track_film_strip` crops one track
 *across frames*, this crops a set of *candidate masks on one frame*: each
 candidate is a full-frame boolean mask (from ``list_swap_candidates`` or
 ``list_extend_candidates``), rendered through the shared
-:func:`~cellflow.napari._correction_track_path.render_crop_tile` so a candidate
+:func:`~cellflow.napari.correction._correction_track_path.render_crop_tile` so a candidate
 thumbnail reads identically to a film-strip tile.
 
 Pure module: no Qt, no napari, so it is unit-testable on its own. The view half
@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from cellflow.napari._correction_track_path import render_crop_tile
+from cellflow.napari.correction._correction_track_path import render_crop_tile
 
 # Neutral outline when the caller does not pass the selected track's colour.
 _DEFAULT_OUTLINE = (0.75, 0.75, 0.75)

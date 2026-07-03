@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication, QGroupBox  # noqa: E402
 
-from cellflow.napari.correction_widget import CorrectionWidget  # noqa: E402
+from cellflow.napari.correction.correction_widget import CorrectionWidget  # noqa: E402
 
 
 @pytest.fixture(scope="module")

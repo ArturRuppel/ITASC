@@ -894,7 +894,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         disabled — expressed via ``when`` predicates over ``_running_stage``.
         """
         g = self.gate
-        idle = lambda: self._running_stage is None  # noqa: E731
+        idle = lambda: self._running_stage is None
         for channel, params_btn, preview_btn, run_btn in (
             ("nucleus", self.nucleus_params_btn, self.nucleus_preview_btn, self.nucleus_run_btn),
             ("cell", self.cell_params_btn, self.cell_preview_btn, self.cell_run_btn),

@@ -23,7 +23,7 @@ untouched, plus a ``columns`` dict keyed by the shared, editable column names.
 from __future__ import annotations
 
 import os
-from typing import Callable, Iterable, Optional
+from collections.abc import Callable, Iterable
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
@@ -34,7 +34,6 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QScrollArea,
-    QSizePolicy,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -116,7 +115,7 @@ class ExperimentRow(QWidget):
     def __init__(
         self,
         key: str,
-        values: Optional[list[str]] = None,
+        values: list[str] | None = None,
         *,
         preview: bool = False,
         parent: QWidget | None = None,
@@ -197,7 +196,7 @@ class ExperimentRow(QWidget):
         self._chip.setText(_CHIP_TEXT[word])
         self._chip.setStyleSheet(f"color: {experiment_status_color(word)};")
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+    def mousePressEvent(self, event) -> None:
         mods = event.modifiers()
         if mods & Qt.ControlModifier:
             flag = 1
@@ -237,8 +236,8 @@ class ExperimentsPanel(QWidget):
         *,
         title: str = "Positions",
         input_fields: Iterable[tuple[str, str, str]] = (),
-        discover_fn: Optional[Callable[[str, dict[str, str]], list[dict]]] = None,
-        status_fn: Optional[Callable[[dict], dict[str, str]]] = None,
+        discover_fn: Callable[[str, dict[str, str]], list[dict]] | None = None,
+        status_fn: Callable[[dict], dict[str, str]] | None = None,
         show_calibration: bool = True,
         show_output_dir: bool = False,
         show_manual_columns: bool = False,
@@ -272,9 +271,9 @@ class ExperimentsPanel(QWidget):
 
         # Committed-row selection: a single active row plus a multi-selection for
         # delete/run; ``_anchor`` is the Shift-range pivot.
-        self._active: Optional[str] = None
+        self._active: str | None = None
         self._selected_paths: set[str] = set()
-        self._anchor: Optional[str] = None
+        self._anchor: str | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -704,7 +703,7 @@ class ExperimentsPanel(QWidget):
         return list(self._paths)
 
     # -- selection --------------------------------------------------------
-    def set_active(self, key: Optional[str], *, selection=None) -> None:
+    def set_active(self, key: str | None, *, selection=None) -> None:
         if key is not None and key not in self._paths:
             return
         changed = key != self._active
@@ -789,7 +788,7 @@ class ExperimentsPanel(QWidget):
         if self._show_run:
             self.run_btn.setEnabled(bool(self._selected_paths))
 
-    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+    def keyPressEvent(self, event) -> None:
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and (
             self._selected_paths or self._discovered_selected
         ):

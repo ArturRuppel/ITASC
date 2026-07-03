@@ -7,11 +7,11 @@ import pytest
 pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from cellflow.napari._correction_candidates import (  # noqa: E402
+from cellflow.napari.correction._correction_candidates import (  # noqa: E402
     CandidateSpec,
     build_candidate_strip,
 )
-from cellflow.napari._correction_candidate_panel import (  # noqa: E402
+from cellflow.napari.correction._correction_candidate_panel import (  # noqa: E402
     CandidateGalleryPanel,
 )
 

@@ -815,7 +815,7 @@ def test_spawn_intensity_frame_none_without_matching_prob_layer():
 
 def test_cell_corrector_default_paths_unchanged():
     """Without overrides the corrector keeps the app's staged pos-dir paths."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     c = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: Path("/proj/pos1"))
@@ -842,7 +842,7 @@ class _FakeLabelsLayer:
 
 def test_full_editing_unlocks_toolkit_and_retracker():
     """The standalone corrector runs full DB-free editing + the Q/E retracker."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     w = CellCorrectionWidget(
@@ -858,7 +858,7 @@ def test_full_editing_unlocks_toolkit_and_retracker():
 
 def test_app_corrector_stays_contour_only_without_full_editing():
     """The integrated app's corrector (no full_editing) is unchanged."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     w = CellCorrectionWidget(_FakeViewer(), pos_dir_provider=lambda: None)
@@ -870,7 +870,7 @@ def test_app_corrector_stays_contour_only_without_full_editing():
 
 def test_full_editing_retrack_propagates_ids_on_bound_layer():
     """Q/E retrack re-links the bound layer's later frames to the current one."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -896,7 +896,7 @@ def test_full_editing_retrack_propagates_ids_on_bound_layer():
 
 def test_full_editing_retrack_needs_multiframe_stack():
     """Retrack refuses a single 2-D frame (nothing to link)."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -924,7 +924,7 @@ def test_toggle_validation_flags_and_unflags_across_a_cells_frames():
     """V / the ✓ button validates a cell across every frame it appears in, then
     invalidates it back — a DB-free in-memory analogue of the nucleus tool's
     validated_cells.json (no project directory exists in standalone mode)."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -946,7 +946,7 @@ def test_toggle_validation_flags_and_unflags_across_a_cells_frames():
 
 
 def test_toggle_validation_requires_a_selected_cell_present_at_the_frame():
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -965,9 +965,9 @@ def test_toggle_validation_requires_a_selected_cell_present_at_the_frame():
 
 def test_remove_unvalidated_labels_clears_everything_but_the_validated_cell():
     """The 🗑 clear-not-validated action zeroes every cell not flagged validated,
-    reusing cellflow.napari._correction_utils.remove_unvalidated_labels verbatim
+    reusing cellflow.napari.correction._correction_utils.remove_unvalidated_labels verbatim
     (the same pure function the nucleus tool's DB-free clear action calls)."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -989,7 +989,7 @@ def test_remove_unvalidated_labels_clears_everything_but_the_validated_cell():
 
 
 def test_remove_unvalidated_labels_noop_status_when_all_validated():
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -1012,8 +1012,8 @@ def test_remove_unvalidated_labels_noop_status_when_all_validated():
 def test_track_list_navigator_present_only_in_full_editing():
     """The swimlane track-list navigator is part of the DB-free full-editing
     toolkit only — the integrated app's contour-only corrector is unchanged."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
-    from cellflow.napari._correction_track_accordion import TrackAccordionPanel
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction._correction_track_accordion import TrackAccordionPanel
 
     QApplication.instance() or QApplication([])
     full = CellCorrectionWidget(
@@ -1033,7 +1033,7 @@ def test_track_list_navigator_click_jumps_frame_and_selects_cell():
     """A bar click on the accordion (node_activated) jumps the viewer's time
     slider and selects that cell — the same navigation the nucleus tool's
     lineage canvas drives, adapted to the standalone active-layer corrector."""
-    from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+    from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
@@ -1054,7 +1054,7 @@ def test_validating_a_cell_draws_green_border_overlay_layer():
     """Validating a cell adds a new, contour-only Labels layer masking exactly
     the frames it's validated for — the standalone stand-in for
     ValidatedOverlayController's opaque green border."""
-    from cellflow.napari.cell_correction_widget import (
+    from cellflow.napari.correction.cell_correction_widget import (
         CellCorrectionWidget,
         _VALIDATED_OVERLAY_CONTOUR,
         _VALIDATED_OVERLAY_LAYER,
@@ -1084,7 +1084,7 @@ def test_validating_a_cell_draws_green_border_overlay_layer():
 
 
 def test_invalidating_the_last_validated_cell_removes_the_overlay_layer():
-    from cellflow.napari.cell_correction_widget import (
+    from cellflow.napari.correction.cell_correction_widget import (
         CellCorrectionWidget,
         _VALIDATED_OVERLAY_LAYER,
     )
