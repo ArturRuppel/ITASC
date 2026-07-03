@@ -599,6 +599,23 @@ def test_remove_selected_without_selection_is_a_noop():
     app.processEvents()
 
 
+def test_count_line_reports_positions_and_selection():
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    assert widget._count_lbl.text() == ""  # empty catalog → no count
+    widget._records = [
+        {"condition": "c", "date": "d", "id": "p1", "contact_analysis_path": Path("/a.h5")},
+        {"condition": "c", "date": "d", "id": "p2", "contact_analysis_path": Path("/b.h5")},
+    ]
+    widget._refresh_table()
+    assert widget._count_lbl.text() == "2 positions"
+    widget._table.select_records([0])
+    app.processEvents()
+    assert "1 selected" in widget._count_lbl.text()
+    widget.deleteLater()
+    app.processEvents()
+
+
 def test_clicking_nucleus_dot_loads_stage_into_viewer(tmp_path):
     import numpy as np
     import tifffile

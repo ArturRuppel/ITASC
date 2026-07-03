@@ -40,6 +40,7 @@ _TEXT_COLUMNS: tuple[tuple[str, str, int], ...] = (
 _STATUS_TITLE = "Status"
 _STATUS_WIDTH = 78
 _MAX_TABLE_HEIGHT = 300
+_EMPTY_MESSAGE = "No positions yet — Discover a study folder or Load a CSV."
 
 
 @dataclass
@@ -140,9 +141,11 @@ class CatalogTable(QWidget):
 
     selectionChanged = Signal()
     dotClicked = Signal(int, str)  # (record_index, stage) — a rail dot was clicked
+    deleteRequested = Signal()  # Delete pressed with a selection — studio removes it
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.setFocusPolicy(Qt.StrongFocus)
         #: Display-row → record index (``None`` for separators).
         self.row_to_record: list[int | None] = []
         #: Record indices in display order (excludes separators) — range anchor space.
@@ -220,6 +223,12 @@ class CatalogTable(QWidget):
             self._data_order.append(spec.record_index)
             self._row_widgets[spec.record_index] = row
 
+        if not self._data_order:
+            placeholder = QLabel(_EMPTY_MESSAGE)
+            placeholder.setEnabled(False)  # muted
+            placeholder.setContentsMargins(6, 8, 6, 8)
+            self._body_layout.addWidget(placeholder)
+
         valid = set(self._data_order)
         pruned = self._selected & valid
         if pruned != self._selected:
@@ -252,7 +261,20 @@ class CatalogTable(QWidget):
         """Row widgets in display order (record rows only) — for tests / styling."""
         return [self._row_widgets[i] for i in self._data_order]
 
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
+            if self._selected:
+                self.deleteRequested.emit()
+                event.accept()
+                return
+        elif event.key() == Qt.Key_A and event.modifiers() & Qt.ControlModifier:
+            self.select_all()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def _on_row_clicked(self, record_index: int, modifiers) -> None:
+        self.setFocus()  # so Delete / Ctrl+A reach the table after a click
         ctrl = bool(modifiers & Qt.ControlModifier)
         shift = bool(modifiers & Qt.ShiftModifier)
         if shift and self._anchor is not None and self._anchor in self._data_order:

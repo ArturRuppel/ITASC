@@ -319,7 +319,13 @@ class ContactAnalysisStudioWidget(QWidget):
         self._table = CatalogTable()
         self._table.selectionChanged.connect(self._on_selection_changed)
         self._table.dotClicked.connect(self._on_stage_dot_clicked)
+        self._table.deleteRequested.connect(self._on_remove_selected)
         col.addWidget(self._table, 1)
+
+        # Count / meta line under the table.
+        self._count_lbl = QLabel("")
+        status_label(self._count_lbl, muted=True)
+        col.addWidget(self._count_lbl)
 
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 0, 0, 0)
@@ -773,7 +779,19 @@ class ContactAnalysisStudioWidget(QWidget):
         #: Display-row → record-index map (``None`` for separators); mirrors the
         #: table's own mapping so tests and callers keep a single source.
         self._row_to_record = self._table.row_to_record
+        self._update_count()
         self._push_context()
+
+    def _update_count(self) -> None:
+        n = len(self._records)
+        selected = len(self._selected_rows())
+        if not n:
+            self._count_lbl.setText("")
+            return
+        text = f"{n} position{'s' if n != 1 else ''}"
+        if selected:
+            text += f" · {selected} selected"
+        self._count_lbl.setText(text)
 
     def _selected_rows(self) -> list[int]:
         """Selected *record* indices — separator rows never select."""
@@ -817,6 +835,7 @@ class ContactAnalysisStudioWidget(QWidget):
     def _on_selection_changed(self) -> None:
         # The single-position visualizer is now the Visualize Contacts plugin; it
         # reads the in-scope rows from the context like every other plugin.
+        self._update_count()
         self._push_context()
 
     # -------------------------------------------------------------- plugin hosting

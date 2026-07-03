@@ -80,6 +80,49 @@ def test_set_rows_resets_stale_selection():
     assert table.selected_record_indices() == []
 
 
+def test_empty_table_shows_placeholder():
+    from qtpy.QtWidgets import QLabel
+
+    from cellflow.napari._catalog_table import _EMPTY_MESSAGE
+
+    _app()
+    table = CatalogTable()
+    table.set_rows([])
+    texts = [lbl.text() for lbl in table._body.findChildren(QLabel)]
+    assert any(_EMPTY_MESSAGE in t for t in texts)
+
+
+def test_ctrl_a_selects_all_via_key():
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtGui import QKeyEvent
+
+    _app()
+    table = CatalogTable()
+    table.set_rows([_record_row(0, "p1"), _record_row(1, "p2")])
+    event = QKeyEvent(QEvent.KeyPress, Qt.Key_A, Qt.ControlModifier)
+    table.keyPressEvent(event)
+    assert table.selected_record_indices() == [0, 1]
+
+
+def test_delete_key_emits_only_with_selection():
+    from qtpy.QtCore import QEvent, Qt
+    from qtpy.QtGui import QKeyEvent
+
+    _app()
+    table = CatalogTable()
+    table.set_rows([_record_row(0, "p1")])
+    fired: list[int] = []
+    table.deleteRequested.connect(lambda: fired.append(1))
+
+    # No selection → no signal.
+    table.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
+    assert fired == []
+
+    table.select_records([0])
+    table.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Delete, Qt.NoModifier))
+    assert fired == [1]
+
+
 def test_status_rail_reflects_spec_status():
     _app()
     table = CatalogTable()
