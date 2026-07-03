@@ -18,6 +18,8 @@ import napari
 import numpy as np
 from qtpy.QtCore import Qt, QSettings, QTimer
 from qtpy.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -39,7 +41,12 @@ from cellflow.napari.nucleus_segmentation_inputs_widget import (
 from cellflow.napari.nucleus_tracking_inputs_widget import NucleusTrackingInputsWidget
 from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari.ui_gate import ControlClass, UiGate
-from cellflow.napari._paths import NucleusWorkspace
+from cellflow.napari._paths import NucleusArtifactPaths, NucleusWorkspace
+from cellflow.napari._widget_helpers import tool_btn as _tool_btn
+from cellflow.napari.ui_style import (
+    stage_header_action_button as _stage_header_action_button,
+)
+from cellflow.core.commit import commit_state, promote_labels
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -257,6 +264,22 @@ class NucleusWorkflowWidget(
         root.addWidget(pipeline_block)
         root.addWidget(self.pipeline_status_lbl)
         root.addWidget(self.pipeline_progress_bar)
+
+        # ── Finalize: promote tracked labels → nucleus_labels.tif ─────
+        # Distinct from the correction widget's "commit" (which writes correction
+        # edits back into the working tracked_labels.tif); this promotes the
+        # working file to the downstream-stable final output.
+        self.finalize_btn = _tool_btn(
+            "✔", "Finalize: promote tracked labels to nucleus_labels.tif (final, downstream-stable output)."
+        )
+        self.finalize_btn.clicked.connect(self._on_finalize)
+        _stage_header_action_button(self.finalize_btn, "nucleus")
+        finalize_row = QHBoxLayout()
+        finalize_row.addWidget(QLabel("Finalize"))
+        finalize_row.addStretch(1)
+        finalize_row.addWidget(self.finalize_btn)
+        root.addLayout(finalize_row)
+        self._refresh_finalize_btn()
 
     def _alias_tracking_inputs_controls(self) -> None:
         ti = self.nucleus_tracking_inputs_widget
@@ -631,6 +654,51 @@ class NucleusWorkflowWidget(
         )
         self._apply_workspace(workspace, files_root=pos_dir)
 
+    # ── Commit contract: promote working labels → nucleus_labels.tif ───
+    def _working_labels_path(self) -> Path | None:
+        return self._workspace.tracked if self._workspace else None
+
+    def _committed_labels_path(self) -> Path | None:
+        if self._pos_dir is not None:
+            return NucleusArtifactPaths(self._pos_dir).nucleus_labels
+        if self._workspace is not None:
+            return self._workspace.nucleus_dir / "nucleus_labels.tif"
+        return None
+
+    def _set_finalize_status(self, msg: str) -> None:
+        self.pipeline_status_lbl.setText(msg)
+        self.pipeline_status_lbl.setVisible(bool(msg))
+
+    def _on_finalize(self) -> None:
+        working = self._working_labels_path()
+        committed = self._committed_labels_path()
+        if working is None or committed is None or not working.exists():
+            self._set_finalize_status("No tracked labels to finalize — run tracking first.")
+            return
+        try:
+            promote_labels(working, committed)
+        except (FileNotFoundError, ValueError) as exc:
+            self._set_finalize_status(f"Finalize failed: {exc}")
+            return
+        self._set_finalize_status(f"Finalized nucleus labels → {committed.name}.")
+        self._refresh_finalize_btn()
+
+    def _refresh_finalize_btn(self) -> None:
+        if not hasattr(self, "finalize_btn"):
+            return
+        working = self._working_labels_path()
+        committed = self._committed_labels_path()
+        if working is None or committed is None:
+            self.finalize_btn.setEnabled(False)
+            return
+        state = commit_state(working, committed)
+        self.finalize_btn.setEnabled(state != "missing")
+        self.finalize_btn.setToolTip(
+            "Working labels are newer than the finalized nucleus_labels.tif — re-finalize to update."
+            if state == "stale"
+            else "Finalize: promote tracked labels to nucleus_labels.tif (final, downstream-stable output)."
+        )
+
     def set_context(
         self,
         *,
@@ -674,6 +742,7 @@ class NucleusWorkflowWidget(
         self, workspace: NucleusWorkspace | None, *, files_root: Path | None
     ) -> None:
         self._workspace = workspace
+        self._refresh_finalize_btn()
         self._files_widget.refresh(files_root)
         # The atom-extraction controls gate on inputs being present
         # (``when=ready`` → ``_atom_fg_path() is not None``); re-derive the gate

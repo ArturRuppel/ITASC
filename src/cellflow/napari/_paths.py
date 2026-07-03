@@ -12,7 +12,14 @@ Canonical file layout under ``<pos_dir>/``:
     3_cell/               — filtered_dp.tif, foreground_masks.tif,
                             contours.tif, foreground_scores.tif,
                             tracked_labels.tif
+    nucleus_labels.tif    — FINAL output: committed nucleus tracked labels
+    cell_labels.tif       — FINAL output: committed cell tracked labels
     aggregate_quantification/  — contact_analysis.h5 (+ shape CSVs, NLS CSV)
+
+The numbered stage dirs hold re-runnable *working* artifacts; the base-folder
+``nucleus_labels.tif`` / ``cell_labels.tif`` are the committed, downstream-stable
+*final* outputs (see :func:`cellflow.core.commit.promote_labels`). Contact
+Analysis discovery defaults to these committed names.
 """
 from __future__ import annotations
 
@@ -111,6 +118,15 @@ class NucleusArtifactPaths:
     @property
     def nucleus_atoms(self) -> Path:
         return self.nucleus_dir / "atoms.tif"
+
+    # Final outputs (committed) — base folder, downstream-stable
+    @property
+    def nucleus_labels(self) -> Path:
+        return self.pos_dir / "nucleus_labels.tif"
+
+    @property
+    def cell_labels(self) -> Path:
+        return self.pos_dir / "cell_labels.tif"
 
 
 @dataclass(frozen=True)

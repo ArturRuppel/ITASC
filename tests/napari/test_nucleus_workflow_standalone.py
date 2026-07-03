@@ -325,3 +325,29 @@ def test_set_context_persists_paths_across_instances(viewer, tmp_path, monkeypat
     assert s.value("foreground", "", type=str) == str(foreground)
     assert s.value("contours", "", type=str) == str(contours)
     assert s.value("output_dir", "", type=str) == str(out_dir)
+
+
+def test_finalize_promotes_nucleus_tracked_labels_to_base_folder(viewer, tmp_path):
+    import numpy as np
+    import tifffile
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+
+    # Staged position, no tracked labels yet → Commit disabled.
+    widget.refresh(tmp_path)
+    assert widget.finalize_btn.isEnabled() is False
+
+    # A working 2_nucleus/tracked_labels.tif → Commit enabled.
+    working = tmp_path / "2_nucleus" / "tracked_labels.tif"
+    working.parent.mkdir(parents=True)
+    arr = np.zeros((4, 4), dtype=np.uint16)
+    arr[1:3, 1:3] = 9
+    tifffile.imwrite(str(working), arr)
+    widget.refresh(tmp_path)
+    assert widget.finalize_btn.isEnabled() is True
+
+    # Commit promotes it to the base-folder final output.
+    widget._on_finalize()
+    committed = tmp_path / "nucleus_labels.tif"
+    assert committed.is_file()
+    np.testing.assert_array_equal(tifffile.imread(str(committed)), arr)

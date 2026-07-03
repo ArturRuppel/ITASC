@@ -241,15 +241,21 @@ class ContactAnalysisStudioWidget(QWidget):
 
         # Names or relative paths (relative to each position folder). These are the
         # discovery **inputs** — a position is any folder with at least one of them.
-        # Contact analysis (like every shape / NLS quantity) is a derived Aggregate
-        # Quantification output, built later via a builder plugin — never an input
-        # here.
+        # Contact analysis (like every shape / NLS quantity) is a derived Contact
+        # Analysis output, built later via a builder plugin — never an input here.
+        # Default to the committed final outputs (nucleus_labels.tif /
+        # cell_labels.tif) so a finalized position is auto-discovered; override to
+        # a working stage file (e.g. 3_cell/tracked_labels.tif) when uncommitted.
         self._cell_name_edit = self._make_field_row(
-            col, "Cell labels (optional):", placeholder="e.g. 3_cell/tracked_labels.tif"
+            col, "Cell labels (optional):",
+            placeholder="e.g. cell_labels.tif (final) or 3_cell/tracked_labels.tif",
         )
+        self._cell_name_edit.setText("cell_labels.tif")
         self._nucleus_name_edit = self._make_field_row(
-            col, "Nucleus labels (optional):", placeholder="e.g. 2_nucleus/tracked_labels.tif"
+            col, "Nucleus labels (optional):",
+            placeholder="e.g. nucleus_labels.tif (final) or 2_nucleus/tracked_labels.tif",
         )
+        self._nucleus_name_edit.setText("nucleus_labels.tif")
         for edit in (self._cell_name_edit, self._nucleus_name_edit):
             edit.textChanged.connect(lambda _t: self._update_discover_tooltip())
 

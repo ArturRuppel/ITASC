@@ -597,3 +597,14 @@ def test_remove_selected_without_selection_is_a_noop():
 
     widget.deleteLater()
     app.processEvents()
+
+
+def test_discovery_fields_default_to_committed_final_output_names():
+    app = _app()
+    widget = mod.ContactAnalysisStudioWidget()
+    # Finalized positions (base-folder *_labels.tif) are auto-discovered by
+    # default; the user overrides to a working stage file when uncommitted.
+    assert widget._cell_name_edit.text() == "cell_labels.tif"
+    assert widget._nucleus_name_edit.text() == "nucleus_labels.tif"
+    widget.deleteLater()
+    app.processEvents()

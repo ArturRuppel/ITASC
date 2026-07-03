@@ -84,6 +84,8 @@ from cellflow.segmentation.cell_divergence_segmentation import (
     segment_cells_divergence,
 )
 from cellflow.segmentation.cell_label_icm import commit_labels
+from cellflow.core.commit import commit_state, promote_labels
+from cellflow.napari._paths import NucleusArtifactPaths
 
 logger = logging.getLogger(__name__)
 
@@ -318,7 +320,11 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.run_btn = _tool_btn(
             "▶", "Run the full pipeline over all frames and write tracked_labels.tif."
         )
-        for button in (self.params_btn, self.active_btn, self.run_btn):
+        self.finalize_btn = _tool_btn(
+            "✔", "Finalize: promote tracked labels to cell_labels.tif (final, downstream-stable output)."
+        )
+        self.finalize_btn.clicked.connect(self._on_finalize)
+        for button in (self.params_btn, self.active_btn, self.run_btn, self.finalize_btn):
             stage_header_action_button(button, "cell")
 
         self.params_section = self._build_params_section()
@@ -330,7 +336,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
 
         root.addLayout(self._stage_row(
             self._stage_label("Segmentation"),
-            self.params_btn, self.active_btn, self.run_btn,
+            self.params_btn, self.active_btn, self.run_btn, self.finalize_btn,
         ))
         root.addWidget(self.params_section)
 
@@ -648,6 +654,47 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self._files_widget.refresh(pos_dir)
         if pos_dir is None:
             self.correction_widget.deactivate()
+        self._refresh_finalize_btn()
+
+    # ── Commit contract: promote working labels → cell_labels.tif ──────
+    def _committed_labels_path(self) -> Path | None:
+        if self._standalone:
+            return self._sa_output_dir / "cell_labels.tif" if self._sa_output_dir else None
+        return NucleusArtifactPaths(self._pos_dir).cell_labels if self._pos_dir else None
+
+    def _on_finalize(self) -> None:
+        working = self._output_path()
+        committed = self._committed_labels_path()
+        if working is None or committed is None or not working.exists():
+            self._set_status("No tracked labels to commit — run the pipeline first.")
+            return
+        try:
+            promote_labels(working, committed)
+        except (FileNotFoundError, ValueError) as exc:
+            self._set_status(f"Commit failed: {exc}")
+            return
+        self._set_status(f"Committed cell labels → {committed.name}.")
+        self._refresh_finalize_btn()
+
+    def _refresh_finalize_btn(self) -> None:
+        if not hasattr(self, "finalize_btn"):
+            return
+        working = self._output_path()
+        committed = self._committed_labels_path()
+        if working is None or committed is None:
+            self.finalize_btn.setEnabled(False)
+            return
+        state = commit_state(working, committed)
+        self.finalize_btn.setEnabled(state != "missing")
+        if state == "stale":
+            self.finalize_btn.setToolTip(
+                "Working labels are newer than the committed cell_labels.tif — "
+                "re-commit to update."
+            )
+        else:
+            self.finalize_btn.setToolTip(
+                "Finalize: promote tracked labels to cell_labels.tif (final, downstream-stable output)."
+            )
 
     # ================================================================
     # Standalone input/output pickers (only built/used when standalone)
@@ -1237,6 +1284,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
                 _TRACKED_CELL_LAYER, labels, {"visible": True}, self.viewer.add_labels
             )
             self._files_widget.refresh(pos_dir)
+            self._refresh_finalize_btn()
             self._set_status(
                 f"Segmentation complete — {n_labels} labels, "
                 f"saved to {output_path.name}."

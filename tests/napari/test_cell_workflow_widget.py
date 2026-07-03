@@ -704,3 +704,28 @@ def test_standalone_factory_returns_standalone_widget(monkeypatch):
 
     widget.deleteLater()
     app.processEvents()
+
+
+def test_finalize_promotes_cell_tracked_labels_to_base_folder(monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    widget = mod.CellWorkflowWidget(_FakeViewer())
+
+    # No working file yet → Commit disabled.
+    widget.refresh(tmp_path)
+    assert widget.finalize_btn.isEnabled() is False
+
+    # A working 3_cell/tracked_labels.tif → Commit enabled.
+    working = tmp_path / "3_cell" / "tracked_labels.tif"
+    working.parent.mkdir(parents=True)
+    arr = np.zeros((4, 4), dtype=np.uint16)
+    arr[1:3, 1:3] = 5
+    tifffile.imwrite(str(working), arr)
+    widget.refresh(tmp_path)
+    assert widget.finalize_btn.isEnabled() is True
+
+    # Commit promotes it to the base-folder final output.
+    widget._on_finalize()
+    committed = tmp_path / "cell_labels.tif"
+    assert committed.is_file()
+    np.testing.assert_array_equal(tifffile.imread(str(committed)), arr)
