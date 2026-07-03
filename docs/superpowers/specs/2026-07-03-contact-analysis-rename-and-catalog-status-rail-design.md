@@ -207,13 +207,50 @@ existence + mtime checks (no pixel decode), mirroring napariTFM's `status_fn` /
 - Count/meta line ("N positions"), empty-state collapse, `Delete`/`Ctrl+A`
   keyboard handling, selection lift (accent bar + raised row).
 
-### Explicitly deferred to P4 batch mode (needs the list to *drive* the pipeline)
+### 2d — Click-to-load (pulled in from P4, to enable the retirement below)
 
-The full multi-dot **interactive** rail (click-a-dot-to-load-that-stage), the
-Run/Cancel toggle, the workers spinbox, and live per-row progress streaming are
-batch-execution UX. Stage 2 ships the rail as a **read-only status display**
-(dots reflect disk state, refreshed on demand); the interactive/streaming layer
-arrives with P4 when the catalog becomes the front-of-app batch driver.
+Originally the interactive rail (click-a-dot-to-load-that-stage) was deferred to
+P4. It is **pulled into Stage 2** because retiring the Pipeline Files panels
+(2e) is gated on the rail absorbing their *loader* role, not just their status
+role. So a rail dot is clickable: clicking a stage's dot loads that stage's
+output(s) into the viewer (`tifffile.imread` → `add_labels`/`add_image`, reusing
+`_PipelineFileRow._load_file_into_viewer`'s logic). This is **per-stage** loading
+(4 stages), coarser than the panel's **per-file** loading (~10 named files); that
+coarsening is the "most, if not all" bar — the long tail (loading one specific
+intermediate, e.g. the dp map vs the prob map) is the accepted loss.
+
+Still deferred to P4 (genuine batch-execution UX): the Run/Cancel toggle, the
+workers spinbox, and live per-row progress streaming.
+
+### 2e — Retire the Pipeline Files panels (FINAL step, gated)
+
+**Gate:** do this only once 2b (status dots) + 2d (click-to-load) demonstrably
+cover the panels' function. Until then the panels stay — retiring earlier leaves
+no status/loader surface (the rail does not exist yet).
+
+`PipelineFilesWidget` is used in **six** places (`data_panel_widget.py`
+ProjectStatusPanel, plus per-stage panels in `cellpose_widget`,
+`nucleus_workflow_widget`, `cell_workflow_widget`, `divergence_maps_widget`,
+`contact_analysis_widget`). Two distinct roles to reconcile before deletion:
+
+- **Status rollup** — fully superseded by the rail. The project-wide
+  **Project Status** section (`ProjectStatusPanel`) is the cleanest retire: its
+  whole job is per-project progress, which the rail does better (per-position).
+- **Per-file loader** (the `↑` button) — superseded by 2d's per-stage
+  click-to-load, modulo the per-file→per-stage coarsening noted above.
+
+Retirement tasks (last, after parity is shown):
+- Delete `ProjectStatusPanel` + its "Project Status" section in `main_widget`.
+- Remove the per-stage `PipelineFilesWidget` mounts from the five stage widgets
+  (and `make_pipeline_files_header` headers), or keep just the `↑` loader if a
+  per-file affordance is still wanted — decide at retirement time.
+- Delete `PipelineFilesWidget` / `_PipelineFileRow` from `widgets.py` once no
+  caller remains; drop `_TRACKED_FILE_GROUPS` / `_PIPELINE_FILES` tables.
+- Tests: prune the file-panel tests; assert the rail loads each stage's output.
+
+**Decision (2026-07-03, Artur):** retire the Pipeline Files panel, but as the
+**final** step of this work, **gated on porting most/all of its functionality
+(status + loader) to the rail**. Not a blanket delete-now.
 
 ### Verification
 
@@ -227,9 +264,12 @@ real position tree, confirm the rail matches disk.
 
 ## Build order
 
-0. Rename (pure refactor, unblocks clean names for everything below).
+0. Rename (pure refactor, unblocks clean names for everything below). ✅ shipped.
 1. Commit contract (small, independently useful, gives dots 2 & 3 their signal).
-2. Catalog rail (custom rows → status rail → ported polish).
+   ✅ shipped. (Plus a follow-on: user-definable Cellpose inputs, shipped.)
+2. Catalog rail: 2a custom rows → 2b status dots → 2c ported polish → 2d
+   click-to-load (pulled from P4) → **2e retire the Pipeline Files panels, LAST,
+   gated on 2b+2d reaching functional parity.**
 
 Each stage is its own plan + branch → ff-merge → push (per the project's
 direct-to-main pattern). `uv run --frozen pytest` throughout (lock is frozen).
