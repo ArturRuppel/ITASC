@@ -118,7 +118,7 @@ def test_selection_scope_forwarded_to_plugins(monkeypatch):
     widget._refresh_table()  # empty selection -> whole catalog in scope
     assert received[-1] and len(received[-1]) == 2
 
-    widget._table.selectRow(0)
+    widget._table.select_records([0])
     app.processEvents()
     assert len(received[-1]) == 1
     assert received[-1][0]["id"] == "p1"
@@ -195,13 +195,13 @@ def test_single_selection_drives_visualize_contacts_plugin(monkeypatch):
     widget._refresh_table()
 
     # One row selected -> contact view targets that position with its paths.
-    widget._table.selectRow(0)
+    widget._table.select_records([0])
     app.processEvents()
     assert calls[-1]["out_path"] == widget._records[0]["contact_analysis_path"]
     assert calls[-1]["cell_labels"] == widget._records[0]["cell_tracked_labels_path"]
 
     # Multi-selection is ambiguous for a single view -> cleared.
-    widget._table.selectAll()
+    widget._table.select_all()
     app.processEvents()
     assert calls[-1]["cell_labels"] is None and calls[-1]["out_path"] is None
 
@@ -354,12 +354,12 @@ def test_group_separators_and_remove_with_separators(tmp_path):
     ]
     widget._refresh_table()
     # 3 records + 2 group separators = 5 table rows.
-    assert widget._table.rowCount() == 5
+    assert widget._table.row_count() == 5
     assert widget._row_to_record == [None, 0, 1, None, 2]
 
     # Selecting the KO data row (table row 4) maps to record index 2, and removing
     # it drops exactly p3 despite the separator offset.
-    widget._table.selectRow(4)
+    widget._table.select_records([2])
     app.processEvents()
     assert widget._selected_rows() == [2]
     widget._on_remove_selected()
@@ -569,12 +569,12 @@ def test_remove_selected_drops_only_selected_rows():
     # Seed the analysis cache so we can confirm dropped rows are evicted.
     widget._analysis_cache[Path("/b.h5")] = object()
 
-    widget._table.selectRow(1)
+    widget._table.select_records([1])
     app.processEvents()
     widget._on_remove_selected()
 
     assert [r["id"] for r in widget._records] == ["p1", "p3"]
-    assert widget._table.rowCount() == 2
+    assert widget._table.row_count() == 2
     assert Path("/b.h5") not in widget._analysis_cache
 
     widget.deleteLater()
@@ -589,7 +589,7 @@ def test_remove_selected_without_selection_is_a_noop():
          "contact_analysis_path": Path("/a.h5"), "contact_analysis_status": "ready"},
     ]
     widget._refresh_table()
-    widget._table.clearSelection()
+    widget._table.clear_selection()
     app.processEvents()
     widget._on_remove_selected()
 

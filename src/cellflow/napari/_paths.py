@@ -119,6 +119,11 @@ class NucleusArtifactPaths:
     def nucleus_atoms(self) -> Path:
         return self.nucleus_dir / "atoms.tif"
 
+    # 3_cell working output (the cell-workflow tracked labels, pre-commit)
+    @property
+    def cell_tracked(self) -> Path:
+        return self.pos_dir / "3_cell" / "tracked_labels.tif"
+
     # Final outputs (committed) — base folder, downstream-stable
     @property
     def nucleus_labels(self) -> Path:

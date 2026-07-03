@@ -23,7 +23,6 @@ from typing import Any, NamedTuple
 from napari.qt.threading import thread_worker
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
-    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -32,8 +31,6 @@ from qtpy.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -52,6 +49,8 @@ from cellflow.contact_analysis.catalog import (
 )
 from cellflow.contact_analysis.pipeline import author_config, run
 from cellflow.contact_analysis.shape_tables import catalogue_root
+from cellflow.napari._catalog_table import CatalogRowSpec, CatalogTable
+from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.contact_analysis.plugins import AnalysisContext
 from cellflow.napari.contact_analysis_params import SharedParamsWidget
 from cellflow.napari.contact_analysis_run_area import RunArea
@@ -121,8 +120,6 @@ def _contacts_reader():
 
 class ContactAnalysisStudioWidget(QWidget):
     """Position catalogue + embedded per-position view + a flat plugin list."""
-
-    _TABLE_COLUMNS = ("condition", "date", "id", "inputs", "notes", "status")
 
     def __init__(self, viewer: object | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -315,15 +312,11 @@ class ContactAnalysisStudioWidget(QWidget):
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
 
-        self._table = QTableWidget(0, len(self._TABLE_COLUMNS))
-        self._table.setHorizontalHeaderLabels([c.title() for c in self._TABLE_COLUMNS])
-        self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self._table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self._table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        # A large catalogue scrolls within a bounded region instead of pushing the
-        # rest of the studio down (the whole studio already lives in a scroll area).
-        self._table.setMaximumHeight(320)
-        self._table.itemSelectionChanged.connect(self._on_selection_changed)
+        # Custom-widget rows (not a QTableWidget) so each position carries a live
+        # status rail. The table is internally bounded + scrolls; the whole studio
+        # already lives in a scroll area.
+        self._table = CatalogTable()
+        self._table.selectionChanged.connect(self._on_selection_changed)
         col.addWidget(self._table, 1)
 
         actions_row = QHBoxLayout()
@@ -748,56 +741,41 @@ class ContactAnalysisStudioWidget(QWidget):
         )
 
     def _refresh_table(self) -> None:
-        self._table.blockSignals(True)
-        self._table.clearSpans()
-        #: Table-row → record-index map; ``None`` marks a non-selectable group
-        #: separator so selection / removal keep pointing at the right records.
-        self._row_to_record: list[int | None] = []
-        plan: list[tuple[str, object]] = []
+        """Rebuild the catalog rows: group separators + one status-rail row each.
+
+        Each position's rail is derived from its canonical position directory
+        (``position_path``); a row with none (a hand-authored CSV row with no
+        common root) gets an all-``unknown`` rail.
+        """
+        specs: list[CatalogRowSpec] = []
         last_caption: str | None = None
         for ridx, record in enumerate(self._records):
             caption = self._group_caption(record)
             if caption and caption != last_caption:
-                plan.append(("sep", caption))
+                specs.append(CatalogRowSpec(record_index=None, caption=caption))
             last_caption = caption
-            plan.append(("rec", ridx))
-
-        self._table.setRowCount(len(plan))
-        for trow, (kind, payload) in enumerate(plan):
-            if kind == "sep":
-                item = QTableWidgetItem(str(payload))
-                # Enabled (so it renders) but not selectable — never a scope row.
-                item.setFlags(Qt.ItemIsEnabled)
-                font = item.font()
-                font.setBold(True)
-                item.setFont(font)
-                self._table.setItem(trow, 0, item)
-                self._table.setSpan(trow, 0, 1, len(self._TABLE_COLUMNS))
-                self._row_to_record.append(None)
-                continue
-            record = self._records[payload]
-            values = (
-                str(record.get("condition", "")),
-                str(record.get("date", "")),
-                str(record.get("id", "")),
-                _inputs_label(record),
-                str(record.get("notes", "")),
-                str(record.get("contact_analysis_status", "")),
+            specs.append(
+                CatalogRowSpec(
+                    record_index=ridx,
+                    values=(
+                        str(record.get("condition", "")),
+                        str(record.get("date", "")),
+                        str(record.get("id", "")),
+                        _inputs_label(record),
+                        str(record.get("notes", "")),
+                    ),
+                    status=position_stage_status(record.get("position_path")),
+                )
             )
-            for col, value in enumerate(values):
-                self._table.setItem(trow, col, QTableWidgetItem(value))
-            self._row_to_record.append(payload)
-        self._table.blockSignals(False)
+        self._table.set_rows(specs)
+        #: Display-row → record-index map (``None`` for separators); mirrors the
+        #: table's own mapping so tests and callers keep a single source.
+        self._row_to_record = self._table.row_to_record
         self._push_context()
 
     def _selected_rows(self) -> list[int]:
-        """Selected *record* indices — separator rows (mapped to ``None``) drop out."""
-        mapping = getattr(self, "_row_to_record", [])
-        record_indices = []
-        for trow in sorted({idx.row() for idx in self._table.selectedIndexes()}):
-            if 0 <= trow < len(mapping) and mapping[trow] is not None:
-                record_indices.append(mapping[trow])
-        return sorted(set(record_indices))
+        """Selected *record* indices — separator rows never select."""
+        return self._table.selected_record_indices()
 
     def _records_in_scope(self) -> list[dict]:
         """Selected rows define scope; an empty selection means the whole catalog."""
