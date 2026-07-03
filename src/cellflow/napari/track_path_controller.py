@@ -16,7 +16,7 @@ O(track) write), never its geometry, so selecting cells stays cheap. The
 geometry is rebuilt (:meth:`refresh`) only when the label stack itself changes.
 
 The pure geometry/colour maths lives in
-:mod:`cellflow.napari._correction_track_path`; this controller is the
+:mod:`cellflow.napari.correction._correction_track_path`; this controller is the
 layer-lifecycle glue.
 """
 from __future__ import annotations
@@ -25,9 +25,9 @@ from collections.abc import Callable, Mapping
 
 import numpy as np
 
-from cellflow.napari._correction_track_path import build_all_tracks_data
+from cellflow.napari.correction._correction_track_path import build_all_tracks_data
 from cellflow.napari._track_render import _track_label_color_styling
-from cellflow.napari._correction_centroids import (
+from cellflow.napari.correction._correction_centroids import (
     FOCUS_CROSS_COLOR,
     NEUTRAL_OVERLAY_COLOR,
 )

@@ -332,8 +332,8 @@ class DivergenceMapsWidget(QWidget):
         owner is active. ⚙ params just toggle a panel and stay available.
         """
         g = self.gate
-        has_pos = lambda: self._resolved_maps_dir() is not None  # noqa: E731
-        idle = lambda: self._running_stage is None  # noqa: E731
+        has_pos = lambda: self._resolved_maps_dir() is not None
+        idle = lambda: self._running_stage is None
         for channel, params_btn, preview_btn, run_btn in (
             ("nucleus", self.nucleus_params_btn, self.nucleus_preview_btn, self.nucleus_run_btn),
             ("cell", self.cell_params_btn, self.cell_preview_btn, self.cell_run_btn),
@@ -358,7 +358,7 @@ class DivergenceMapsWidget(QWidget):
             )
         g.recompute()
 
-    def _on_run(self, channel: Literal["nucleus", "cell"]) -> None:  # noqa: D401
+    def _on_run(self, channel: Literal["nucleus", "cell"]) -> None:
         if self._running_stage is not None:
             self._on_cancel()
             return

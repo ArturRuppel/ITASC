@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cellflow.napari._correction_anchor import (
+from cellflow.napari.correction._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
 )

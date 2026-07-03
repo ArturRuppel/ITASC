@@ -4,7 +4,7 @@ These are pure queries over the viewer's frame (axis-0) slider — the widget th
 the right-click play-button popup writes to — falling back to napari's global
 preferences when the slider is absent. They carry no widget state, so they live
 here as free functions rather than on the correction widget; the held-key
-auto-repeat (:mod:`cellflow.napari._correction_keymap`) paces itself from
+auto-repeat (:mod:`cellflow.napari.correction._correction_keymap`) paces itself from
 :func:`nav_repeat_interval_ms`, and the film-strip stepping reads
 :func:`playback_loops` to decide whether to wrap at the ends.
 """

@@ -298,7 +298,7 @@ class ContactAnalysisStudioWidget(QWidget):
         nucleus = names.get("nucleus") or None
         try:
             entries = discover_catalog_entries(root, cell_name=cell, nucleus_name=nucleus)
-        except Exception as exc:  # noqa: BLE001 - surface discovery errors in the UI
+        except Exception as exc:
             self._set_catalog_status(f"Discover error: {exc}")
             return
         if entries and discovered_level_depth(
@@ -430,7 +430,7 @@ class ContactAnalysisStudioWidget(QWidget):
             return
         try:
             config_path = self._author_run_config(choices)
-        except Exception as exc:  # noqa: BLE001 - surface authoring errors in the UI
+        except Exception as exc:
             self._run_area.set_status(f"Save error: {exc}")
             return
         self._run_area.set_status(f"Wrote {config_path.name} + catalog.csv.")
@@ -444,7 +444,7 @@ class ContactAnalysisStudioWidget(QWidget):
             return
         try:
             config_path = self._author_run_config(choices)
-        except Exception as exc:  # noqa: BLE001 - surface authoring errors in the UI
+        except Exception as exc:
             self._run_area.set_status(f"Save error: {exc}")
             return
         self._run_area.set_status("Running pipeline…")
@@ -489,7 +489,7 @@ class ContactAnalysisStudioWidget(QWidget):
         """Merge a CSV catalog into the panel's current rows."""
         try:
             loaded = load_catalog(path)
-        except Exception as exc:  # noqa: BLE001 - surface load errors in the UI
+        except Exception as exc:
             self._set_catalog_status(f"Load error: {exc}")
             return
         merged = merge_catalog_records(self._panel.records(), loaded)
@@ -524,7 +524,7 @@ class ContactAnalysisStudioWidget(QWidget):
         records = self._all_records()
         try:
             save_catalog(path, records)
-        except Exception as exc:  # noqa: BLE001 - surface save errors in the UI
+        except Exception as exc:
             self._set_catalog_status(f"Save error: {exc}")
             return
         self._set_catalog_status(f"Saved {len(records)} record(s) to {path.name}.")

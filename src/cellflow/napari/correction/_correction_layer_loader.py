@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 from napari.utils.colormaps import Colormap
 
-from cellflow.napari._correction_centroids import (
+from cellflow.napari.correction._correction_centroids import (
     refresh_label_colormap,
 )
 

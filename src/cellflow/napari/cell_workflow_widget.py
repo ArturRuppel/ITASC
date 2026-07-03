@@ -61,7 +61,7 @@ from cellflow.napari._widget_helpers import (
     tool_btn as _tool_btn,
 )
 from cellflow.napari._standalone_paths import StandalonePathsMixin
-from cellflow.napari.cell_correction_widget import CellCorrectionWidget
+from cellflow.napari.correction.cell_correction_widget import CellCorrectionWidget
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import (
     add_section_header,

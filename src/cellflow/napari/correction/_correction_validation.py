@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from cellflow.napari._correction_utils import frame_view_2d
+from cellflow.napari.correction._correction_utils import frame_view_2d
 from cellflow.tracking_ultrack.corrections import Correction
 
 

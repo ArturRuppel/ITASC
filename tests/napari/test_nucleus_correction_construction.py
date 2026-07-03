@@ -22,8 +22,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 napari = pytest.importorskip("napari")
 
-from cellflow.napari._correction_events import CorrectionEvents  # noqa: E402
-from cellflow.napari.nucleus_correction_widget import (  # noqa: E402
+from cellflow.napari.correction._correction_events import CorrectionEvents  # noqa: E402
+from cellflow.napari.correction.nucleus_correction_widget import (  # noqa: E402
     NucleusCorrectionWidget,
 )
 

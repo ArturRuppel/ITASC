@@ -13,7 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 
 
 def test_cells_edited_fans_out_via_events(wired_stub) -> None:

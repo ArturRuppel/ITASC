@@ -18,7 +18,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.core.tiff import imwrite_grayscale
-from cellflow.napari._correction_utils import reorder_stack_by_quality
+from cellflow.napari.correction._correction_utils import reorder_stack_by_quality
 from cellflow.napari._paths import NucleusWorkspace
 from cellflow.napari._widget_helpers import (
     make_progress as _make_progress,

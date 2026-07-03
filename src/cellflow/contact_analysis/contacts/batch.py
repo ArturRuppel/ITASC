@@ -151,7 +151,7 @@ def run_contact_batch(
             results.append(
                 ContactBatchResult(job, "built" if built else "skipped")
             )
-        except Exception as exc:  # noqa: BLE001 - one bad position must not abort
+        except Exception as exc:
             results.append(ContactBatchResult(job, "failed", str(exc)))
         if progress_cb is not None:
             progress_cb(index + 1, total, job.group_dir.name)

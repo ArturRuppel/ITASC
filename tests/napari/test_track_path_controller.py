@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import numpy as np
 from napari.layers import Points
 
-from cellflow.napari._correction_centroids import NEUTRAL_OVERLAY_COLOR
+from cellflow.napari.correction._correction_centroids import NEUTRAL_OVERLAY_COLOR
 from cellflow.napari.track_path_controller import (
     FILLED_OVERVIEW_OPACITY,
     OVERVIEW_OPACITY,

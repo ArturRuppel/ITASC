@@ -26,7 +26,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.correction.labels import best_overlapping_label
-from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 from cellflow.napari.nucleus_atom_extraction_widget import (
     NucleusAtomExtractionMixin,
     NucleusAtomExtractionWidget,

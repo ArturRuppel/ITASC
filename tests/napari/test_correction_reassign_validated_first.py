@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from cellflow.napari.nucleus_correction_widget import NucleusCorrectionWidget
+from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 
 
 def _stub_with_validated(validated: dict[int, set[int]]) -> SimpleNamespace:
@@ -53,7 +53,7 @@ def test_commit_reassign_gives_validated_tracks_low_ids() -> None:
     def _remap(_pos, old_to_new):
         captured["old_to_new"] = old_to_new
 
-    import cellflow.napari.nucleus_correction_widget as widget_mod
+    import cellflow.napari.correction.nucleus_correction_widget as widget_mod
 
     original = widget_mod.remap_validated_tracks
     widget_mod.remap_validated_tracks = _remap

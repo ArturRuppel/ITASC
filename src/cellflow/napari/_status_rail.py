@@ -71,7 +71,7 @@ class StatusDot(QLabel):
         self.setCursor(Qt.PointingHandCursor)
         self.set_state(UNKNOWN)
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+    def mousePressEvent(self, event) -> None:
         # Consume the event (do not fall through to row selection) and load.
         self.clicked.emit(self.stage)
         event.accept()

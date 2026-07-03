@@ -23,7 +23,7 @@ Interaction:
 * **plain wheel** scrolls the panel vertically through the track list.
 
 The panel is a pure renderer: the controller hands it ready ``LaneView`` structs
-and the selected track's :class:`~cellflow.napari._correction_track_path.TrackFilmStrip`.
+and the selected track's :class:`~cellflow.napari.correction._correction_track_path.TrackFilmStrip`.
 Only ``rgb_to_qimage`` is import-safe without a running QApplication.
 """
 from __future__ import annotations
@@ -42,7 +42,7 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.core.lineage import _segments_from_frames
-from cellflow.napari._correction_track_path import TrackFilmStrip
+from cellflow.napari.correction._correction_track_path import TrackFilmStrip
 
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a scroll
 
@@ -531,7 +531,7 @@ class _AccordionView(QGraphicsView):
         self.setDragMode(QGraphicsView.NoDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-    def wheelEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def wheelEvent(self, event) -> None:
         if not (event.modifiers() & Qt.ControlModifier):
             super().wheelEvent(event)  # plain wheel scrolls vertically
             return
@@ -542,16 +542,16 @@ class _AccordionView(QGraphicsView):
         )
         event.accept()
 
-    def resizeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         # cell_w and band wrapping are width-derived, so re-lay on every resize.
         self._panel._relayout()
 
-    def mousePressEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mousePressEvent(self, event) -> None:
         self._press_pos = event.pos()
         super().mousePressEvent(event)
 
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt override)
+    def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
         if self._press_pos is None:
             return

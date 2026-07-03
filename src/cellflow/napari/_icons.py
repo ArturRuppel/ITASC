@@ -8,7 +8,7 @@ own element.
 """
 from __future__ import annotations
 
-from qtpy.QtCore import QByteArray, QRectF, QSize, Qt
+from qtpy.QtCore import QByteArray, QRectF, Qt
 from qtpy.QtGui import QIcon, QPainter, QPixmap
 from qtpy.QtSvg import QSvgRenderer
 

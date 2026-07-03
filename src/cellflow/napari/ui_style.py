@@ -277,15 +277,6 @@ def action_button(button, expand=False):
     return button
 
 
-def tiny_button(button):
-    button.setStyleSheet("font-size: 8pt; padding: 1px 4px;")
-    _disabled_push_button(button)
-    button.setSizePolicy(
-        button.sizePolicy().horizontalPolicy(), QSizePolicy.Policy.Fixed
-    )
-    return button
-
-
 def icon_button(button, width=24, height=None):
     button.setFixedWidth(width)
     if height is not None:

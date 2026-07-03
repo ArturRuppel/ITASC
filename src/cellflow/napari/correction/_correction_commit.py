@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from cellflow.napari._correction_utils import (
+from cellflow.napari.correction._correction_utils import (
     reassign_ids_stack,
     remove_unvalidated_labels,
 )

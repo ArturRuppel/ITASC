@@ -22,12 +22,12 @@ from collections.abc import Callable
 
 import numpy as np
 
-from cellflow.napari._correction_candidates import (
+from cellflow.napari.correction._correction_candidates import (
     CandidateSpec,
     CandidateStrip,
     build_candidate_strip,
 )
-from cellflow.napari._correction_candidate_panel import CandidateGalleryPanel
+from cellflow.napari.correction._correction_candidate_panel import CandidateGalleryPanel
 from cellflow.tracking_ultrack.extend import list_extend_candidates
 from cellflow.tracking_ultrack.swap_candidate import list_swap_candidates
 
