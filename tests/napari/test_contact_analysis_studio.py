@@ -236,7 +236,9 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     # Discover stages a collection but does not add it yet.
     widget._on_discover()
     assert len(widget._pending_entries) == 2
-    assert widget._discovered_list.count() == 2
+    # Staged positions render as dimmed preview rows in the table, not a side list.
+    assert len(widget._table.preview_row_widgets()) == 2
+    assert all(row.is_preview for row in widget._table.preview_row_widgets())
     assert widget._records == []
     # The three nesting levels (study → condition → experiment → position) are
     # seeded with the recognized identity axes, innermost = position_id.
@@ -266,6 +268,32 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     assert all(r["nucleus_tracked_labels_path"] is not None for r in widget._records)
     assert all(r["columns"]["operator"] == "Ada" for r in widget._records)
     assert all(r["experiment_id"] == "exp1" for r in widget._records)
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_staged_preview_row_individually_removable(tmp_path):
+    app = _app()
+    study = tmp_path / "study"
+    _make_ready_position(study, "ctrl", "exp1", "pos01")
+    _make_ready_position(study, "ctrl", "exp1", "pos02")
+
+    widget = mod.ContactAnalysisStudioWidget()
+    widget._root_edit.setText(str(study))
+    widget._cell_name_edit.setText("3_cell/tracked_labels.tif")
+    widget._on_discover()
+    assert len(widget._table.preview_row_widgets()) == 2
+
+    # Drop one staged position before committing — the other survives.
+    widget._on_remove_preview(0)
+    assert len(widget._pending_entries) == 1
+    assert len(widget._table.preview_row_widgets()) == 1
+
+    # Adding commits the remaining preview; previews clear, one record lands.
+    widget._on_add_to_catalogue()
+    assert len(widget._records) == 1
+    assert widget._table.preview_row_widgets() == []
 
     widget.deleteLater()
     app.processEvents()

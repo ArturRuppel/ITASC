@@ -45,17 +45,21 @@ _EMPTY_MESSAGE = "No positions yet — Discover a study folder or Load a CSV."
 
 @dataclass
 class CatalogRowSpec:
-    """One display row: a record row (``record_index`` set) or a separator.
+    """One display row: a record, a staged preview, or a group separator.
 
     * Record row — ``record_index`` is the record's index; ``values`` are the text
       cells aligned with :data:`_TEXT_COLUMNS`; ``status`` feeds the rail.
-    * Separator — ``record_index`` is ``None``; ``caption`` is the bold group label.
+    * Preview row — ``preview_index`` is set (a discovered-not-yet-added position);
+      rendered dimmed with a ✕ to drop it before committing. Its rail still shows
+      the position's on-disk progress.
+    * Separator — everything ``None``; ``caption`` is the bold group label.
     """
 
     record_index: int | None
     values: tuple[str, ...] = ()
     status: dict[str, str] = field(default_factory=dict)
     caption: str = ""
+    preview_index: int | None = None
 
 
 def _cell(text: str, width: int) -> QLabel:
@@ -69,14 +73,22 @@ def _cell(text: str, width: int) -> QLabel:
 
 
 class _CatalogRow(QFrame):
-    """A single selectable catalog record row: text cells + a status rail."""
+    """One catalog row: a committed record or a dimmed staged preview.
+
+    Record rows select and load (rail dots clickable). Preview rows are dimmed,
+    non-selectable, and carry a ✕ that emits :attr:`removeRequested` — their rail
+    is a read-only preview of the discovered position's progress.
+    """
 
     clicked = Signal(int, object)  # (record_index, keyboard modifiers)
     dotClicked = Signal(int, str)  # (record_index, stage)
+    removeRequested = Signal(int)  # (preview_index)
 
     def __init__(self, spec: CatalogRowSpec, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.record_index = spec.record_index
+        self.preview_index = spec.preview_index
+        self.is_preview = spec.preview_index is not None
         self._selected = False
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         layout = QHBoxLayout(self)
@@ -88,12 +100,25 @@ class _CatalogRow(QFrame):
         self.rail = StatusRail()
         self.rail.setFixedWidth(_STATUS_WIDTH)
         self.rail.set_status(spec.status)
-        self.rail.dotClicked.connect(
-            lambda stage: self.dotClicked.emit(self.record_index, stage)
-        )
+        if not self.is_preview:
+            self.rail.dotClicked.connect(
+                lambda stage: self.dotClicked.emit(self.record_index, stage)
+            )
         layout.addWidget(self.rail)
+        if self.is_preview:
+            remove = QLabel("✕")
+            remove.setFixedWidth(16)
+            remove.setAlignment(Qt.AlignCenter)
+            remove.setCursor(Qt.PointingHandCursor)
+            remove.setToolTip("Drop this staged position before adding.")
+            remove.mousePressEvent = self._on_remove_clicked
+            layout.addWidget(remove)
         layout.addStretch(1)
         self._apply_style()
+
+    def _on_remove_clicked(self, event) -> None:
+        self.removeRequested.emit(self.preview_index)
+        event.accept()
 
     def set_selected(self, selected: bool) -> None:
         if selected != self._selected:
@@ -101,7 +126,13 @@ class _CatalogRow(QFrame):
             self._apply_style()
 
     def _apply_style(self) -> None:
-        if self._selected:
+        if self.is_preview:
+            # Dimmed + italic: a staged position, not yet committed.
+            self.setStyleSheet(
+                "_CatalogRow { border-left: 2px solid transparent; color: #999; "
+                "font-style: italic; }"
+            )
+        elif self._selected:
             self.setStyleSheet(
                 "_CatalogRow { background-color: rgba(90, 140, 220, 70); "
                 "border-left: 2px solid #5a8cdc; }"
@@ -110,7 +141,8 @@ class _CatalogRow(QFrame):
             self.setStyleSheet("_CatalogRow { border-left: 2px solid transparent; }")
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
-        self.clicked.emit(self.record_index, event.modifiers())
+        if not self.is_preview:
+            self.clicked.emit(self.record_index, event.modifiers())
         super().mousePressEvent(event)
 
 
@@ -142,10 +174,13 @@ class CatalogTable(QWidget):
     selectionChanged = Signal()
     dotClicked = Signal(int, str)  # (record_index, stage) — a rail dot was clicked
     deleteRequested = Signal()  # Delete pressed with a selection — studio removes it
+    previewRemoveRequested = Signal(int)  # ✕ on a staged preview row (preview_index)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFocusPolicy(Qt.StrongFocus)
+        #: preview index → its row widget (staged, not-yet-added positions).
+        self._preview_widgets: dict[int, _CatalogRow] = {}
         #: Display-row → record index (``None`` for separators).
         self.row_to_record: list[int | None] = []
         #: Record indices in display order (excludes separators) — range anchor space.
@@ -209,8 +244,16 @@ class CatalogTable(QWidget):
         self.row_to_record = []
         self._data_order = []
         self._row_widgets = {}
+        self._preview_widgets = {}
 
         for spec in specs:
+            if spec.preview_index is not None:
+                row = _CatalogRow(spec)
+                row.removeRequested.connect(self.previewRemoveRequested)
+                self._body_layout.addWidget(row)
+                self.row_to_record.append(None)
+                self._preview_widgets[spec.preview_index] = row
+                continue
             if spec.record_index is None:
                 self._body_layout.addWidget(_SeparatorRow(spec.caption))
                 self.row_to_record.append(None)
@@ -223,7 +266,7 @@ class CatalogTable(QWidget):
             self._data_order.append(spec.record_index)
             self._row_widgets[spec.record_index] = row
 
-        if not self._data_order:
+        if not self._data_order and not self._preview_widgets:
             placeholder = QLabel(_EMPTY_MESSAGE)
             placeholder.setEnabled(False)  # muted
             placeholder.setContentsMargins(6, 8, 6, 8)
@@ -260,6 +303,10 @@ class CatalogTable(QWidget):
     def record_row_widgets(self) -> list[_CatalogRow]:
         """Row widgets in display order (record rows only) — for tests / styling."""
         return [self._row_widgets[i] for i in self._data_order]
+
+    def preview_row_widgets(self) -> list[_CatalogRow]:
+        """Staged-preview row widgets, keyed by preview index — for tests."""
+        return [self._preview_widgets[i] for i in sorted(self._preview_widgets)]
 
     def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt override
         if event.key() in (Qt.Key_Delete, Qt.Key_Backspace):

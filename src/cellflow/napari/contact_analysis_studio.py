@@ -27,7 +27,6 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -263,9 +262,8 @@ class ContactAnalysisStudioWidget(QWidget):
         col.addWidget(self._discover_btn)
         self._update_discover_tooltip()
 
-        self._discovered_list = QListWidget()
-        self._discovered_list.setMaximumHeight(120)
-        col.addWidget(self._discovered_list)
+        # Discovered positions no longer live in a separate list — they appear as
+        # dimmed *preview rows* in the catalog table below, individually removable.
 
         # Levels editor: one name field per detected nesting level, anchored at the
         # root. Editable before committing; renaming re-derives that column on the
@@ -320,6 +318,7 @@ class ContactAnalysisStudioWidget(QWidget):
         self._table.selectionChanged.connect(self._on_selection_changed)
         self._table.dotClicked.connect(self._on_stage_dot_clicked)
         self._table.deleteRequested.connect(self._on_remove_selected)
+        self._table.previewRemoveRequested.connect(self._on_remove_preview)
         col.addWidget(self._table, 1)
 
         # Count / meta line under the table.
@@ -541,7 +540,7 @@ class ContactAnalysisStudioWidget(QWidget):
         depth = discovered_level_depth(root, [e["position_path"] for e in entries])
         if entries and depth is None:
             self._pending_entries = []
-            self._discovered_list.clear()
+            self._refresh_table()
             self._rebuild_level_fields(0)
             self._add_btn.setEnabled(False)
             self._set_discover_status(
@@ -628,32 +627,40 @@ class ContactAnalysisStudioWidget(QWidget):
         if self._pending_entries:
             self._populate_discovered()
 
+    def _preview_spec(self, entry: dict, preview_index: int) -> CatalogRowSpec:
+        """A dimmed catalog preview row for one discovered-not-yet-added entry."""
+        columns = self._columns_for_entry(entry)
+        return CatalogRowSpec(
+            record_index=None,
+            preview_index=preview_index,
+            values=(
+                str(columns.get("condition", "")),
+                str(columns.get("date", "")),
+                str(columns.get("position_id", entry.get("id", ""))),
+                _inputs_label(entry),
+                "",
+            ),
+            status=position_stage_status(entry.get("position_path")),
+        )
+
     def _populate_discovered(self) -> None:
-        self._discovered_list.clear()
-        for entry in self._pending_entries:
-            have_nucleus = entry.get("nucleus_tracked_labels_path") is not None
-            contact = entry.get("contact_analysis_path")
-            built = contact is not None and Path(contact).is_file()
-            badges = ["built" if built else "missing"]
-            if have_nucleus:
-                badges.append("nucleus")
-            columns = self._columns_for_entry(entry)
-            caption = "  ·  ".join(
-                f"{k}={v}" for k, v in columns.items() if k != "position_id" and v
-            )
-            pid = columns.get("position_id", entry["id"])
-            label = f"{pid}  [{', '.join(badges)}]"
-            if caption:
-                label = f"{label}    {caption}"
-            self._discovered_list.addItem(label)
+        """Refresh the staged previews (they render in the catalog table below)."""
         n = len(self._pending_entries)
         self._add_btn.setEnabled(n > 0)
         if not n:
             self._set_discover_status("No matching positions found under the root.")
         else:
             self._set_discover_status(
-                f"{n} position(s) discovered — name the levels and Add to catalogue."
+                f"{n} position(s) staged below — remove any with ✕, name the levels, "
+                "then Add to catalogue."
             )
+        self._refresh_table()
+
+    def _on_remove_preview(self, preview_index: int) -> None:
+        """Drop one staged position before it is committed to the catalogue."""
+        if 0 <= preview_index < len(self._pending_entries):
+            del self._pending_entries[preview_index]
+            self._populate_discovered()
 
     def _on_add_to_catalogue(self) -> None:
         """Register the discovered positions — building is a builder-plugin action."""
@@ -665,10 +672,11 @@ class ContactAnalysisStudioWidget(QWidget):
             for entry in self._pending_entries
         ]
         added = len(annotated)
-        self._merge_records(annotated, source=f"added {added} from discovery")
+        # Clear the staging *before* refreshing so the previews give way to the
+        # committed rows in one redraw.
         self._pending_entries = []
-        self._discovered_list.clear()
         self._add_btn.setEnabled(False)
+        self._merge_records(annotated, source=f"added {added} from discovery")
         self._set_discover_status(
             f"Added {added} position(s). Check a builder plugin to compute quantities."
         )
@@ -775,6 +783,16 @@ class ContactAnalysisStudioWidget(QWidget):
                     status=position_stage_status(record.get("position_path")),
                 )
             )
+        # Staged (discovered-not-yet-added) positions ride below as dimmed previews.
+        if self._pending_entries:
+            specs.append(
+                CatalogRowSpec(
+                    record_index=None,
+                    caption=f"Staged — not yet added ({len(self._pending_entries)})",
+                )
+            )
+            for pidx, entry in enumerate(self._pending_entries):
+                specs.append(self._preview_spec(entry, pidx))
         self._table.set_rows(specs)
         #: Display-row → record-index map (``None`` for separators); mirrors the
         #: table's own mapping so tests and callers keep a single source.
