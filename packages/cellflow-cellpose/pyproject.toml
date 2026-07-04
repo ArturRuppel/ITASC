@@ -60,7 +60,7 @@ bypass-selection = true
 # segment+track widget so the tool covers segment → track → correct. Its base
 # (correction_widget + _correction_ui/_correction_layer_lifecycle) ships in
 # cellflow-core; _spotlight is the only shared dep core does not yet ship.
-"../../src/cellflow/napari/cell_correction_widget.py" = "cellflow/napari/cell_correction_widget.py"
+"../../src/cellflow/napari/correction/cell_correction_widget.py" = "cellflow/napari/correction/cell_correction_widget.py"
 "../../src/cellflow/napari/_spotlight.py" = "cellflow/napari/_spotlight.py"
 # cellpose_widget + divergence_maps_widget stay shipped (Qt-free of the model):
 # the integrated app imports them directly for its in-app Cellpose stage; they
