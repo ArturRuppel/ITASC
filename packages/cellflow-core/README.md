@@ -5,4 +5,4 @@ Shared substrate for the CellFlow ecosystem: TIFF / path / logging helpers
 `ui_style`, `widgets`, `_widget_helpers`, `_flow_layout`, `_napari_compat`).
 
 Installed as a PEP 420 namespace contribution to `cellflow.*`; other CellFlow
-distributions (e.g. `cellflow-contact-analysis`) depend on it.
+distributions (e.g. `cellflow-aggregate`) depend on it.

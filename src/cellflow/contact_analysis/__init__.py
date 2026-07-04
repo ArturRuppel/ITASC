@@ -1,7 +1,7 @@
 """Contact Analysis: pool per-position sources into plottable quantities.
 
 This package hosts the quantifier seam. The stable, napari-free surface that the
-``cellflow-contact-analysis`` CLI calls and notebooks import is the
+``cellflow-aggregate`` CLI calls and notebooks import is the
 :mod:`~cellflow.contact_analysis.pipeline` — ``build_catalog`` →
 ``build_quantities`` → ``aggregate`` — re-exported here alongside the catalogue
 load/save helpers and the quantifier registry. Everything it produces is

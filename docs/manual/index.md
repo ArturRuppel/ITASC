@@ -10,7 +10,7 @@ runs on its own. Pick the row that matches what you actually do.
 | Running the **whole pipeline** in napari | `pip install cellflow[all]` | The unified `CellFlow` workflow widget end to end | everything |
 | **Segmenting & tracking** with Cellpose | `pip install "cellflow-cellpose[cellpose,laptrack]"` | Cellpose-SAM native masks + laptrack tracking of 1–2 channels, with correction | `cellflow-core` |
 | **Tracking & correcting nuclei** with Ultrack | `pip install "cellflow-tracking[solve]"` | Ultrack candidate DB, solving, browsing, interactive correction | `cellflow-core` |
-| Doing **contact / aggregate analysis** | `pip install cellflow-contact-analysis` | Cell-cell edges, T1 events, NLS classes → HDF5 + napari views | `cellflow-core` |
+| Doing **contact / aggregate analysis** | `pip install cellflow-aggregate` | Cell-cell edges, T1 events, NLS classes → HDF5 + napari views | `cellflow-core` |
 | Building **on top of CellFlow** as a library | `pip install cellflow-core` | TIFF/path/label-IO helpers, lineage model, napari UI primitives | — |
 
 The optional extras (`[cellpose]`, `[laptrack]`, `[solve]`) pull in heavy engines
@@ -36,7 +36,7 @@ flowchart LR
     trk["cellflow-tracking<br/>2_nucleus: DB, tracks, labels"] --> seg
     seg["cellflow (full app)<br/>3_cell: tracked cell labels"] --> agg
     trk --> agg
-    agg["cellflow-contact-analysis<br/>aggregate_quantification: HDF5"]
+    agg["cellflow-aggregate<br/>aggregate_quantification: HDF5"]
 ```
 
 See [The staged workflow](workflow.md) for what happens at each stage, and

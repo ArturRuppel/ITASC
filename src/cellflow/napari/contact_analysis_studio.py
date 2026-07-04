@@ -11,7 +11,7 @@ This is the merged standalone Contact Analysis tool. It is built from two parts:
   :mod:`cellflow.napari.contact_analysis.plugins`).
 
 This module is full-install only (it depends on the napari analysis-plugin
-package, which the standalone ``cellflow-contact-analysis`` wheel does not ship); the
+package, which the standalone ``cellflow-aggregate`` wheel does not ship); the
 standalone wheel falls back to the bare
 :class:`ContactAnalysisWidget` (see ``make_contact_analysis_widget``).
 """

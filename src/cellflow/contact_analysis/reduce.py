@@ -28,7 +28,7 @@ child counts; for a single rung (frames → cell) flat and nested are identical.
 Nothing here decides this for the user — the pipeline order is the knob.
 
 This module is backend-only (no Qt / pandas-display state) so the standalone
-``cellflow-contact-analysis`` wheel and headless / batch runs use it unchanged.
+``cellflow-aggregate`` wheel and headless / batch runs use it unchanged.
 """
 from __future__ import annotations
 

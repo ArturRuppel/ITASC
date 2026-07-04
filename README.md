@@ -24,7 +24,7 @@ The full plugin orchestrates them into the unified workflow described below.
   2D+t `foreground.tif` + `contours.tif` → atoms, database, tracked labels, and
   validated/corrected annotations. The Ultrack solver is an optional `[solve]`
   extra. Depends on `cellflow-core`.
-- [`cellflow-contact-analysis`](packages/cellflow-contact-analysis) — aggregate quantification;
+- [`cellflow-aggregate`](packages/cellflow-aggregate) — aggregate quantification;
   bundled quantifier is contacts (cell-cell edges, T1 events) + napari
   visualization. Headless I/O: 2D+t cell labels (optional nucleus labels) → HDF5.
   Depends on `cellflow-core`.

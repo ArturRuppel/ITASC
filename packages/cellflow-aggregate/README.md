@@ -1,4 +1,4 @@
-# cellflow-contact-analysis
+# cellflow-aggregate
 
 Independent CellFlow piece for **aggregate quantification**. It hosts per-position
 quantifiers; the bundled one is **contacts**: extract cell-cell edges, border
@@ -9,7 +9,7 @@ napari.
 ## Install
 
 ```bash
-pip install cellflow-contact-analysis
+pip install cellflow-aggregate
 ```
 
 This pulls in `cellflow-core`. Both install into the shared `cellflow.*`
@@ -37,13 +37,13 @@ artifact, computed on demand only when missing.
 
   ```python
   from cellflow.contact_analysis import (
-      ensure_contact_analysis,        # build only if missing (or overwrite=True)
+      ensure_contacts,        # build only if missing (or overwrite=True)
       discover_contact_batch_jobs,
       run_contact_batch,
   )
 
   # Single position (missing-only):
-  ensure_contact_analysis(
+  ensure_contacts(
       cell_labels_path="cells.tif",
       nucleus_labels_path=None,            # optional
       output_path="contact_analysis.h5",
@@ -59,7 +59,7 @@ artifact, computed on demand only when missing.
   results = run_contact_batch(jobs, overwrite=False)
   ```
 
-  `build_contact_analysis(...)` remains available for an unconditional build.
+  `build_contacts(...)` remains available for an unconditional build.
 
 ## I/O contract
 

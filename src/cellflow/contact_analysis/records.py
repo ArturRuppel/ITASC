@@ -6,7 +6,7 @@ The studio carries positions as normalized catalogue ``record`` dicts (see
 builds from — and resolving where that quantifier's artifact lives — is pure path
 logic with no Qt. It lives here (rather than in the napari studio layer) so the
 headless aggregation backend (:mod:`.shape_tables`) and the standalone
-``cellflow-contact-analysis`` wheel can resolve the same paths the studio does.
+``cellflow-aggregate`` wheel can resolve the same paths the studio does.
 
 The napari ``studio_plugins`` module re-exports these for backwards compatibility.
 """

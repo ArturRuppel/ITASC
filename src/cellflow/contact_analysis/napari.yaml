@@ -1,10 +1,10 @@
-name: cellflow-contact-analysis
-display_name: CellFlow Contact Analysis
+name: cellflow-aggregate
+display_name: CellFlow Aggregate Quantification
 contributions:
   commands:
-    - id: cellflow-contact-analysis.widget
+    - id: cellflow-aggregate.widget
       title: "Contact Analysis"
       python_name: cellflow.napari.contact_analysis_widget:make_contact_analysis_widget
   widgets:
-    - command: cellflow-contact-analysis.widget
+    - command: cellflow-aggregate.widget
       display_name: "Contact Analysis"

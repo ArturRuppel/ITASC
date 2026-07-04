@@ -15,7 +15,7 @@ flowchart TD
     core["cellflow-core<br/><i>TIFF/path/label IO · lineage model · napari UI primitives</i>"]
     cp["cellflow-cellpose"]
     trk["cellflow-tracking"]
-    agg["cellflow-contact-analysis"]
+    agg["cellflow-aggregate"]
     cp --> core
     trk --> core
     agg --> core
@@ -25,7 +25,7 @@ flowchart TD
 
 Each top-level subpackage under `src/cellflow/` is one importable stage. Most map
 to a standalone distribution (`cellflow-cellpose`, `cellflow-tracking`,
-`cellflow-contact-analysis`, `cellflow-core`); `cellflow.segmentation` ships only inside
+`cellflow-aggregate`, `cellflow-core`); `cellflow.segmentation` ships only inside
 the full `cellflow` app.
 
 | Subpackage | Role |

@@ -71,14 +71,14 @@ jobs:
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
           import cellflow.core.tiff
-          from cellflow.aggregate_quantification import build_contact_analysis
+          from cellflow.contact_analysis import build_contacts
           d = tempfile.mkdtemp()
           labels = np.zeros((2, 5, 6), dtype=np.uint16)
           labels[:, :, :3] = 1
           labels[:, :, 3:] = 2
           cp = os.path.join(d, "cells.tif")
           tifffile.imwrite(cp, labels)
-          out = build_contact_analysis(cell_labels_path=cp, output_path=os.path.join(d, "ca.h5"))
+          out = build_contacts(cell_labels_path=cp, output_path=os.path.join(d, "ca.h5"))
           with h5py.File(out) as h5:
               assert h5["cells/table/cell_id"][:].tolist() == [1, 2, 1, 2]
           print("isolated cellflow-aggregate install OK")
@@ -133,7 +133,7 @@ jobs:
           from npe2 import PluginManifest
           for path, name in [
               ("src/cellflow/napari.yaml", "cellflow"),
-              ("src/cellflow/aggregate_quantification/napari.yaml", "cellflow-aggregate"),
+              ("src/cellflow/contact_analysis/napari.yaml", "cellflow-aggregate"),
               ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
               ("src/cellflow/cellpose/napari.yaml", "cellflow-cellpose"),
           ]:
@@ -149,7 +149,7 @@ jobs:
 
           folded = factories("src/cellflow/napari.yaml")
           for path in (
-              "src/cellflow/aggregate_quantification/napari.yaml",
+              "src/cellflow/contact_analysis/napari.yaml",
               "src/cellflow/tracking_ultrack/napari.yaml",
               "src/cellflow/cellpose/napari.yaml",
           ):

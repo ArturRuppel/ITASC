@@ -63,7 +63,7 @@ def make_contact_analysis_widget(napari_viewer=None):
 
     In a full CellFlow install this returns the merged studio — a position
     catalog + embedded per-position quantity view + analysis plugins. The
-    standalone ``cellflow-contact-analysis`` wheel does not ship the studio module
+    standalone ``cellflow-aggregate`` wheel does not ship the studio module
     (nor its napari analysis-plugin package), so there it falls back to the bare per-position
     :class:`ContactAnalysisWidget` in standalone mode (own file pickers +
     config). Runs the napari layer-delegate patch (normally done by the
@@ -82,7 +82,7 @@ def make_contact_analysis_widget(napari_viewer=None):
         napari_viewer = napari.current_viewer()
     try:
         from cellflow.napari.contact_analysis_studio import ContactAnalysisStudioWidget
-    except ImportError:  # standalone cellflow-contact-analysis wheel: no studio module
+    except ImportError:  # standalone cellflow-aggregate wheel: no studio module
         return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
     return ContactAnalysisStudioWidget(viewer=napari_viewer)
 
