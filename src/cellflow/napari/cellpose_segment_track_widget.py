@@ -742,6 +742,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         @thread_worker(connect={
             "yielded": self._on_seg_frame, "returned": _done, "errored": self._errored,
+            "aborted": self._aborted,
         })
         def _worker():
             yield from native_masks.iter_nucleus_maps_stack(
@@ -855,6 +856,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+            "aborted": self._aborted,
         })
         def _worker():
             yield (0, 1, "Tracking Channel 1 masks...")
@@ -896,6 +898,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+            "aborted": self._aborted,
         })
         def _worker():
             yield (0, 4, "Loading inputs...")
@@ -958,6 +961,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+            "aborted": self._aborted,
         })
         def _worker():
             yield (0, 4, "Previewing joint...")
@@ -1017,6 +1021,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         @thread_worker(connect={
             "yielded": self._on_progress, "returned": _done, "errored": self._errored,
+            "aborted": self._aborted,
         })
         def _worker():
             yield (0, 0, f"Segmenting frame on {cellpose_runner.device_label()}...")
@@ -1073,6 +1078,20 @@ class CellposeSegmentTrackWidget(QWidget):
         else:
             self._status(f"Error: {exc}")
             logger.exception("segment/track error", exc_info=exc)
+
+    def _aborted(self) -> None:
+        """Return the UI to idle when a run is cancelled mid-flight.
+
+        ``_on_cancel`` calls ``worker.quit()``, and napari answers a quit with
+        the ``aborted`` signal — not ``returned`` or ``errored`` — so without
+        this handler the run buttons stay disabled and the progress bar stays
+        frozen after Cancel. Mirrors the cancel branch of :meth:`_errored`.
+        """
+        self._worker = None
+        self._set_running(None)
+        self._clear_progress()
+        self._stream = None
+        self._status("Cancelled.")
 
     # ------------------------------------------------------ layer output
     def _add_labels(self, name: str, data) -> None:

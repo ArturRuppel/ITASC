@@ -344,10 +344,18 @@ incl. `uint32`/`int32` labels, unlike ImageJ-TIFF.
     full-editing only, bar-click navigation, overlay layer appears/matches
     the mask/is removed when the last validated cell is invalidated).
 
-- [ ] **Bug: cancelling a batch segmentation run leaves the UI stuck.** Clicking
+- [x] **Bug: cancelling a batch segmentation run leaves the UI stuck.** Clicking
   Cancel during a full-stack Segment run in the Cellpose Segment + Track distro
-  does stop the run, but the other action buttons stay disabled and the
-  progress bar freezes instead of resetting to idle.
+  did stop the run, but the action buttons stayed disabled and the progress bar
+  froze instead of resetting to idle. Cause: `_on_cancel` calls `worker.quit()`,
+  and napari answers a quit with the `aborted` signal — not `returned`/`errored`
+  — but the five `thread_worker(connect=…)` dicts only wired `returned`/`errored`,
+  so the reset cleanup never ran. Fix: added a shared `_aborted` handler
+  (mirrors the cancel branch of `_errored`: clears `_worker`/`_stream`, calls
+  `_set_running(None)` + `_clear_progress()`, status "Cancelled.") and wired
+  `"aborted": self._aborted` into all five workers. Covered by two tests in
+  `test_cellpose_segment_track_widget.py` (handler resets to idle; every worker
+  that wires `errored` also wires `aborted`).
 
 - [x] Atom extractor: do the checkbox situation like the cell segmentation widget's
   preview. Put the checkboxes in a row along the top and only compute what is
