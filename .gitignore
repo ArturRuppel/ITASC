@@ -13,6 +13,8 @@ packages/_wheels/
 .ipynb_checkpoints/
 *.so
 .env
+.venv
+.envrc
 .claude/
 .worktrees/
 .deepseek/
