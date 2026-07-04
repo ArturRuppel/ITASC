@@ -113,7 +113,7 @@ class NodeEdge:
     annotation: str        # annotation_name(LinkDB.annotation): REAL/FAKE/UNKNOWN
     direction: str         # "pred" (neighbor -> selected) or "succ" (selected -> neighbor)
     neighbor_t: int        # NodeDB.t of the neighbor
-    neighbor_prob: float   # NodeDB.node_prob (1.0 if NULL)
+    neighbor_prob: float   # NodeDB.node_prob (1.0 if unset: NULL or ultrack's -1.0 sentinel)
     neighbor_annot: str    # annotation_name(NodeDB.node_annot)
     weight_is_null: bool = False  # raw LinkDB.weight was NULL (rendered 1.0)
 
@@ -125,6 +125,19 @@ class NodeEdges:
     selected_prob: float
     selected_annot: str
     edges: tuple[NodeEdge, ...]
+
+
+def _node_prob_or_unknown(prob) -> float:
+    """Map an unset node probability to 1.0.
+
+    Ultrack's ``NodeDB.node_prob`` is nullable but defaults to the sentinel
+    ``-1.0`` for nodes that were never scored, so both NULL and any negative
+    value mean "no probability assigned" and read back as 1.0.
+    """
+    if prob is None:
+        return 1.0
+    value = float(prob)
+    return 1.0 if value < 0.0 else value
 
 
 def query_node_edges(db_path: Path, node_id: int) -> NodeEdges:
@@ -167,7 +180,7 @@ def query_node_edges(db_path: Path, node_id: int) -> NodeEdges:
             for nid, t, prob, annot in node_rows:
                 node_meta[int(nid)] = (
                     int(t),
-                    float(prob if prob is not None else 1.0),
+                    _node_prob_or_unknown(prob),
                     annotation_name(annot),
                 )
 

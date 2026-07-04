@@ -154,7 +154,11 @@ def write_seed_prior_node_probs(
             circularity = compute_mask_circularity(record.mask)
             base = cfg.quality_weight * drop_frac + cfg.circularity_weight * circularity
             node_prob = _seed_node_prob(base, max_base, cfg.quality_exponent)
-            score_updates.append({"id": record.node_id, "node_prob": node_prob})
+            # NodeDB has a composite primary key (id, t); bulk_update_mappings
+            # needs every PK column present in each row mapping.
+            score_updates.append(
+                {"id": record.node_id, "t": record.t, "node_prob": node_prob}
+            )
 
         # One bulk UPDATE instead of a statement per node (was O(n) round-trips).
         if score_updates:
