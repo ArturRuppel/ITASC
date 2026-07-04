@@ -1103,3 +1103,38 @@ def test_invalidating_the_last_validated_cell_removes_the_overlay_layer():
     w._on_toggle_validation()  # invalidate
     assert _VALIDATED_OVERLAY_LAYER not in viewer.layers
     w.deleteLater()
+
+
+def test_aborted_returns_ui_to_idle_after_cancel():
+    """Cancel quits the worker, and napari answers a quit with the `aborted`
+    signal — not `returned`/`errored`. The handler must reset the run buttons,
+    progress bar, stream and status just like a normal finish. Regression:
+    `aborted` used to be unconnected, so Cancel left the UI stuck."""
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # A full-stack Segment run in progress: worker live, stream allocated,
+    # buttons showing the Cancel glyph, progress bar advancing.
+    w._worker = object()
+    w._stream = {"masks_name": "[Channel 1] masks"}
+    w._set_running("ch1_seg")
+    w._progress(3, 10, "Segmenting Channel 1...")
+    assert w.ch1_seg_btn.text() == "✕"
+
+    w._aborted()  # what napari's `aborted` signal now invokes
+
+    assert w._running is None
+    assert w._worker is None
+    assert w._stream is None
+    assert w.progress_bar.value() == 0
+    assert w.ch1_seg_btn.text() == "▶"  # glyph restored → button back to idle
+    assert w.status_lbl.text() == "Cancelled."
+    w.deleteLater()
+
+
+def test_every_cancellable_worker_wires_aborted():
+    """Every worker that handles `errored` must also handle `aborted`, or Cancel
+    (which calls worker.quit() → napari `aborted`) leaves the run buttons
+    disabled and the progress bar frozen. Guards the specific wiring bug."""
+    src = Path(stw.__file__).read_text()
+    assert src.count('"aborted": self._aborted') == src.count('"errored": self._errored')
+    assert src.count('"aborted": self._aborted') == 5
