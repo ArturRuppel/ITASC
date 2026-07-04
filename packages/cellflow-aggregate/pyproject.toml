@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cellflow-contact-analysis"
+name = "cellflow-aggregate"
 version = "0.2.0"
-description = "CellFlow contact analysis: per-position quantifiers (contacts: cell-cell edges, T1 events) and napari visualization"
+description = "CellFlow aggregate quantification: per-position quantifiers (density, shape, dynamics, contacts: cell-cell edges, T1 events) and napari visualization"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "AGPL-3.0"}
 authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
-keywords = ["cell-tracking", "microscopy", "napari", "quantification", "contact-analysis"]
+keywords = ["cell-tracking", "microscopy", "napari", "quantification", "aggregate-quantification"]
 dependencies = [
     "cellflow-core",
     "napari[all]>=0.4.18",
@@ -29,7 +29,7 @@ Homepage = "https://github.com/ArturRuppel/CellFlow"
 Repository = "https://github.com/ArturRuppel/CellFlow"
 
 [project.entry-points."napari.manifest"]
-cellflow-contact-analysis = "cellflow.contact_analysis:napari.yaml"
+cellflow-aggregate = "cellflow.contact_analysis:napari.yaml"
 
 # Built from the shared source tree without moving files; omits the namespace
 # roots so it composes with cellflow-core via PEP 420. See cellflow-core for the

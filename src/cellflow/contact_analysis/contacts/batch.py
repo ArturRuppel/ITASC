@@ -8,7 +8,7 @@ that contains a cell-labels file becomes one job. A nucleus file is associated
 only when it sits in that same folder; otherwise the job runs cell-only. Outputs
 that already exist are skipped unless ``overwrite`` is set.
 
-Position-agnostic and napari-free: shipped by the ``cellflow-contact-analysis`` wheel.
+Position-agnostic and napari-free: shipped by the ``cellflow-aggregate`` wheel.
 """
 from __future__ import annotations
 

@@ -8,7 +8,7 @@ contributions:
     # The full install folds the extracted tools' widgets into this single
     # manifest. npe2 requires a manifest's name to match the providing
     # distribution, so the standalone cellflow-cellpose / cellflow-tracking /
-    # cellflow-contact-analysis manifests cannot be re-registered from the cellflow
+    # cellflow-aggregate manifests cannot be re-registered from the cellflow
     # distribution; their contributions are mirrored here instead. The integrated
     # CellFlow app's own per-stage widgets (Cellpose map-building, Cell
     # Segmentation) live inside the CellFlow widget above and are not exposed as
@@ -18,7 +18,7 @@ contributions:
       python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
     # In a full install this single Contact Analysis entry resolves to the
     # merged studio (catalog + per-position view + analysis plugins); the standalone
-    # cellflow-contact-analysis wheel resolves the same factory to the bare per-position
+    # cellflow-aggregate wheel resolves the same factory to the bare per-position
     # widget. Analysis plugins are NOT registered here — they are hosted
     # inside the Contact Analysis widget, not exposed as top-level dock
     # widgets, and register in-process by subclassing
