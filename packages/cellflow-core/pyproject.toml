@@ -28,7 +28,7 @@ Repository = "https://github.com/ArturRuppel/CellFlow"
 # Built from the shared source tree without moving files. The wheel deliberately
 # omits cellflow/__init__.py and cellflow/napari/__init__.py so cellflow and
 # cellflow.napari install as PEP 420 namespace packages, letting sibling
-# distributions (cellflow-contact-analysis, the orchestrator) contribute their own
+# distributions (cellflow-aggregate, the orchestrator) contribute their own
 # submodules under the same namespace.
 [tool.hatch.build.targets.wheel]
 bypass-selection = true
@@ -49,6 +49,6 @@ bypass-selection = true
 # scaffolding and layer lifecycle, reused by both the nucleus (cellflow-tracking)
 # and cell (the full cellflow app's cell-segmentation stage) correction widgets.
 # The nucleus-specific _correction_* machinery stays in cellflow-tracking.
-"../../src/cellflow/napari/correction_widget.py" = "cellflow/napari/correction_widget.py"
-"../../src/cellflow/napari/_correction_ui.py" = "cellflow/napari/_correction_ui.py"
-"../../src/cellflow/napari/_correction_layer_lifecycle.py" = "cellflow/napari/_correction_layer_lifecycle.py"
+"../../src/cellflow/napari/correction/correction_widget.py" = "cellflow/napari/correction/correction_widget.py"
+"../../src/cellflow/napari/correction/_correction_ui.py" = "cellflow/napari/correction/_correction_ui.py"
+"../../src/cellflow/napari/correction/_correction_layer_lifecycle.py" = "cellflow/napari/correction/_correction_layer_lifecycle.py"
