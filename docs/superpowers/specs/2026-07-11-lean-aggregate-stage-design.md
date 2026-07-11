@@ -222,6 +222,12 @@ disk are simply orphaned (accepted).
 - **Re-aggregation now recomputes** the cheap quantities every run (no per-position
   cache). This is the intended trade (cheap to compute, per Artur); contacts stays
   cached as its h5.
+- **`quantities` selection no longer filters pooled output** (decided 2026-07-11,
+  accepted). Because pooling computes in memory over `shape_table_registry()`, the
+  config's `quantities` list now only gates which *producer* persists (`contacts`);
+  every cheap quantity whose inputs + params are available is pooled regardless of
+  selection. Accepted as consistent with "cheap to compute"; the `quantities` key may
+  be deprecated/repurposed later.
 - **Out of scope:** the pooled-table output format and `out_dir` behaviour (unchanged);
   the `.iris` export; the table-editing UI for the catalog (its own later spec); any
   change to how `contact_analysis.h5` itself is built or read.
