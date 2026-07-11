@@ -62,18 +62,10 @@ the cheap quantities in memory. These UI/cleanup follow-ons were deferred:
   item below is superseded *at the per-position grain*; if provenance is still wanted,
   emit it once per aggregate run alongside the pooled tables.
 
-- [ ] **Make reduce/plot collapse levels catalog-column-driven** (surfaced 2026-07-11
-  when the pooled `date` column was dropped). `reduce.py` and `plotting.py` hardcode the
-  biological-replicate hierarchy as `_LEVELS = ("cell", "position", "date")` /
-  `_NESTING = ("date", "position_id", "cell_id")` (plus `unit_collapse_chain`,
-  `_LEVEL_ENTITY`, and a `spec.level == "date"` branch). Per Artur, the grouping keys are
-  determined by the **project CSV's metadata columns**, which can have user-custom names
-  — so the level/nesting model should be derived from the catalog's identity + free-form
-  columns present in the pooled table, not a fixed `date`/`position`/`cell` triple.
-  Interim state after the lean-aggregate change: `date` is gone from pooled tables;
-  `_present_nesting` filters `_NESTING` to columns actually present so a normal run does
-  not crash, but an explicit `level="date"` request now has no column to collapse to, and
-  custom replicate columns are not yet selectable as levels. This is the real fix.
+Note: `reduce.py` and `plotting.py` were **removed** (2026-07-11, per Artur) — the
+package produces aggregate tidy tables only; reduction and plotting are downstream
+(Iris / data repo). Any per-CSV custom grouping/collapse levels are that downstream
+layer's concern, keyed off the project CSV's metadata columns.
 
 ## Dimensionality Support
 
