@@ -33,7 +33,6 @@ from pathlib import Path
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -271,7 +270,7 @@ class ExperimentsPanel(QWidget):
     * ``status_fn(payload) -> {stage: state}`` — the per-stage rail status.
 
     Signals let the host stay the model of record for persistence/scope while the
-    panel owns the list UI, Setup, folder discovery, tagging, and selection.
+    panel owns the list UI, Setup, folder discovery, and selection.
     """
 
     active_changed = Signal(object)      # payload | None — the single active row
@@ -292,7 +291,6 @@ class ExperimentsPanel(QWidget):
         status_fn: Callable[[dict], dict[str, str]] | None = None,
         show_calibration: bool = True,
         show_output_dir: bool = False,
-        show_tagging: bool = True,
         show_run: bool = True,
         parent: QWidget | None = None,
     ) -> None:
@@ -303,7 +301,6 @@ class ExperimentsPanel(QWidget):
         self._status_fn = status_fn
         self._show_calibration = show_calibration
         self._show_output_dir = show_output_dir
-        self._show_tagging = show_tagging
         self._show_run = show_run
 
         # Committed rows: ordered keys + per-key {columns, payload}; the shared,
@@ -355,8 +352,6 @@ class ExperimentsPanel(QWidget):
         layout.addWidget(self._rows_scroll)
 
         layout.addLayout(self._build_list_actions())
-        if self._show_tagging:
-            layout.addLayout(self._build_tagging_row())
         if self._show_run:
             layout.addLayout(self._build_run_actions())
 
@@ -564,70 +559,6 @@ class ExperimentsPanel(QWidget):
 
     def _on_run_clicked(self) -> None:
         self.run_requested.emit(self.selected_payloads(), self.num_workers())
-
-    # -- tagging: set a column on the current selection ------------------
-    def _build_tagging_row(self) -> QHBoxLayout:
-        """Set a column value on the selected rows — the condition-label affordance.
-
-        These columns become the grouping columns of the aggregate tidy table. The
-        name combo offers the existing column names but is editable, so a fresh
-        column name can be typed in.
-        """
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(COMPACT_SPACING + 2)
-        row.addWidget(QLabel("Set"))
-        self.tag_name = QComboBox()
-        self.tag_name.setObjectName("experiments_tag_name")
-        self.tag_name.setEditable(True)
-        self.tag_name.setMinimumWidth(90)
-        self.tag_name.lineEdit().setPlaceholderText("column")
-        self.tag_name.setToolTip("Column to set — pick an existing one or type a new name")
-        row.addWidget(self.tag_name, 1)
-        row.addWidget(QLabel("="))
-        self.tag_value = QLineEdit()
-        self.tag_value.setObjectName("experiments_tag_value")
-        self.tag_value.setPlaceholderText("value")
-        self.tag_value.setStyleSheet(mono_input_style())
-        self.tag_value.returnPressed.connect(self._on_apply_tag)
-        row.addWidget(self.tag_value, 1)
-        self.tag_apply_btn = QToolButton()
-        self.tag_apply_btn.setObjectName("experiments_tag_apply_button")
-        self.tag_apply_btn.setText("→ selected")
-        self.tag_apply_btn.setToolTip("Write this column value into every selected row")
-        self.tag_apply_btn.setEnabled(False)
-        self.tag_apply_btn.clicked.connect(self._on_apply_tag)
-        row.addWidget(self.tag_apply_btn)
-        return row
-
-    def _refresh_tag_names(self) -> None:
-        """Keep the tag-name combo's dropdown in sync with the live columns."""
-        if not self._show_tagging:
-            return
-        current = self.tag_name.currentText()
-        self.tag_name.blockSignals(True)
-        self.tag_name.clear()
-        self.tag_name.addItems(self._column_names)
-        self.tag_name.setCurrentText(current)
-        self.tag_name.blockSignals(False)
-
-    def _on_apply_tag(self) -> None:
-        self.set_column_on_selected(self.tag_name.currentText(), self.tag_value.text())
-
-    def set_column_on_selected(self, name: str, value: str) -> None:
-        """Write ``columns[name] = value`` into every selected row.
-
-        Creates the column if it is new. No-op with no selection or a blank name.
-        """
-        name = name.strip()
-        if not name or not self._selected_paths:
-            return
-        self._ensure_columns([name])
-        for key in self._paths:
-            if key in self._selected_paths:
-                self._records[key]["columns"][name] = value
-        self._rebuild_table()
-        self.records_changed.emit()
 
     # -- discovery (one additive Find) -----------------------------------
     def discover(self, root: str) -> list[dict]:
@@ -848,8 +779,6 @@ class ExperimentsPanel(QWidget):
     def _update_action_buttons(self) -> None:
         has_sel = bool(self._selected_paths)
         self.delete_btn.setEnabled(has_sel)
-        if self._show_tagging:
-            self.tag_apply_btn.setEnabled(has_sel)
         if self._show_run:
             self.run_btn.setEnabled(has_sel)
 
@@ -938,7 +867,6 @@ class ExperimentsPanel(QWidget):
             self._rows.append(row)
 
         self._rows_scroll.setVisible(bool(self._paths))
-        self._refresh_tag_names()
         self.refresh_statuses()
 
     def _refresh_hint(self, message: str | None = None) -> None:

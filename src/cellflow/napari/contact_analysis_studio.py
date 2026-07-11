@@ -207,8 +207,8 @@ class ContactAnalysisStudioWidget(QWidget):
         """Mount the shared ExperimentsPanel + a Load/Save/Clear action row.
 
         The panel runs the filesystem-centric flow (Setup → Find data folders → an
-        additive, de-duped list with a per-folder status rail and per-selection
-        condition tagging). It owns the displayed catalog and its own
+        additive, de-duped list with a per-folder status rail). It owns the
+        displayed catalog and its own
         Delete-selected button; the studio only reads it (for scope / run / save)
         and reacts to its signals. Discovery inputs default to the committed final
         outputs (``cell_labels.tif`` / ``nucleus_labels.tif``) so a finalized
@@ -225,7 +225,6 @@ class ContactAnalysisStudioWidget(QWidget):
             status_fn=self._status,
             show_calibration=False,
             show_run=False,
-            show_tagging=True,
             show_output_dir=False,
         )
         self._panel.discover_requested.connect(self._on_discover_requested)
@@ -261,8 +260,7 @@ class ContactAnalysisStudioWidget(QWidget):
 
         Each entry carries folder-derived columns (one per named nesting level,
         seeded with the recognized identity axes) plus a ``position_id`` pinned to
-        the innermost folder name so folders keep distinct identities. Condition
-        tags are applied later, per-selection, via the panel's tagging control.
+        the innermost folder name so folders keep distinct identities.
         """
         cell = input_names.get("cell") or None
         nucleus = input_names.get("nucleus") or None

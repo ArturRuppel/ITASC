@@ -260,22 +260,17 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     # seeded with the recognized identity axes, innermost = position_id.
     assert set(found[0]["columns"]) >= {"condition", "experiment_id", "position_id"}
 
-    # A constant tag is filled onto every row via the per-selection tagging control.
-    panel.select_all()
-    panel.set_column_on_selected("operator", "Ada")
     records = widget._all_records()
     assert len(records) == 2
     by_id = {r["id"]: r for r in records}
     assert set(by_id) == {"pos01", "pos02"}
     assert all(r["condition"] == "ctrl" for r in records)
     assert all(r["experiment_id"] == "exp1" for r in records)
-    assert all(r["columns"]["operator"] == "Ada" for r in records)
     assert all(r["cell_tracked_labels_path"] is not None for r in records)
 
-    # CSV round-trip preserves the label paths and the free-form columns.
+    # CSV round-trip preserves the label paths and the folder-derived columns.
     csv_path = tmp_path / "catalog.csv"
     widget._save_csv_to(csv_path)
-    assert "operator" in csv_path.read_text().splitlines()[0]
     widget._on_clear_catalog()
     assert widget._panel.keys() == []
     widget._load_csv_from(csv_path)
@@ -283,7 +278,7 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     assert len(records) == 2
     assert all(r["cell_tracked_labels_path"] is not None for r in records)
     assert all(r["nucleus_tracked_labels_path"] is not None for r in records)
-    assert all(r["columns"]["operator"] == "Ada" for r in records)
+    assert all(r["columns"]["position_id"] in {"pos01", "pos02"} for r in records)
     assert all(r["experiment_id"] == "exp1" for r in records)
 
     widget.deleteLater()

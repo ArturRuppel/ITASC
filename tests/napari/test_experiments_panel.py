@@ -197,35 +197,6 @@ def test_rename_column_carries_values_table_wide():
     assert payload_cols["genotype"] == "WT" and "condition" not in payload_cols
 
 
-# ----------------------------------------------------------------- tagging (fill-down)
-def test_set_column_on_selected_writes_new_column():
-    panel = _panel()
-    panel.set_records([_entry("a"), _entry("b"), _entry("c")])
-    panel.set_active("a", selection={"a", "c"})
-    panel.set_column_on_selected("operator", "AR")
-    assert "operator" in panel.column_names()
-    assert panel._records["a"]["columns"]["operator"] == "AR"
-    assert panel._records["c"]["columns"]["operator"] == "AR"
-    # Unselected row is untouched.
-    assert "operator" not in panel._records["b"]["columns"]
-
-
-def test_set_column_on_selected_noop_without_selection():
-    panel = _panel()
-    panel.set_records([_entry("a")])
-    panel.clear_selection()
-    panel.set_column_on_selected("operator", "AR")
-    assert "operator" not in panel.column_names()
-
-
-def test_tag_apply_button_gated_on_selection():
-    panel = _panel()
-    panel.set_records([_entry("a")])
-    assert not panel.tag_apply_btn.isEnabled()
-    panel.set_active("a")
-    assert panel.tag_apply_btn.isEnabled()
-
-
 def test_empty_state_shows_call_to_action():
     panel = _panel()
     assert "add folders" in panel._hint.text().lower()

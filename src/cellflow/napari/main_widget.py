@@ -225,7 +225,6 @@ class CellFlowMainWidget(QWidget):
                 payload.get("position_path") if payload else None
             ),
             show_calibration=True,  # pixel size / frame length live in Setup
-            show_tagging=True,  # condition-label columns for the aggregate tidy table
             show_run=False,  # batch Run selected is a later (stage-spine) pass
         )
         self._positions_panel.active_changed.connect(self._on_active_position)
