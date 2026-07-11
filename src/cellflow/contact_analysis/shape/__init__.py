@@ -11,6 +11,7 @@ No Qt / napari import, so scripts and the standalone wheel can use it.
 from .core import (
     DESCRIPTOR_COLUMNS,
     build_object_shape,
+    compute_object_shape,
     provenance_path,
     read_shape_table,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "RELATIONAL_COLUMNS",
     "build_object_shape",
     "build_relational",
+    "compute_object_shape",
     "provenance_path",
     "read_relational_table",
     "read_shape_table",

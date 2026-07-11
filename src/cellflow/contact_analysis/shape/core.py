@@ -104,6 +104,23 @@ def build_object_shape(
     return output_path
 
 
+def compute_object_shape(
+    label_path: str | Path,
+    *,
+    pixel_size_um: float,
+    object_key: str = "cell_id",
+) -> dict[str, np.ndarray]:
+    """Per-object shape descriptors for every frame, as a column-major table.
+
+    The pure compute behind :func:`build_object_shape` — no file written. Columns:
+    ``frame``, *object_key*, then :data:`DESCRIPTOR_COLUMNS`."""
+    pixel_size_um = float(pixel_size_um)
+    if not pixel_size_um > 0:
+        raise ValueError(f"pixel_size_um must be positive, got {pixel_size_um!r}")
+    label_stack = read_label_stack(Path(label_path))
+    return _extract_shape_columns(label_stack, pixel_size_um, object_key)
+
+
 def read_shape_table(path: str | Path) -> dict[str, np.ndarray]:
     """Return the CSV table as a column-major dict of 1-D arrays."""
     return read_table_csv(path)

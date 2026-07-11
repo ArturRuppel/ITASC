@@ -152,6 +152,29 @@ def test_build_object_shape_guards_degenerate_region(tmp_path):
     assert table["area_um2"][0] == 1.0
 
 
+def test_compute_object_shape_matches_build_roundtrip(tmp_path):
+    from cellflow.contact_analysis.shape.core import (
+        build_object_shape,
+        compute_object_shape,
+        read_shape_table,
+    )
+    frame = np.zeros((10, 10), dtype=np.uint16)
+    frame[1:5, 1:5] = 1
+    frame[5:9, 5:9] = 2
+    labels = tmp_path / "cells.tif"
+    tifffile.imwrite(labels, frame[np.newaxis, ...])
+
+    out = tmp_path / "cell_shape.csv"
+    build_object_shape(labels, out, pixel_size_um=0.5, object_key="cell_id")
+    expected = read_shape_table(out)
+
+    got = compute_object_shape(labels, pixel_size_um=0.5, object_key="cell_id")
+
+    assert set(got) == set(expected)
+    for key in expected:
+        np.testing.assert_allclose(np.asarray(got[key], float), np.asarray(expected[key], float))
+
+
 def test_build_object_shape_reports_progress_in_order(tmp_path):
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
