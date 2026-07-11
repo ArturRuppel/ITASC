@@ -1,5 +1,67 @@
 # TODO
 
+## Project catalog (full-app) — next items
+
+Follow-ons to the config-autosave + project-catalog CSV work
+(`docs/superpowers/specs/2026-07-11-full-app-config-and-project-file-design.md`).
+
+- [ ] **Evaluate complexity first: in-panel table editing for the project catalog.**
+  The `ExperimentsPanel` table currently only displays folders + classification
+  columns; make it a real editor before deciding scope. Target capabilities:
+  add a column, remove a column, type text into a cell, and paste one cell's value
+  into a multi-cell selection at once. Scope the QTableWidget/QTableView reality
+  (selection model, delegate, paste handling, keeping `_records`/`_column_names` in
+  sync) and report effort before building.
+
+- [ ] **Slim the generated catalog CSV to identifiers + canonical derived paths.**
+  Drop the `date`, `path`, and `notes` columns. Keep `position_path`. Every derived
+  artifact is a fixed location under the position folder, so store the canonical
+  relpaths rather than free-form `path`:
+  - contact analysis h5 → `4_contact_analysis/contact_analysis.h5` (see the rename
+    item below; today it is `aggregate_quantification/contact_analysis.h5`).
+  - cell labels → `cell_labels.tif` and nucleus labels → `nucleus_labels.tif`, i.e.
+    the **committed** outputs the finalize/"commit" button writes
+    (`NucleusArtifactPaths.cell_labels` / `.nucleus_labels`), NOT the pre-commit
+    working paths `3_cell/tracked_labels.tif` / `2_nucleus/tracked_labels.tif`.
+    This is a correction to `main_widget._catalog_record_for_position`, which
+    currently stamps the working paths.
+  - Net CSV columns become: `position_path`, identifiers (`condition`,
+    `experiment_id`, `id`) + free-form tag columns, and the three canonical derived
+    paths. Update `catalog.py` `CSV_COLUMNS` / `REQUIRED_CSV_COLUMNS` and the studio
+    load path accordingly.
+
+- [ ] **Rename the contact-analysis output dir to `4_contact_analysis`** to mirror
+  the `0_input … 3_cell` staged numbering. This is more than a catalog column:
+  `OUTPUT_SUBDIR` (`contact_analysis/quantifier.py`) is where the aggregate pipeline
+  *writes* the h5, and discovery reads it there. Touches the writer, discovery,
+  `CONTACT_ANALYSIS_RELPATH`, any existing on-disk `aggregate_quantification/`
+  folders (migration?), and docs. Sequence this with the CSV-slimming item.
+
+### Deferred from the lean-aggregate-stage change (Option A scope)
+
+The lean-aggregate-stage spec
+(`docs/superpowers/specs/2026-07-11-lean-aggregate-stage-design.md`) deliberately
+scoped itself to the **headless pipeline**: `run()` persists only `contacts` and pools
+the cheap quantities in memory. These UI/cleanup follow-ons were deferred:
+
+- [ ] **Strip per-position pooled-quantity builds from the interactive studio.**
+  `BuildArea` (`napari/studio_plugins.py`, live in the standalone `cellflow-aggregate`
+  front-end) still shows per-position "built X/N" coverage and can build-and-persist a
+  pooled quantity per position — the exact stray file the lean change removes from the
+  canonical path. Reframe pooled (non-producer) quantities as pooled-only (no
+  per-position build/coverage); only `contacts` keeps a per-position "built" badge.
+  Rides with the "aggregate front-end refocus" item above.
+- [ ] **Delete the now-dead per-position writers/readers** once the studio no longer
+  needs them: the pooled quantifiers' `build` / `read` / `object_table` /
+  `default_output_name`, plus `shape/core.py` `build_object_shape` / `write_table_csv`
+  / `write_provenance`, `quantifiers/_tidy_table.py`, and the
+  `_contacts_derived.persist` / `read_derived_table` re-exports (grep-verify no
+  remaining caller; `contacts`' own writer stays). Blocked on the item above.
+- [ ] **Run-level provenance for the pooled tables.** Per-position provenance sidecars
+  vanish with the per-position files, so the "all quantifiers write provenance JSON"
+  item below is superseded *at the per-position grain*; if provenance is still wanted,
+  emit it once per aggregate run alongside the pooled tables.
+
 ## Dimensionality Support
 
 - [ ] Check that the nucleus divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
