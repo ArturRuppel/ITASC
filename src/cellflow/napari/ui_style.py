@@ -146,6 +146,7 @@ STAGE_ACCENTS = {
     "nucleus":          "green",
     "cell":             "lavender",
     "contact_analysis": "mauve",
+    "aggregate":        "teal",
 }
 
 

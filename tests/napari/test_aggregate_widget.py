@@ -105,3 +105,10 @@ def test_widget_run_button_disabled_when_nothing_ready(tmp_path):
     w.set_records([_record(tmp_path / "posA", ready=False)])
     assert w.run_btn.isEnabled() is False
     assert w.section_status() == "not_started"
+
+
+def test_aggregate_stage_accent_resolves():
+    from cellflow.napari.ui_style import stage_accent
+
+    accent = stage_accent("aggregate")
+    assert isinstance(accent, str) and accent.startswith("#")
