@@ -269,16 +269,20 @@ class NucleusWorkflowWidget(
         # Distinct from the correction widget's "commit" (which writes correction
         # edits back into the working tracked_labels.tif); this promotes the
         # working file to the downstream-stable final output.
-        self.finalize_btn = _tool_btn(
-            "✔", "Finalize: promote tracked labels to nucleus_labels.tif (final, downstream-stable output)."
+        # Two Finalize buttons, both promoting the working tracked labels to
+        # nucleus_labels.tif: one at the tail of the correction toolbar (visible
+        # in active correction mode) and one beside the on/off toggle in the
+        # correction top bar (always visible). Both are placed by the correction
+        # widget (see _build_correction_section); the handler stays here because
+        # the promote paths live on this workflow widget.
+        _finalize_tip = (
+            "Finalize: promote tracked labels to nucleus_labels.tif "
+            "(final, downstream-stable output)."
         )
-        self.finalize_btn.clicked.connect(self._on_finalize)
-        _stage_header_action_button(self.finalize_btn, "nucleus")
-        finalize_row = QHBoxLayout()
-        finalize_row.addWidget(QLabel("Finalize"))
-        finalize_row.addStretch(1)
-        finalize_row.addWidget(self.finalize_btn)
-        root.addLayout(finalize_row)
+        self.finalize_btn = _tool_btn("✔", _finalize_tip)
+        self.finalize_header_btn = _tool_btn("✔", _finalize_tip)
+        for button in (self.finalize_btn, self.finalize_header_btn):
+            button.clicked.connect(self._on_finalize)
         self._refresh_finalize_btn()
 
     def _alias_tracking_inputs_controls(self) -> None:
@@ -348,6 +352,8 @@ class NucleusWorkflowWidget(
             workspace_provider=lambda: self._workspace,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
             focus_takeover_callback=self._set_correction_focus_takeover,
+            finalize_btn=self.finalize_btn,
+            finalize_header_btn=self.finalize_header_btn,
             parent=self,
         )
         self._alias_correction_controls()
@@ -685,21 +691,35 @@ class NucleusWorkflowWidget(
         # Surface the committed file (and let the host repaint the stage dots).
         self._files_widget.refresh(self._pos_dir)
 
+    def _finalize_btns(self) -> tuple:
+        return tuple(
+            b
+            for b in (
+                getattr(self, "finalize_btn", None),
+                getattr(self, "finalize_header_btn", None),
+            )
+            if b is not None
+        )
+
     def _refresh_finalize_btn(self) -> None:
-        if not hasattr(self, "finalize_btn"):
+        buttons = self._finalize_btns()
+        if not buttons:
             return
         working = self._working_labels_path()
         committed = self._committed_labels_path()
         if working is None or committed is None:
-            self.finalize_btn.setEnabled(False)
+            for button in buttons:
+                button.setEnabled(False)
             return
         state = commit_state(working, committed)
-        self.finalize_btn.setEnabled(state != "missing")
-        self.finalize_btn.setToolTip(
+        tooltip = (
             "Working labels are newer than the finalized nucleus_labels.tif — re-finalize to update."
             if state == "stale"
             else "Finalize: promote tracked labels to nucleus_labels.tif (final, downstream-stable output)."
         )
+        for button in buttons:
+            button.setEnabled(state != "missing")
+            button.setToolTip(tooltip)
 
     def set_context(
         self,

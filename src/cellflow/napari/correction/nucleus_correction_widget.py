@@ -201,6 +201,8 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
         dependencies: dict[str, Callable] | None = None,
         focus_takeover_callback: Callable[[bool], None] | None = None,
+        finalize_btn: QWidget | None = None,
+        finalize_header_btn: QWidget | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -209,6 +211,13 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # of hand-calling each controller's refresh (see _wire_events).
         self.events = CorrectionEvents()
         self._workspace_provider = workspace_provider
+        # Optional host-owned "Finalize" buttons (the handler lives on the host
+        # workflow widget, which owns the promote paths). ``_finalize_btn`` rides
+        # at the tail of the correction toolbar (visible only in active mode);
+        # ``_finalize_header_btn`` sits beside the on/off toggle in the top bar
+        # (always visible). Either may be None → that slot has no finalize action.
+        self._finalize_btn = finalize_btn
+        self._finalize_header_btn = finalize_header_btn
         self._ultrack_config_provider = ultrack_config_provider
         # Called with True once correction-mode activation succeeds and False on
         # deactivate, so the host can hide its other workflow sections for a

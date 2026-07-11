@@ -129,10 +129,19 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         active_labels_layer_provider: Callable[[], object] | None = None,
         intensity_frame_provider: Callable[[int], np.ndarray | None] | None = None,
         full_editing: bool = False,
+        finalize_btn: QWidget | None = None,
+        finalize_header_btn: QWidget | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.viewer = viewer
+        # Optional host-owned "Finalize" buttons (the handler lives on the host
+        # workflow widget, which owns the promote paths). ``_finalize_btn`` rides
+        # at the tail of the correction toolbar (visible only in active mode);
+        # ``_finalize_header_btn`` sits beside the on/off toggle in the top bar
+        # (always visible). Either may be None → that slot has no finalize action.
+        self._finalize_btn = finalize_btn
+        self._finalize_header_btn = finalize_header_btn
         # Opt-in (standalone segment+track only): unlock the full DB-free editing
         # toolkit — spawn / erase / merge / swap / split (mouse + Delete), plus a
         # greedy retracker on Q/E. The integrated app never passes this, so its
@@ -358,6 +367,11 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         if self._full_editing:
             toolbar_groups.append((self.retrack_back_btn, self.retrack_fwd_btn))
             toolbar_groups.append((self.validate_btn, self.remove_unvalidated_btn))
+        # The host workflow widget's Finalize button rides at the tail of the
+        # toolbar (its own ruled group) — finalizing is the natural last step
+        # once the labels are corrected.
+        if self._finalize_btn is not None:
+            toolbar_groups.append((self._finalize_btn,))
         self.toolbar = build_correction_toolbar(self, toolbar_groups)
         self.toolbar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
@@ -443,12 +457,19 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
 
         self.correction_header_lbl = QLabel("Correction")
         stage_header_label(self.correction_header_lbl, "cell")
-        for button in (self.shortcuts_btn, self.params_btn, self.active_btn):
+        header_btns = [self.shortcuts_btn, self.params_btn, self.active_btn]
+        # Finalize sits right beside the on/off toggle so the labels can be
+        # promoted without entering correction mode.
+        if self._finalize_header_btn is not None:
+            header_btns.append(self._finalize_header_btn)
+        for button in header_btns:
             stage_header_action_button(button, "cell")
         row.addWidget(self.correction_header_lbl)
         row.addWidget(self.shortcuts_btn)
         row.addWidget(self.params_btn)
         row.addWidget(self.active_btn)
+        if self._finalize_header_btn is not None:
+            row.addWidget(self._finalize_header_btn)
         row.addStretch(1)
         return header
 

@@ -174,6 +174,7 @@ def build_correction_header(
     shortcuts_btn: QWidget,
     params_btn: QWidget,
     active_btn: QWidget,
+    finalize_btn: QWidget | None = None,
     view_toggle_btns: tuple[QWidget, ...] = (),
     status_lbl: QWidget | None = None,
 ) -> tuple[QWidget, QLabel]:
@@ -195,12 +196,18 @@ def build_correction_header(
     # title. The host toggles between the two looks; it starts as the pill.
     header_lbl = QLabel("Tracking Correction")
     stage_header_label(header_lbl, "nucleus")
-    for button in (active_btn, shortcuts_btn, params_btn, *view_toggle_btns):
+    finalize_btns = (finalize_btn,) if finalize_btn is not None else ()
+    for button in (
+        active_btn, *finalize_btns, shortcuts_btn, params_btn, *view_toggle_btns
+    ):
         stage_header_action_button(button, "nucleus")
     row.addWidget(header_lbl)
-    # Activate first, then the reveal toggles, so correction mode can be exited
-    # even while the plugin dock is hidden.
+    # Activate first, then Finalize right beside it (both stay visible even in
+    # the inactive plugin dock), then the reveal toggles — so correction mode
+    # can be entered/exited and the labels finalized even while the dock is hidden.
     row.addWidget(active_btn)
+    for button in finalize_btns:
+        row.addWidget(button)
     row.addWidget(shortcuts_btn)
     row.addWidget(params_btn)
     if view_toggle_btns:

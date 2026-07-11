@@ -69,6 +69,7 @@ def build_nucleus_correction_ui(w) -> None:
         shortcuts_btn=w.shortcuts_btn,
         params_btn=w.params_btn,
         active_btn=w.active_btn,
+        finalize_btn=getattr(w, "_finalize_header_btn", None),
         view_toggle_btns=(
             w.track_path_btn,
             w.spotlight_btn,
@@ -298,16 +299,19 @@ def _build_shortcuts_section(w) -> None:
 def _build_toolbar(w) -> None:
     # Extend / swap are driven by clicking into the candidate gallery now,
     # so they're dropped from the toolbar (the A/D/Z/C shortcuts still work).
-    w.toolbar = build_correction_toolbar(
-        w,
-        [
-            (w.save_tracked_btn,),
-            (w.retrack_back_btn, w.retrack_fwd_btn),
-            (w.validate_track_btn, w.anchor_here_btn),
-            (w.annotate_db_btn,),
-            (w.reassign_ids_btn, w.remove_unvalidated_btn),
-        ],
-    )
+    groups = [
+        (w.save_tracked_btn,),
+        (w.retrack_back_btn, w.retrack_fwd_btn),
+        (w.validate_track_btn, w.anchor_here_btn),
+        (w.annotate_db_btn,),
+        (w.reassign_ids_btn, w.remove_unvalidated_btn),
+    ]
+    # The host workflow widget's Finalize button rides at the tail of the
+    # toolbar (its own ruled group) — finalizing is the natural last step
+    # once the tracks are corrected.
+    if getattr(w, "_finalize_btn", None) is not None:
+        groups.append((w._finalize_btn,))
+    w.toolbar = build_correction_toolbar(w, groups)
     w.toolbar.setVisible(False)
 
 

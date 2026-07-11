@@ -320,11 +320,22 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         self.run_btn = _tool_btn(
             "▶", "Run the full pipeline over all frames and write tracked_labels.tif."
         )
-        self.finalize_btn = _tool_btn(
-            "✔", "Finalize: promote tracked labels to cell_labels.tif (final, downstream-stable output)."
+        # Two Finalize buttons promoting the working tracked labels to
+        # cell_labels.tif: one at the tail of the correction toolbar (visible in
+        # active correction mode) and one beside the correction on/off toggle
+        # (always visible). Both are placed by the correction widget below; the
+        # handler stays here. Finalize is not a segmentation-stage action, so it
+        # is out of the stage row and skips the stage-pill styling loop (the
+        # header button is styled by the header builder, the toolbar one plain).
+        _finalize_tip = (
+            "Finalize: promote tracked labels to cell_labels.tif "
+            "(final, downstream-stable output)."
         )
-        self.finalize_btn.clicked.connect(self._on_finalize)
-        for button in (self.params_btn, self.active_btn, self.run_btn, self.finalize_btn):
+        self.finalize_btn = _tool_btn("✔", _finalize_tip)
+        self.finalize_header_btn = _tool_btn("✔", _finalize_tip)
+        for button in (self.finalize_btn, self.finalize_header_btn):
+            button.clicked.connect(self._on_finalize)
+        for button in (self.params_btn, self.active_btn, self.run_btn):
             stage_header_action_button(button, "cell")
 
         self.params_section = self._build_params_section()
@@ -336,7 +347,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
 
         root.addLayout(self._stage_row(
             self._stage_label("Segmentation"),
-            self.params_btn, self.active_btn, self.run_btn, self.finalize_btn,
+            self.params_btn, self.active_btn, self.run_btn,
         ))
         root.addWidget(self.params_section)
 
@@ -350,6 +361,8 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             self.viewer,
             pos_dir_provider=lambda: self._pos_dir,
             files_widget_refresh_callback=lambda pd: self._files_widget.refresh(pd),
+            finalize_btn=self.finalize_btn,
+            finalize_header_btn=self.finalize_header_btn,
         )
         self._install_correction_aliases()
         self.cell_correction_widget.hide()
@@ -678,25 +691,36 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         # Surface the committed file (and let the host repaint the stage dots).
         self._files_widget.refresh(self._pos_dir)
 
+    def _finalize_btns(self) -> tuple:
+        return tuple(
+            b
+            for b in (
+                getattr(self, "finalize_btn", None),
+                getattr(self, "finalize_header_btn", None),
+            )
+            if b is not None
+        )
+
     def _refresh_finalize_btn(self) -> None:
-        if not hasattr(self, "finalize_btn"):
+        buttons = self._finalize_btns()
+        if not buttons:
             return
         working = self._output_path()
         committed = self._committed_labels_path()
         if working is None or committed is None:
-            self.finalize_btn.setEnabled(False)
+            for button in buttons:
+                button.setEnabled(False)
             return
         state = commit_state(working, committed)
-        self.finalize_btn.setEnabled(state != "missing")
-        if state == "stale":
-            self.finalize_btn.setToolTip(
-                "Working labels are newer than the committed cell_labels.tif — "
-                "re-commit to update."
-            )
-        else:
-            self.finalize_btn.setToolTip(
-                "Finalize: promote tracked labels to cell_labels.tif (final, downstream-stable output)."
-            )
+        tooltip = (
+            "Working labels are newer than the committed cell_labels.tif — "
+            "re-commit to update."
+            if state == "stale"
+            else "Finalize: promote tracked labels to cell_labels.tif (final, downstream-stable output)."
+        )
+        for button in buttons:
+            button.setEnabled(state != "missing")
+            button.setToolTip(tooltip)
 
     # ================================================================
     # Standalone input/output pickers (only built/used when standalone)
