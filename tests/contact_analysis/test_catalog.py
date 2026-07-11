@@ -5,6 +5,67 @@ from __future__ import annotations
 import pytest
 
 
+def test_saved_catalog_has_slim_columns(tmp_path):
+    import csv
+    from cellflow.contact_analysis.catalog import save_catalog
+
+    pos = tmp_path / "ctrl" / "p1"
+    pos.mkdir(parents=True)
+    record = {
+        "position_path": pos,
+        "contact_analysis_path": pos / "4_contact_analysis" / "contact_analysis.h5",
+        "cell_tracked_labels_path": pos / "cell_labels.tif",
+        "nucleus_tracked_labels_path": pos / "nucleus_labels.tif",
+        "condition": "ctrl",
+        "experiment_id": "E1",
+        "id": "p1",
+    }
+    out = tmp_path / "catalog.csv"
+    save_catalog(out, [record])
+
+    with out.open(newline="") as fh:
+        header = next(csv.reader(fh))
+    assert "date" not in header and "notes" not in header and "path" not in header
+    assert header[:7] == [
+        "position_path", "contact_analysis_path", "condition",
+        "experiment_id", "id", "cell_labels", "nucleus_labels",
+    ]
+
+
+def test_catalog_roundtrip_slim(tmp_path):
+    from cellflow.contact_analysis.catalog import save_catalog, load_catalog
+
+    pos = tmp_path / "ctrl" / "p1"
+    pos.mkdir(parents=True)
+    record = {
+        "position_path": pos,
+        "contact_analysis_path": pos / "4_contact_analysis" / "contact_analysis.h5",
+        "cell_tracked_labels_path": pos / "cell_labels.tif",
+        "nucleus_tracked_labels_path": pos / "nucleus_labels.tif",
+        "condition": "ctrl", "experiment_id": "E1", "id": "p1",
+    }
+    out = tmp_path / "catalog.csv"
+    save_catalog(out, [record])
+    loaded = load_catalog(out)
+
+    assert len(loaded) == 1
+    r = loaded[0]
+    assert r["condition"] == "ctrl" and r["id"] == "p1" and r["experiment_id"] == "E1"
+    assert r["contact_analysis_path"].name == "contact_analysis.h5"
+    assert r["cell_tracked_labels_path"].name == "cell_labels.tif"
+    assert r["nucleus_tracked_labels_path"].name == "nucleus_labels.tif"
+
+
+def test_load_requires_position_path(tmp_path):
+    import pytest
+    from cellflow.contact_analysis.catalog import load_catalog
+
+    out = tmp_path / "bad.csv"
+    out.write_text("condition,id\nctrl,p1\n")
+    with pytest.raises(ValueError, match="position_path"):
+        load_catalog(out)
+
+
 def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     """Saved catalogs should use relative paths and load them as resolved contact-analysis paths."""
     from cellflow.contact_analysis.catalog import load_catalog, save_catalog
@@ -35,6 +96,13 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     assert "analysis/cell_labels.tif" in csv_text
     assert "analysis/nucleus_labels.tif" in csv_text
     assert str(source) not in csv_text
+    # date/notes are no longer catalog columns; the header no longer names
+    # them (the date *value* still appears once, as the experiment_id column's
+    # default-to-date fallback — that's the experiment_id column, not a date
+    # column).
+    header = csv_text.splitlines()[0].split(",")
+    assert "date" not in header and "notes" not in header
+    assert "edge,bright" not in csv_text
 
     records = load_catalog(csv_path)
 
@@ -43,10 +111,8 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     assert record["contact_analysis_path"] == source
     assert record["cell_tracked_labels_path"] == cell
     assert record["nucleus_tracked_labels_path"] == nucleus
-    assert record["date"] == "2026-05-09"
     assert record["condition"] == "treated"
     assert record["id"] == "pos01"
-    assert record["notes"] == "edge,bright"
     assert record["contact_analysis_status"] == "ready"
 
 
@@ -138,8 +204,11 @@ def test_experiment_id_is_distinct_from_date_when_provided(tmp_path):
     }])
 
     record = load_catalog(csv_path)[0]
+    # experiment_id was explicitly supplied and differs from date; it survives
+    # the round-trip on its own persisted column (date itself is no longer a
+    # catalog column, so it is not asserted here).
     assert record["experiment_id"] == "EXP-01"
-    assert record["date"] == "2026-05-09"
+    assert record["condition"] == "treated"
 
 
 def test_experiment_id_column_is_optional_for_legacy_catalogs(tmp_path):
@@ -150,7 +219,10 @@ def test_experiment_id_column_is_optional_for_legacy_catalogs(tmp_path):
     source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
-    csv_path.write_text("path,date,condition,id\ncontact_analysis.h5,day1,ctrl,p1\n")
+    csv_path.write_text(
+        "position_path,path,date,condition,id\n"
+        ",contact_analysis.h5,day1,ctrl,p1\n"
+    )
 
     record = load_catalog(csv_path)[0]
     assert record["experiment_id"] == "day1"
@@ -165,9 +237,9 @@ def test_load_catalog_rejects_duplicate_identity(tmp_path):
     (tmp_path / "b.h5").touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,experiment_id,id\n"
-        "a.h5,d1,ctrl,EXP-01,Pos0\n"
-        "b.h5,d1,ctrl,EXP-01,Pos0\n"
+        "position_path,path,date,condition,experiment_id,id\n"
+        ",a.h5,d1,ctrl,EXP-01,Pos0\n"
+        ",b.h5,d1,ctrl,EXP-01,Pos0\n"
     )
 
     with pytest.raises(ValueError, match="Pos0"):
@@ -182,9 +254,9 @@ def test_load_catalog_allows_same_position_id_in_different_condition(tmp_path):
     (tmp_path / "b.h5").touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,experiment_id,id\n"
-        "a.h5,d1,ctrl,EXP-01,Pos0\n"
-        "b.h5,d1,drug,EXP-01,Pos0\n"
+        "position_path,path,date,condition,experiment_id,id\n"
+        ",a.h5,d1,ctrl,EXP-01,Pos0\n"
+        ",b.h5,d1,drug,EXP-01,Pos0\n"
     )
 
     assert len(load_catalog(csv_path)) == 2
@@ -316,8 +388,8 @@ def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,id,labels\n"
-        "nested/contact_analysis.h5,day1,control,pos00,\n"
+        "position_path,path,date,condition,id,labels\n"
+        ",nested/contact_analysis.h5,day1,control,pos00,\n"
     )
 
     records = load_catalog(csv_path)
@@ -335,8 +407,8 @@ def test_load_catalog_preserves_extra_columns(tmp_path):
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,id,labels,operator\n"
-        "contact_analysis.h5,day1,control,pos00,,Ada\n"
+        "position_path,path,date,condition,id,labels,operator\n"
+        ",contact_analysis.h5,day1,control,pos00,,Ada\n"
     )
 
     records = load_catalog(csv_path)
@@ -351,7 +423,7 @@ def test_load_catalog_reports_missing_required_columns(tmp_path):
     from cellflow.contact_analysis.catalog import load_catalog
 
     csv_path = tmp_path / "catalog.csv"
-    csv_path.write_text("path,date,condition,labels\nmissing.h5,day1,c,\n")
+    csv_path.write_text("position_path,condition,labels\n,c,\n")
 
     with pytest.raises(ValueError, match="id"):
         load_catalog(csv_path)
@@ -363,8 +435,8 @@ def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
 
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,id,labels\n"
-        "missing.h5,day1,control,pos00,\n"
+        "position_path,path,date,condition,id,labels\n"
+        ",missing.h5,day1,control,pos00,\n"
     )
 
     records = load_catalog(csv_path)
@@ -450,9 +522,9 @@ def test_extra_columns_do_not_join_identity(tmp_path):
     (tmp_path / "b.h5").touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "path,date,condition,experiment_id,id,replicate\n"
-        "a.h5,d1,ctrl,EXP-01,Pos0,r1\n"
-        "b.h5,d1,ctrl,EXP-01,Pos0,r2\n"
+        "position_path,path,date,condition,experiment_id,id,replicate\n"
+        ",a.h5,d1,ctrl,EXP-01,Pos0,r1\n"
+        ",b.h5,d1,ctrl,EXP-01,Pos0,r2\n"
     )
     with pytest.raises(ValueError, match="Pos0"):
         load_catalog(csv_path)

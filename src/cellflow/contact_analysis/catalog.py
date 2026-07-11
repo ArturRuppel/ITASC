@@ -30,24 +30,21 @@ STATUS_INCOMPLETE = "incomplete"
 #: the shared :data:`OUTPUT_SUBDIR` folder.
 CONTACT_ANALYSIS_RELPATH = f"{OUTPUT_SUBDIR}/contact_analysis.h5"
 
-# Columns that identify a catalog row; validated on load. ``position_path``, the
-# label-path and notes columns are optional so older catalogs (and hand-written
-# ones) still load.
-REQUIRED_CSV_COLUMNS = ("path", "date", "condition", "id")
-# Full column order written on save: the absolute position folder, the
-# contact-analysis path (relative to it), metadata, the two (optional)
-# label-image paths (relative to it) needed to re-run analysis, and free-text
-# notes.
+# Identity columns validated on load. ``position_path`` is the anchor every
+# canonical artifact path is resolved against, so it is required.
+REQUIRED_CSV_COLUMNS = ("position_path", "condition", "id")
+# Full column order written on save: the absolute position folder, the canonical
+# contact-analysis h5 (relative to it), identity, and the two committed label
+# images (relative). The cheap derived quantities are pooled-only (no per-position
+# file), so no ``date`` / ``notes`` / free-form ``path`` columns.
 CSV_COLUMNS = (
     "position_path",
-    "path",
-    "date",
+    "contact_analysis_path",
     "condition",
     "experiment_id",
     "id",
     "cell_labels",
     "nucleus_labels",
-    "notes",
 )
 
 #: The free-form metadata bag (``record["columns"]``) carries one entry per
@@ -209,8 +206,9 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
             columns = normalized.get("columns", {})
             row = {
                 "position_path": str(position_path) if position_path is not None else "",
-                "path": _path_for_csv(normalized["contact_analysis_path"], file_base),
-                "date": normalized["date"],
+                "contact_analysis_path": _path_for_csv(
+                    normalized["contact_analysis_path"], file_base
+                ),
                 "condition": normalized["condition"],
                 "experiment_id": normalized["experiment_id"],
                 "id": normalized["id"],
@@ -220,7 +218,6 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
                 "nucleus_labels": _optional_path_for_csv(
                     normalized.get("nucleus_tracked_labels_path"), file_base
                 ),
-                "notes": normalized["notes"],
             }
             row.update({key: columns[key] for key in extras if key in columns})
             writer.writerow(row)
