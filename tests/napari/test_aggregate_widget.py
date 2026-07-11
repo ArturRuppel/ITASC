@@ -44,3 +44,36 @@ def test_partition_ready_splits_by_h5_presence(tmp_path):
 
 def test_partition_ready_empty():
     assert partition_ready([]) == ([], [])
+
+
+from cellflow.contact_analysis import load_catalog
+from cellflow.napari import aggregate_widget as aw
+
+
+def test_pool_positions_authors_ready_subset_and_runs(tmp_path, monkeypatch):
+    ready = [
+        _record(tmp_path / "study" / "posA", ready=True),
+        _record(tmp_path / "study" / "posB", ready=True),
+    ]
+    seen = {}
+
+    def _fake_run(config_path):
+        seen["config_path"] = Path(config_path)
+        return {"object_table": Path(config_path).parent / "object_table.csv"}
+
+    monkeypatch.setattr(aw, "run", _fake_run)
+
+    result = aw.pool_positions(ready, skipped_names=["posC"])
+
+    # The engine was driven with the authored config.
+    config_path = seen["config_path"]
+    assert config_path.name == "config.toml"
+    # The authored catalog contains exactly the two ready positions.
+    catalog = load_catalog(config_path.parent / "catalog.csv")
+    names = sorted(Path(rec["position_path"]).name for rec in catalog)
+    assert names == ["posA", "posB"]
+    # The result carries the skipped names and table map for the UI.
+    assert result["skipped"] == ["posC"]
+    assert "object_table" in result["tables"]
+    # Tables land in the ready positions' common ancestor.
+    assert result["project_dir"] == (tmp_path / "study")
