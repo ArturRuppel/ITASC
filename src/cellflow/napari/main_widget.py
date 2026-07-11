@@ -34,7 +34,6 @@ from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
-from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
@@ -128,6 +127,15 @@ class CellFlowMainWidget(QWidget):
 
     refresh_requested = Signal(object)  # emits pos_dir: Path | None
 
+    #: Preferred dock width on first open. This is only a *hint* — napari uses
+    #: it to size the dock initially, but the user can still drag it narrower
+    #: because minimumSizeHint (driven by the child widgets) is left untouched.
+    _PREFERRED_WIDTH = 480
+
+    def sizeHint(self) -> QSize:
+        hint = super().sizeHint()
+        return QSize(max(hint.width(), self._PREFERRED_WIDTH), hint.height())
+
     def __init__(self, napari_viewer: napari.Viewer, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.viewer = napari_viewer
@@ -165,15 +173,6 @@ class CellFlowMainWidget(QWidget):
         main_layout.addWidget(self.scroll)
 
         # Add sections
-        self.data_panel = ProjectStatusPanel(self.viewer)
-        self.data_section = CollapsibleSection(
-            "Project Status",
-            self.data_panel,
-            expanded=False,
-
-            accent_color=stage_accent("project_status"),
-        )
-
         self._cellpose_widget = CellposeWidget(self.viewer, gate=self.gate)
         self.cellpose_section = CollapsibleSection(
             "Cellpose",
@@ -232,8 +231,8 @@ class CellFlowMainWidget(QWidget):
         self._positions_panel.discover_requested.connect(self._on_discover_positions)
         self._positions_panel.stage_load_requested.connect(self._on_position_stage_load)
 
-        # Viewer-activity banner sits at the top level, above Project Status, so
-        # the "exit the active mode" hint is visible regardless of which section
+        # Viewer-activity banner sits at the top level, above the stage
+        # sections, so the "exit the active mode" hint is visible regardless of which section
         # holds the active viewer owner (correction / db-browser / live preview).
         self.viewer_activity_banner = QLabel("")
         self.viewer_activity_banner.setWordWrap(True)
@@ -249,7 +248,6 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.viewer_activity_banner)
 
         self.scroll_layout.addWidget(self._positions_panel)
-        self.scroll_layout.addWidget(self.data_section)
         self.scroll_layout.addWidget(self.cellpose_section)
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
@@ -259,7 +257,6 @@ class CellFlowMainWidget(QWidget):
         # stay hidden until a position is active (progressive disclosure — an
         # empty workspace shows only the toolbar + the positions panel).
         self._stage_sections = (
-            self.data_section,
             self.cellpose_section,
             self.nucleus_section,
             self.cell_section,
@@ -393,7 +390,6 @@ class CellFlowMainWidget(QWidget):
 
     def _apply_theme_accents(self) -> None:
         section_stage_keys = (
-            (self.data_section, "project_status"),
             (self.cellpose_section, "cellpose"),
             (self.nucleus_section, "nucleus"),
             (self.cell_section, "cell"),
@@ -709,7 +705,6 @@ class CellFlowMainWidget(QWidget):
 
         self._refreshing_all = True
         try:
-            self.data_panel.refresh(pos_dir)
             self._cellpose_widget.refresh(pos_dir)
             self.nucleus_workflow_widget.refresh(pos_dir)
             self.cell_workflow_widget.refresh(pos_dir)
@@ -754,15 +749,3 @@ class CellFlowMainWidget(QWidget):
         self.nucleus_section.set_status(nucleus)
         self.cell_section.set_status(cell)
         self.contact_analysis_section.set_status(contact)
-
-        # Project Status rolls up the three essential pipeline outputs
-        # (nucleus labels, cell labels, contact analysis). Cellpose counts
-        # toward "in progress" but not toward "done" — it's an intermediate.
-        essentials = (nucleus, cell, contact)
-        if all(s == "done" for s in essentials):
-            project_status = "done"
-        elif any(s != "not_started" for s in (cellpose, *essentials)):
-            project_status = "in_progress"
-        else:
-            project_status = "not_started"
-        self.data_section.set_status(project_status)
