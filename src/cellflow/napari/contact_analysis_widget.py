@@ -60,15 +60,13 @@ except ImportError:  # pragma: no cover - tests monkeypatch this when absent
 
 
 def make_contact_analysis_widget(napari_viewer=None):
-    """napari plugin entry point: the Contact Analysis dock widget.
+    """napari plugin entry point: the per-position Contact Analysis dock widget.
 
-    In a full CellFlow install this returns the merged studio — a position
-    catalog + embedded per-position quantity view + analysis plugins. The
-    standalone ``cellflow-aggregate`` wheel does not ship the studio module
-    (nor its napari analysis-plugin package), so there it falls back to the bare per-position
-    :class:`ContactAnalysisWidget` in standalone mode (own file pickers +
-    config). Runs the napari layer-delegate patch (normally done by the
-    orchestrator package).
+    Returns the bare per-position :class:`ContactAnalysisWidget` in standalone
+    mode (own file pickers + config). The cross-position aggregate role now lives
+    in the full app's Aggregate capstone (``cellflow.napari.aggregate_widget``),
+    so there is no separate interactive studio to serve here. Runs the napari
+    layer-delegate patch (normally done by the orchestrator package).
     """
     try:
         from cellflow.napari._napari_compat import patch_napari_layer_delegate
@@ -76,16 +74,9 @@ def make_contact_analysis_widget(napari_viewer=None):
         patch_napari_layer_delegate()
     except Exception:  # pragma: no cover - patch is best-effort
         pass
-    # napari does not inject the viewer into function-based widget factories
-    # (only into class-based callables / magicgui types), so ``napari_viewer``
-    # arrives as ``None``. Fall back to the active viewer.
     if napari_viewer is None:
         napari_viewer = napari.current_viewer()
-    try:
-        from cellflow.napari.contact_analysis_studio import ContactAnalysisStudioWidget
-    except ImportError:  # standalone cellflow-aggregate wheel: no studio module
-        return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
-    return ContactAnalysisStudioWidget(viewer=napari_viewer)
+    return ContactAnalysisWidget(viewer=napari_viewer, standalone=True)
 
 
 class _ProgressEmitter(QObject):
