@@ -119,6 +119,8 @@ class ContactAnalysisWidget(QWidget):
         self._cell_labels_path: Path | None = None
         self._nucleus_labels_path: Path | None = None
         self._out_path: Path | None = None
+        #: The position dir driving the Pipeline Files panel (orchestrated only).
+        self._status_root: Path | None = None
         self._build_worker = None
         self._batch_worker = None
         self._build_completion_pending = False
@@ -545,9 +547,20 @@ class ContactAnalysisWidget(QWidget):
         self._cell_labels_path = cell
         self._nucleus_labels_path = nucleus
         self._out_path = out
+        self._status_root = Path(status_root) if status_root else None
         if not self._standalone:
-            self._files_widget.refresh(Path(status_root) if status_root else None)
+            self._files_widget.refresh(self._status_root)
         self._update_status()
+
+    def _refresh_files_tracker(self) -> None:
+        """Re-read the Pipeline Files panel after a run wrote a new ``.h5``.
+
+        This fires the tracker's ``refreshed`` signal, which is how the host
+        repaints the stage dots and catalog rail without a manual Refresh.
+        Standalone use has no such panel, so it is a no-op there.
+        """
+        if not self._standalone:
+            self._files_widget.refresh(self._status_root)
 
     def _invalidate_caches(self) -> None:
         self._cached_contact_analysis_path = None
@@ -629,6 +642,7 @@ class ContactAnalysisWidget(QWidget):
             self._cached_contact_analysis = None
         self._update_status()
         self._refresh_discovery_status()
+        self._refresh_files_tracker()
         self._show_from_disk()
 
     def _on_build_error(self, exc: Exception) -> None:
@@ -729,6 +743,7 @@ class ContactAnalysisWidget(QWidget):
             f"Processed all: built {built} / skipped {skipped} / failed {failed}"
         )
         self._refresh_discovery_status()
+        self._refresh_files_tracker()
         self._update_action_states()
 
     def _on_batch_error(self, exc: Exception) -> None:

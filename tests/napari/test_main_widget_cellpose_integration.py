@@ -359,3 +359,36 @@ def test_catalog_rail_updates_when_a_stage_output_appears(tmp_path):
     # The rail repainted from disk without any manual Refresh.
     assert any(dot.state == "done" for dot in row.rail.dots)
     w.deleteLater()
+
+
+def test_catalog_rail_updates_when_contact_analysis_completes(tmp_path):
+    """A finished contact-analysis run repaints the rail (not just position switch).
+
+    Regression: the batch/build completion handlers wrote the ``.h5`` but never
+    refreshed the Pipeline Files tracker, so its ``refreshed`` signal never
+    fired and the catalog circles stayed stale until a manual Refresh.
+    """
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+
+    pos = tmp_path / "WT" / "p1"
+    (pos / "0_input").mkdir(parents=True)
+    (pos / "0_input" / "nucleus_3dt.tif").touch()
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.discover(str(tmp_path))
+    # Activating the row drives set_context, so the contact widget knows which
+    # position dir its Pipeline Files panel (and thus the rail) tracks.
+    w._positions_panel.set_active(str(pos))
+    (row,) = w._positions_panel._rows
+    assert not any(dot.state == "done" for dot in row.rail.dots)
+
+    # Output lands, then the real completion handler runs (no manual Refresh).
+    h5 = pos / CONTACT_ANALYSIS_RELPATH
+    h5.parent.mkdir(parents=True, exist_ok=True)
+    h5.touch()
+    w.contact_analysis_widget._on_batch_done([SimpleNamespace(status="built")])
+
+    assert any(dot.state == "done" for dot in row.rail.dots)
+    w.deleteLater()
