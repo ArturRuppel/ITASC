@@ -38,6 +38,7 @@ from cellflow.napari.data_panel_widget import ProjectStatusPanel
 from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
+    PipelineFilesWidget,
     pipeline_status_from_files,
 )
 from cellflow.napari._widget_helpers import tool_btn
@@ -297,6 +298,7 @@ class CellFlowMainWidget(QWidget):
         self.gate.changed.connect(self._update_activity_banner)
         self._update_activity_banner()
         self._update_disclosure()
+        self._connect_status_trackers()
 
     def _update_disclosure(self) -> None:
         """Reveal the stage sections only once a position is active.
@@ -674,28 +676,62 @@ class CellFlowMainWidget(QWidget):
         except Exception as e:
             show_error(f"Error loading config: {e}")
 
+    def _connect_status_trackers(self) -> None:
+        """Recompute aggregated status whenever any stage's tracker refreshes.
+
+        Every stage widget refreshes its ``PipelineFilesWidget`` after a run,
+        commit, or finalize (the moments its on-disk output changes). Hooking
+        each tracker's ``refreshed`` signal is what keeps the section dots and
+        the catalog rail live: without it they stay frozen at whatever they
+        showed when the position was last selected, so committing a label or
+        running a contact analysis left the circles stale until a manual
+        Refresh. Connecting the whole tree (via ``findChildren``) catches nested
+        trackers too, e.g. the divergence-maps widget inside Cellpose.
+        """
+        for tracker in self.findChildren(PipelineFilesWidget):
+            tracker.refreshed.connect(self._on_stage_files_refreshed)
+
+    def _on_stage_files_refreshed(self) -> None:
+        """A stage's on-disk output changed → repaint section dots + rail.
+
+        Suppressed during ``_refresh_all`` (which drives every tracker and then
+        recomputes once itself) so a bulk refresh doesn't re-read the catalog
+        per tracker.
+        """
+        if getattr(self, "_refreshing_all", False):
+            return
+        self._update_section_statuses()
+        self._positions_panel.refresh_statuses()
+
     def _refresh_all(self) -> None:
         """Refresh file status in all child widgets."""
         pos_dir = self._pos_dir
 
-        self.data_panel.refresh(pos_dir)
-        self._cellpose_widget.refresh(pos_dir)
-        self.nucleus_workflow_widget.refresh(pos_dir)
-        self.cell_workflow_widget.refresh(pos_dir)
-        # The contact piece is position-agnostic; the orchestrator maps the
-        # staged layout onto its explicit working context.
-        if pos_dir is not None:
-            self.contact_analysis_widget.set_context(
-                cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
-                nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
-                out_path=pos_dir / CONTACT_ANALYSIS_RELPATH,
-                status_root=pos_dir,
-            )
-        else:
-            self.contact_analysis_widget.set_context(
-                cell_labels=None, nucleus_labels=None, out_path=None, status_root=None
-            )
-        self._update_section_statuses()
+        self._refreshing_all = True
+        try:
+            self.data_panel.refresh(pos_dir)
+            self._cellpose_widget.refresh(pos_dir)
+            self.nucleus_workflow_widget.refresh(pos_dir)
+            self.cell_workflow_widget.refresh(pos_dir)
+            # The contact piece is position-agnostic; the orchestrator maps the
+            # staged layout onto its explicit working context.
+            if pos_dir is not None:
+                self.contact_analysis_widget.set_context(
+                    cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
+                    nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
+                    out_path=pos_dir / CONTACT_ANALYSIS_RELPATH,
+                    status_root=pos_dir,
+                )
+            else:
+                self.contact_analysis_widget.set_context(
+                    cell_labels=None, nucleus_labels=None, out_path=None, status_root=None
+                )
+            self._update_section_statuses()
+        finally:
+            self._refreshing_all = False
+        # The catalog rail reads on-disk status per row directly; keep it in
+        # step with the section dots on every full refresh.
+        self._positions_panel.refresh_statuses()
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
 

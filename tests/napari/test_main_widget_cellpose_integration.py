@@ -325,3 +325,37 @@ def test_main_widget_pipeline_status_uses_output_files_tracker(tmp_path):
     assert w._cellpose_widget.output_files_tracker is not None
     w._update_section_statuses()
     w.deleteLater()
+
+
+def test_catalog_rail_updates_when_a_stage_output_appears(tmp_path):
+    """A completed stage refreshes its tracker → the catalog rail repaints.
+
+    Regression: committing a label or running a contact analysis used to leave
+    the row's status circles frozen until a manual Refresh. Every stage widget
+    refreshes its ``PipelineFilesWidget`` when its output changes, and the main
+    widget listens for that to re-read on-disk status per row.
+    """
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+
+    pos = tmp_path / "WT" / "p1"
+    (pos / "0_input").mkdir(parents=True)
+    (pos / "0_input" / "nucleus_3dt.tif").touch()
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.discover(str(tmp_path))
+    (row,) = w._positions_panel._rows
+    # Nothing on disk yet → no stage reads as done.
+    assert not any(dot.state == "done" for dot in row.rail.dots)
+
+    # Simulate a finished contact analysis: its output lands, then the widget
+    # refreshes its tracker (as the real run does).
+    h5 = pos / CONTACT_ANALYSIS_RELPATH
+    h5.parent.mkdir(parents=True, exist_ok=True)
+    h5.touch()
+    w.contact_analysis_widget._files_widget.refresh(pos)
+
+    # The rail repainted from disk without any manual Refresh.
+    assert any(dot.state == "done" for dot in row.rail.dots)
+    w.deleteLater()

@@ -682,6 +682,8 @@ class NucleusWorkflowWidget(
             return
         self._set_finalize_status(f"Finalized nucleus labels → {committed.name}.")
         self._refresh_finalize_btn()
+        # Surface the committed file (and let the host repaint the stage dots).
+        self._files_widget.refresh(self._pos_dir)
 
     def _refresh_finalize_btn(self) -> None:
         if not hasattr(self, "finalize_btn"):

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import Qt, QTimer, Signal
 from qtpy.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -481,6 +481,12 @@ def _file_info(path: Path) -> str:
 class PipelineFilesWidget(QWidget):
     """Compact file-status display for pipeline-stage widgets."""
 
+    #: Emitted after every ``refresh()`` so a host can recompute aggregated
+    #: status (section dots, catalog rail) whenever a stage's on-disk output
+    #: changed. Every stage widget already refreshes its tracker after a run,
+    #: commit, or finalize, so this is the single upstream "disk changed" hook.
+    refreshed = Signal()
+
     def __init__(
         self,
         groups: list[tuple[str, list[tuple[str, str]]]],
@@ -518,6 +524,7 @@ class PipelineFilesWidget(QWidget):
         if pos_dir is None:
             for row in self._rows:
                 row.set_no_project()
+            self.refreshed.emit()
             return
         for row in self._rows:
             full_path = pos_dir / row._rel_path
@@ -530,6 +537,7 @@ class PipelineFilesWidget(QWidget):
                 row.set_present(_file_info(full_path))
             else:
                 row.set_missing()
+        self.refreshed.emit()
 
     def presence_count_by_group(self) -> dict[str, tuple[int, int]]:
         """Per-group (n_present, n_total) snapshot of current file state."""
