@@ -74,8 +74,7 @@ def _neighbor_count_table(cell_ids, frames):
 
 
 def test_experiment_id_broadcast_onto_pooled_rows(tmp_path, monkeypatch):
-    """The catalogue's experiment_id (paired-replicate key) is stamped onto rows,
-    distinct from date."""
+    """The catalogue's experiment_id (paired-replicate key) is stamped onto rows."""
     rec = _record(tmp_path, "a", date="2026-05-09", experiment_id="EXP-01")
     _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
 
@@ -83,7 +82,6 @@ def test_experiment_id_broadcast_onto_pooled_rows(tmp_path, monkeypatch):
 
     assert "experiment_id" in df.columns
     assert (df["experiment_id"] == "EXP-01").all()
-    assert (df["date"] == "2026-05-09").all()
 
 
 def test_free_form_column_broadcast_onto_pooled_rows(tmp_path, monkeypatch):
@@ -146,7 +144,7 @@ def test_two_positions_pool_into_one_table(tmp_path, monkeypatch):
     df = build_table("cell_shape", [rec_a, rec_b])
 
     assert set(df["position_id"]) == {"a", "b"}
-    assert {"condition", "date", "position_id", "frame", "cell_id"} <= set(df.columns)
+    assert {"condition", "position_id", "frame", "cell_id"} <= set(df.columns)
     # Value columns are namespaced by quantity_id so cross-quantity names never clash.
     assert "cell_shape.area_um2" in df.columns
     assert len(df) == 4 + 1  # a: 2 cells × 2 frames, b: 1 cell × 1 frame
@@ -198,6 +196,18 @@ def test_ids_do_not_collide_across_positions(tmp_path, monkeypatch):
     rows = df[df["cell_id"] == 1]
     assert len(rows) == 2
     assert set(rows["position_id"]) == {"a", "b"}
+
+
+def test_pooled_table_has_no_date_column(tmp_path, monkeypatch):
+    """``date`` is a catalog-only descriptor now; it is no longer stamped onto the
+    pooled tables (removed with the catalog's date column)."""
+    rec = _record(tmp_path, "a", date="2026-05-09")
+    _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
+
+    df = build_table("cell_shape", [rec])
+
+    assert "date" not in df.columns
+    assert {"condition", "experiment_id", "position_id"} <= set(df.columns)
 
 
 # ----------------------------------------------------------- label-agnostic

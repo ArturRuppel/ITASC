@@ -20,7 +20,7 @@ declares its natural index (``table_keys``); its tidy ``object_table`` is pooled
 across positions into a table named by the quantifier's ``quantity_id``. Value
 columns stay namespaced by ``quantity_id`` (``cell_shape.area_um2``) so a later
 joined *view* across tables never has colliding names. The keys and the catalogue
-metadata (``condition`` / ``experiment_id`` / ``date`` / ``position_id``) stay
+metadata (``condition`` / ``experiment_id`` / ``position_id``) stay
 bare. (Previously several quantities sharing an index were outer-joined into one
 wide table — that produced god tables and is gone.)
 
@@ -55,7 +55,7 @@ __all__ = [
 ]
 
 #: The catalogue-metadata axes stamped (bare) onto every pooled row, in order.
-METADATA_COLUMNS = ("condition", "experiment_id", "date", "position_id")
+METADATA_COLUMNS = ("condition", "experiment_id", "position_id")
 
 
 @dataclass(frozen=True)
@@ -128,7 +128,7 @@ def build_table(
         merged = _position_frame(record, quantifiers, spec.keys, params)
         if merged is None:
             continue
-        # Insert in reverse so the columns end up condition · experiment_id · date · position_id.
+        # Insert in reverse so the columns end up condition · experiment_id · position_id.
         for key, value in reversed(list(_position_metadata(record).items())):
             merged.insert(0, key, value)
         frames.append(merged)
@@ -206,15 +206,16 @@ def _position_metadata(record: dict) -> dict[str, str]:
     The recognized identity/descriptor axes (:data:`METADATA_COLUMNS`) come first,
     followed by any extra free-form columns (folder-derived nesting levels or
     manual constant tags) carried in ``record["columns"]``. Extras ride along as
-    constant descriptors; they never alter the row-id identity hash."""
+    constant descriptors; they never alter the row-id identity hash. ``date`` is no
+    longer a descriptor axis (removed with the catalog's date column) and is
+    skipped even if a legacy ``columns`` bag still carries it."""
     meta = {
         "condition": str(record.get("condition", "")),
         "experiment_id": str(record.get("experiment_id", "")),
-        "date": str(record.get("date", "")),
         "position_id": str(record.get("id", "")),
     }
     for key, value in (record.get("columns") or {}).items():
-        if key not in meta:  # recognized axes already stamped above
+        if key not in meta and key != "date":  # recognized axes already stamped; date dropped
             meta[key] = str(value)
     return meta
 
