@@ -77,6 +77,11 @@ curator for that engine; all plotting moves to Iris. Each item has its own spec.
 - [ ] **Curation tool (napari)** — browse positions, scrub frames with contact-viz as
   the overlay, mark frame/whole-position excluded + reason, writes the exclusion table.
   → `docs/superpowers/specs/2026-06-22-aggregate-curation-tool-napari-design.md`
+- [ ] **Fold curation into the per-position Contact Analysis section** — curation is a
+  per-position judgement made while looking at that position, so it belongs at the end of
+  the per-position pipeline (the Contact Analysis section), not on the all-positions
+  aggregate capstone. The capstone just consumes the resulting `curation` table via the
+  run-config. (Decided 2026-07-12 while scoping the aggregate front-end integration.)
 
 ## TIFF Calibration (pixel size / Z step / frame interval)
 
