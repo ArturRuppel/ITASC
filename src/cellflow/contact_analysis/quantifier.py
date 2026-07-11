@@ -155,6 +155,21 @@ class Quantifier:
         """
         return None
 
+    def compute_object_table(
+        self, inputs: PositionInputs, *, params: dict | None = None
+    ) -> Mapping[str, Any] | None:
+        """The pooled tidy table for one position, computed directly from *inputs*.
+
+        A **pooled** quantifier (one that declares ``table_keys``) implements this:
+        it returns the same column-major table that ``object_table`` used to return
+        after a disk round-trip, but never touches disk. ``None`` when this position
+        yields no rows. Producers (``contacts``) are not pooled and do not implement
+        it. *params* carries the shared build knobs (e.g. ``fov_area_mm2``) for the
+        quantifiers that opt in; per-position values (pixel size, frame interval)
+        arrive via *inputs*.
+        """
+        raise NotImplementedError
+
     def build(
         self,
         inputs: PositionInputs,

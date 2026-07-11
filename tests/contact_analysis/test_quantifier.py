@@ -164,6 +164,17 @@ def test_contacts_quantifier_default_output_name(tmp_path):
     assert q.default_output(PositionInputs(position_dir=tmp_path)).name == "contact_analysis.h5"
 
 
+def test_compute_object_table_default_raises():
+    from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
+
+    class _Bare(Quantifier):
+        quantity_id = ""  # not registered
+
+    import pytest
+    with pytest.raises(NotImplementedError):
+        _Bare().compute_object_table(PositionInputs(position_dir=__import__("pathlib").Path(".")))
+
+
 def test_contacts_quantifier_build_and_read(tmp_path):
     frame = np.zeros((5, 6), dtype=np.uint16)
     frame[:, :3] = 1
