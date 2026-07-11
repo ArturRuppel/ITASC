@@ -4,6 +4,8 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from qtpy.QtWidgets import QToolButton
+
 from cellflow.napari._experiments_panel import ExperimentsPanel, overall_status
 from cellflow.napari._stage_status import (
     DONE,
@@ -195,6 +197,36 @@ def test_rename_column_carries_values_table_wide():
     # Values carried across under the new name.
     payload_cols = panel._records["a"]["columns"]
     assert payload_cols["genotype"] == "WT" and "condition" not in payload_cols
+
+
+def test_remove_column_drops_it_table_wide():
+    panel = _panel()
+    panel.set_records([_entry("a", cond="WT"), _entry("b", cond="KO")])
+    assert panel.column_names() == ["condition", "position_id"]
+    panel.remove_column(0)
+    assert panel.column_names() == ["position_id"]
+    for key in ("a", "b"):
+        assert "condition" not in panel._records[key]["columns"]
+        assert "position_id" in panel._records[key]["columns"]
+
+
+def test_remove_column_out_of_range_is_noop():
+    panel = _panel()
+    panel.set_records([_entry("a")])
+    before = panel.column_names()
+    panel.remove_column(5)
+    panel.remove_column(-1)
+    assert panel.column_names() == before
+
+
+def test_remove_column_button_removes_the_right_column():
+    panel = _panel()
+    panel.set_records([_entry("a", cond="WT")])
+    # The header's per-column × button is wired to remove that column.
+    btn = panel.findChild(QToolButton, "experiments_remove_column_0")
+    assert btn is not None
+    btn.click()
+    assert "condition" not in panel.column_names()
 
 
 def test_empty_state_shows_call_to_action():

@@ -613,6 +613,20 @@ class ExperimentsPanel(QWidget):
         self._rebuild_table()
         self.records_changed.emit()
 
+    def remove_column(self, index: int) -> None:
+        """Drop column *index* table-wide, discarding each row's value for it.
+
+        A folder-derived column re-appears on the next Discover; this only
+        removes it from the current committed list.
+        """
+        if not 0 <= index < len(self._column_names):
+            return
+        name = self._column_names.pop(index)
+        for key in self._paths:
+            self._records[key]["columns"].pop(name, None)
+        self._rebuild_table()
+        self.records_changed.emit()
+
     def _ensure_columns(self, names: Iterable[str]) -> None:
         for name in names:
             if name and name not in self._column_names:
@@ -825,13 +839,27 @@ class ExperimentsPanel(QWidget):
         self._header_fields: list[QLineEdit] = []
         if self._column_names:
             for index, name in enumerate(self._column_names):
+                cell = QWidget()
+                cell_row = QHBoxLayout(cell)
+                cell_row.setContentsMargins(0, 0, 0, 0)
+                cell_row.setSpacing(2)
                 field = QLineEdit(name)
                 field.setObjectName(f"experiments_column_header_{index}")
                 field.setStyleSheet(mono_input_style())
                 field.editingFinished.connect(
                     lambda i=index, f=field: self.rename_column(i, f.text())
                 )
-                row.addWidget(field, 1)
+                cell_row.addWidget(field, 1)
+                remove = QToolButton()
+                remove.setObjectName(f"experiments_remove_column_{index}")
+                remove.setText("×")
+                remove.setToolTip(f"Remove the '{name}' column")
+                remove.setAutoRaise(True)
+                remove.setFixedWidth(16)
+                remove.setStyleSheet(f"color: {TEXT_DIM}; border: none;")
+                remove.clicked.connect(lambda _=False, i=index: self.remove_column(i))
+                cell_row.addWidget(remove)
+                row.addWidget(cell, 1)
                 self._header_fields.append(field)
         else:
             placeholder = QLineEdit("Folder")
