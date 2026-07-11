@@ -1,4 +1,4 @@
-"""Contact Analysis: pool per-position sources into plottable quantities.
+"""Contact Analysis: pool per-position sources into aggregate tidy tables.
 
 This package hosts the quantifier seam. The stable, napari-free surface that the
 ``cellflow-aggregate`` CLI calls and notebooks import is the
@@ -6,6 +6,8 @@ This package hosts the quantifier seam. The stable, napari-free surface that the
 ``build_quantities`` → ``aggregate`` — re-exported here alongside the catalogue
 load/save helpers and the quantifier registry. Everything it produces is
 **label-agnostic**: tidy CSVs with no subpopulation classification baked in.
+Reduction to replicate-level summaries and plotting are downstream concerns
+owned by Iris / the data repo, not this package.
 
 The contacts quantifier's public API (cell-cell edges, T1 events) is also
 re-exported for stability; see :mod:`cellflow.contact_analysis.contacts`.
