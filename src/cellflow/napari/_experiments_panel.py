@@ -60,6 +60,7 @@ from cellflow.napari.ui_style import (
     COMPACT_SPACING,
     TEXT_DIM,
     TEXT_MID,
+    action_button_style,
     experiment_name_color,
     experiment_row_style,
     experiment_status_color,
@@ -514,6 +515,7 @@ class ExperimentsPanel(QWidget):
             "Pick a parent directory; every folder under it holding the Setup "
             "image files is added to the list (run again to add more)."
         )
+        self.discover_btn.setStyleSheet(action_button_style())
         self.discover_btn.clicked.connect(self.discover_requested)
         row.addWidget(self.discover_btn)
 
@@ -524,6 +526,7 @@ class ExperimentsPanel(QWidget):
             "Remove the selected rows (Ctrl/Shift-click to select several)"
         )
         self.delete_btn.setEnabled(False)
+        self.delete_btn.setStyleSheet(action_button_style())
         self.delete_btn.clicked.connect(self.delete_selected)
         row.addWidget(self.delete_btn)
         row.addStretch()
@@ -539,6 +542,7 @@ class ExperimentsPanel(QWidget):
             "Run the selected rows (Ctrl/Shift-click for several, Ctrl+A for all)"
         )
         self.run_btn.setEnabled(False)
+        self.run_btn.setStyleSheet(action_button_style())
         self.run_btn.clicked.connect(self._on_run_clicked)
         row.addWidget(self.run_btn)
         row.addStretch()

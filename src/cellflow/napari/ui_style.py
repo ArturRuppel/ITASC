@@ -226,6 +226,23 @@ def experiment_row_style(selected: bool, accent: str) -> str:
     )
 
 
+def action_button_style() -> str:
+    """Give a text QToolButton real button chrome (fill, border, rounded,
+    hover/pressed feedback) so list actions don't read as flat status labels."""
+    return (
+        "QToolButton { "
+        "background: rgba(255, 255, 255, 10); "
+        f"border: 1px solid {HAIRLINE}; border-radius: 6px; "
+        f"padding: 4px 12px; color: {TEXT_BRIGHT}; }} "
+        "QToolButton:hover { background: rgba(255, 255, 255, 22); "
+        "border-color: rgba(255, 255, 255, 46); } "
+        "QToolButton:pressed { background: rgba(255, 255, 255, 32); } "
+        "QToolButton:disabled { "
+        f"color: {TEXT_DIM}; background: rgba(255, 255, 255, 4); "
+        "border-color: rgba(255, 255, 255, 10); }"
+    )
+
+
 def mono_input_style() -> str:
     """Themed pill style for a QLineEdit, so config fields aren't raw Qt."""
     return (
