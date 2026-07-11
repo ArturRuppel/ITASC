@@ -32,7 +32,7 @@ wheel use it unchanged.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,7 +40,7 @@ import numpy as np
 import pandas as pd
 
 from .quantifier import Quantifier, available_quantifiers
-from .records import output_for_record
+from .records import available_fields, position_inputs_from_record, record_build_params
 
 __all__ = [
     "ShapeTableSpec",
@@ -100,13 +100,23 @@ def _quantifiers_for(spec: ShapeTableSpec) -> list[Quantifier]:
     return [by_id[qid]() for qid in spec.quantity_ids if qid in by_id]
 
 
-def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
-    """Pool the quantifier *name*'s built product across *records* into one frame.
+def build_table(
+    name: str,
+    records: Iterable[dict],
+    *,
+    params: Mapping[str, object] | None = None,
+) -> pd.DataFrame:
+    """Pool the quantifier *name*'s per-position table across *records* into one frame.
 
-    For each in-scope record the quantifier's tidy ``object_table`` is read (value
-    columns namespaced by ``quantity_id``) and the catalogue metadata is stamped;
-    the per-position frames are then concatenated. The result is label-agnostic (no
-    ``class_label`` join). Empty when nothing is built. In-memory only — see
+    For each in-scope record the quantifier's tidy table is computed in memory via
+    :meth:`~cellflow.contact_analysis.quantifier.Quantifier.compute_object_table`
+    (value columns namespaced by ``quantity_id``) and the catalogue metadata is
+    stamped; the per-position frames are then concatenated. *params* carries the
+    shared build knobs (e.g. ``fov_area_mm2``, ``pixel_size_um``) — the same ones
+    :func:`~cellflow.contact_analysis.pipeline.build_quantities` threads into
+    ``build``, so a param-gated quantifier (cell shape needs ``pixel_size_um``)
+    pools consistently with what was actually built. The result is label-agnostic
+    (no ``class_label`` join). Empty when nothing computes. In-memory only — see
     :func:`aggregate` to persist.
     """
     spec = shape_table_registry().get(name)
@@ -115,7 +125,7 @@ def build_table(name: str, records: Iterable[dict]) -> pd.DataFrame:
     quantifiers = _quantifiers_for(spec)
     frames: list[pd.DataFrame] = []
     for record in records:
-        merged = _position_frame(record, quantifiers, spec.keys)
+        merged = _position_frame(record, quantifiers, spec.keys, params)
         if merged is None:
             continue
         # Insert in reverse so the columns end up condition · experiment_id · date · position_id.
@@ -156,18 +166,23 @@ def _assign_row_id(df: pd.DataFrame, keys: tuple[str, ...]) -> None:
 
 
 def _position_frame(
-    record: dict, quantifiers: list[Quantifier], keys: tuple[str, ...]
+    record: dict,
+    quantifiers: list[Quantifier],
+    keys: tuple[str, ...],
+    params: Mapping[str, object] | None,
 ) -> pd.DataFrame | None:
-    """Outer-join (within one position) every built co-targeting quantity on the
-    table's keys, namespacing each quantity's value columns. ``None`` when no
-    targeting quantity is built for this position."""
+    """Outer-join (within one position) every co-targeting quantity on the table's
+    keys, namespacing each quantity's value columns. ``None`` when no targeting
+    quantity yields a table for this position."""
+    inputs = position_inputs_from_record(record)
     merged: pd.DataFrame | None = None
     for quantifier in quantifiers:
-        path = output_for_record(quantifier, record)
-        if not quantifier.is_built(path):
+        if not set(quantifier.requires) <= available_fields(inputs):
             continue
-        table = quantifier.object_table(path)
-        if table is None:
+        if quantifier.missing_build_params(record_build_params(quantifier, record, params)):
+            continue
+        table = quantifier.compute_object_table(inputs, params=dict(params) if params else None)
+        if not table:
             continue
         df = pd.DataFrame({k: np.asarray(v) for k, v in dict(table).items()})
         present_keys = [k for k in keys if k in df.columns]
@@ -225,7 +240,10 @@ def table_path(out_dir: Path | str, name: str) -> Path:
 
 
 def aggregate(
-    records: Sequence[dict], out_dir: Path | str | None = None
+    records: Sequence[dict],
+    out_dir: Path | str | None = None,
+    *,
+    params: Mapping[str, object] | None = None,
 ) -> dict[str, Path]:
     """Regenerate every aggregated table for the in-scope *records*; return the
     table name → written CSV path map.
@@ -233,12 +251,14 @@ def aggregate(
     Materialized-view semantics: each table is rebuilt whole and its CSV
     overwritten (a previously-written table for a now-out-of-scope position is
     simply not regenerated with that position). A table that pools to no rows is
-    skipped (no empty file). *out_dir* defaults to :func:`catalogue_root`.
+    skipped (no empty file). *out_dir* defaults to :func:`catalogue_root`. *params*
+    is forwarded to :func:`build_table` (the shared build knobs the param-gated
+    quantifiers need to compute at all).
     """
     root = Path(out_dir) if out_dir is not None else catalogue_root(records)
     written: dict[str, Path] = {}
     for name in shape_table_registry():
-        df = build_table(name, records)
+        df = build_table(name, records, params=params)
         if df.empty:
             continue
         path = table_path(root, name)

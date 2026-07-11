@@ -12,7 +12,8 @@ The napari ``studio_plugins`` module re-exports these for backwards compatibilit
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
 from .quantifier import PositionInputs, Quantifier
@@ -21,6 +22,8 @@ __all__ = [
     "position_inputs_from_record",
     "output_for_record",
     "records_satisfying",
+    "available_fields",
+    "record_build_params",
 ]
 
 
@@ -87,3 +90,27 @@ def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list
         if all(getattr(inputs, name, None) is not None for name in needed):
             out.append(record)
     return out
+
+
+def available_fields(inputs: PositionInputs) -> set[str]:
+    """The populated (non-``None``) ``PositionInputs`` field names — the satisfied
+    prerequisites a quantifier's ``requires`` is checked against."""
+    return {f.name for f in _dataclass_fields(inputs) if getattr(inputs, f.name) is not None}
+
+
+def record_build_params(
+    quantifier: Quantifier, record: dict, params: Mapping[str, object] | None
+) -> dict:
+    """Shared *params* overlaid with the record's own required-build-param values.
+
+    A param like pixel size can be set per-position on the record (the value the
+    build actually reads via ``PositionInputs``) instead of in the shared bar, so
+    the build-param gate must see both. The record's own value wins where present,
+    mirroring ``run()``'s per-record stamping.
+    """
+    merged = dict(params or {})
+    for key in quantifier.required_build_params:
+        value = record.get(key)
+        if value is not None:
+            merged[key] = value
+    return merged

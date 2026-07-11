@@ -26,14 +26,18 @@ it unchanged.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
 from . import shape_tables
 from .catalog import discover_catalog_entries, load_catalog, save_catalog
 from .config import RunConfig, load_config, write_config
-from .quantifier import PositionInputs, Quantifier, available_quantifiers
-from .records import output_for_record, position_inputs_from_record
+from .quantifier import Quantifier, available_quantifiers
+from .records import (
+    available_fields,
+    output_for_record,
+    position_inputs_from_record,
+    record_build_params,
+)
 
 __all__ = [
     "author_config",
@@ -116,7 +120,7 @@ def build_quantities(
     records = list(catalog)
     # Per position, the PositionInputs fields available so far. A producer planned
     # below grows this set for the dependents planned after it.
-    available = [_available_fields(position_inputs_from_record(r)) for r in records]
+    available = [available_fields(position_inputs_from_record(r)) for r in records]
 
     jobs: list[tuple[Quantifier, dict, dict | None]] = []
     for quantifier in quants:
@@ -129,7 +133,7 @@ def build_quantities(
             # A required build param (e.g. pixel size) may be supplied per-record
             # rather than in the shared bar, so gate per-position: skip only this
             # record when neither its own value nor the shared params satisfies it.
-            if quantifier.missing_build_params(_record_build_params(quantifier, record, params)):
+            if quantifier.missing_build_params(record_build_params(quantifier, record, params)):
                 continue
             jobs.append((quantifier, record, q_params))
             produced = _produced_field_for(quantifier, record)
@@ -173,30 +177,6 @@ def _dependency_order(quants: Sequence[Quantifier]) -> list[Quantifier]:
     for q in quants:
         visit(q)
     return order
-
-
-def _available_fields(inputs: PositionInputs) -> set[str]:
-    """The populated (non-``None``) ``PositionInputs`` field names — the satisfied
-    prerequisites a quantifier's ``requires`` is checked against."""
-    return {f.name for f in _dataclass_fields(inputs) if getattr(inputs, f.name) is not None}
-
-
-def _record_build_params(
-    quantifier: Quantifier, record: dict, params: Mapping[str, object] | None
-) -> dict:
-    """Shared *params* overlaid with the record's own required-build-param values.
-
-    A param like pixel size can be set per-position on the record (the value the
-    build actually reads via ``PositionInputs``) instead of in the shared bar, so
-    the build-param gate must see both. The record's own value wins where present,
-    mirroring ``run()``'s per-record stamping.
-    """
-    merged = dict(params or {})
-    for key in quantifier.required_build_params:
-        value = record.get(key)
-        if value is not None:
-            merged[key] = value
-    return merged
 
 
 def _produced_field_for(quantifier: Quantifier, record: dict) -> str | None:
