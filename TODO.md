@@ -1,43 +1,17 @@
 # TODO
 
-## Project catalog (full-app) — next items
+## Lean-aggregate-stage deferred follow-ups
 
-Follow-ons to the config-autosave + project-catalog CSV work
-(`docs/superpowers/specs/2026-07-11-full-app-config-and-project-file-design.md`).
+(The catalog-CSV slim and the `4_contact_analysis` rename shipped 2026-07-11 — see
+[Lean Aggregate Stage] in memory. In-panel table editing for the project catalog was
+evaluated and **dropped** by Artur 2026-07-11: the `ExperimentsPanel` table is a bespoke
+row-widget list with row-level selection, so cell-level editing / rectangular paste would
+mean either hand-rolling a spreadsheet engine or migrating to `QTableView` + a status-rail
+delegate — not worth it; the existing Apply-tag flow stays.)
 
-- [ ] **Evaluate complexity first: in-panel table editing for the project catalog.**
-  The `ExperimentsPanel` table currently only displays folders + classification
-  columns; make it a real editor before deciding scope. Target capabilities:
-  add a column, remove a column, type text into a cell, and paste one cell's value
-  into a multi-cell selection at once. Scope the QTableWidget/QTableView reality
-  (selection model, delegate, paste handling, keeping `_records`/`_column_names` in
-  sync) and report effort before building.
-
-- [ ] **Slim the generated catalog CSV to identifiers + canonical derived paths.**
-  Drop the `date`, `path`, and `notes` columns. Keep `position_path`. Every derived
-  artifact is a fixed location under the position folder, so store the canonical
-  relpaths rather than free-form `path`:
-  - contact analysis h5 → `4_contact_analysis/contact_analysis.h5` (see the rename
-    item below; today it is `aggregate_quantification/contact_analysis.h5`).
-  - cell labels → `cell_labels.tif` and nucleus labels → `nucleus_labels.tif`, i.e.
-    the **committed** outputs the finalize/"commit" button writes
-    (`NucleusArtifactPaths.cell_labels` / `.nucleus_labels`), NOT the pre-commit
-    working paths `3_cell/tracked_labels.tif` / `2_nucleus/tracked_labels.tif`.
-    This is a correction to `main_widget._catalog_record_for_position`, which
-    currently stamps the working paths.
-  - Net CSV columns become: `position_path`, identifiers (`condition`,
-    `experiment_id`, `id`) + free-form tag columns, and the three canonical derived
-    paths. Update `catalog.py` `CSV_COLUMNS` / `REQUIRED_CSV_COLUMNS` and the studio
-    load path accordingly.
-
-- [ ] **Rename the contact-analysis output dir to `4_contact_analysis`** to mirror
-  the `0_input … 3_cell` staged numbering. This is more than a catalog column:
-  `OUTPUT_SUBDIR` (`contact_analysis/quantifier.py`) is where the aggregate pipeline
-  *writes* the h5, and discovery reads it there. Touches the writer, discovery,
-  `CONTACT_ANALYSIS_RELPATH`, any existing on-disk `aggregate_quantification/`
-  folders (migration?), and docs. Sequence this with the CSV-slimming item.
-
-### Deferred from the lean-aggregate-stage change (Option A scope)
+The lean-aggregate-stage change deliberately scoped itself to the **headless pipeline**:
+`run()` persists only `contacts` and pools the cheap quantities in memory. These UI/cleanup
+follow-ons were deferred:
 
 The lean-aggregate-stage spec
 (`docs/superpowers/specs/2026-07-11-lean-aggregate-stage-design.md`) deliberately
