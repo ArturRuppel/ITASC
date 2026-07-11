@@ -77,3 +77,31 @@ def test_pool_positions_authors_ready_subset_and_runs(tmp_path, monkeypatch):
     assert "object_table" in result["tables"]
     # Tables land in the ready positions' common ancestor.
     assert result["project_dir"] == (tmp_path / "study")
+
+
+from napari.qt import get_qapp
+
+
+def test_widget_readout_reports_ready_split_and_names_not_ready(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.set_records([
+        _record(tmp_path / "posA", ready=True),
+        _record(tmp_path / "posB", ready=False),
+    ])
+    assert "1 of 2" in w.readout.text()
+    assert "posB" in w.readout.text()
+    assert w.run_btn.isEnabled() is True
+    assert w.section_status() == "in_progress"
+
+
+def test_widget_run_button_disabled_when_nothing_ready(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.set_records([_record(tmp_path / "posA", ready=False)])
+    assert w.run_btn.isEnabled() is False
+    assert w.section_status() == "not_started"
