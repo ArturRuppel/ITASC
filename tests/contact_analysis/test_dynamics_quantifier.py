@@ -31,13 +31,13 @@ def test_available_quantifiers_discovers_dynamics_pair():
     assert {"cell_dynamics", "nucleus_dynamics"} <= ids
 
 
-def test_dynamics_outputs_nest_under_aggregate_quantification(tmp_path):
+def test_dynamics_outputs_nest_under_4_contact_analysis(tmp_path):
     inputs = PositionInputs(position_dir=tmp_path)
     assert CellDynamicsQuantifier().default_output(inputs) == (
-        tmp_path / "aggregate_quantification" / "cell_dynamics.h5"
+        tmp_path / "4_contact_analysis" / "cell_dynamics.h5"
     )
     assert NucleusDynamicsQuantifier().default_output(inputs) == (
-        tmp_path / "aggregate_quantification" / "nucleus_dynamics.h5"
+        tmp_path / "4_contact_analysis" / "nucleus_dynamics.h5"
     )
 
 
@@ -65,7 +65,7 @@ def test_build_read_roundtrip_ballistic_track(tmp_path):
     centers = [(40, 10 + 2 * i) for i in range(16)]
     labels = tmp_path / "cells.tif"
     tifffile.imwrite(labels, _moving_disk_stack(centers))
-    out = tmp_path / "aggregate_quantification" / "cell_dynamics.h5"
+    out = tmp_path / "4_contact_analysis" / "cell_dynamics.h5"
 
     q = CellDynamicsQuantifier()
     inputs = PositionInputs(
@@ -119,7 +119,7 @@ def test_build_adds_per_track_msd_and_corr_length(tmp_path):
     centers = [(40, 10 + 2 * i) for i in range(16)]
     labels = tmp_path / "cells.tif"
     tifffile.imwrite(labels, _moving_disk_stack(centers))
-    out = tmp_path / "aggregate_quantification" / "cell_dynamics.h5"
+    out = tmp_path / "4_contact_analysis" / "cell_dynamics.h5"
 
     q = CellDynamicsQuantifier()
     inputs = PositionInputs(

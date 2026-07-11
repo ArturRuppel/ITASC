@@ -2,7 +2,7 @@
 
 Wraps :mod:`cellflow.contact_analysis.dynamics` so the studio can build
 and read per-cell motion through the generic :class:`Quantifier` interface. Its
-persistence is a multi-table ``aggregate_quantification/cell_dynamics.h5``;
+persistence is a multi-table ``4_contact_analysis/cell_dynamics.h5``;
 :meth:`object_table` exposes the per-frame instantaneous table (the only
 ``(frame, cell_id)`` table) to the plotting backend. The cell twin of
 :mod:`.nucleus_dynamics` — they share the label-agnostic core and differ only by

@@ -2,7 +2,7 @@
 
 Wraps :mod:`cellflow.contact_analysis.shape` so the studio can build and
 read per-cell morphology through the generic :class:`Quantifier` interface. Its
-persistence is a tidy ``aggregate_quantification/cell_shape.csv``;
+persistence is a tidy ``4_contact_analysis/cell_shape.csv``;
 :meth:`object_table` exposes that table to the plotting backend. The object-key
 column is ``cell_id`` (the shared track id).
 """
@@ -32,7 +32,7 @@ class CellShapeQuantifier(Quantifier):
     required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
 
     #: Default artifact name; ``default_output`` nests it under the shared
-    #: ``aggregate_quantification/`` folder. The builder mkdirs the parent.
+    #: ``4_contact_analysis/`` folder. The builder mkdirs the parent.
     default_output_name = "cell_shape.csv"
     #: Per-cell, per-frame shape descriptors, keyed (frame, cell_id).
     table_keys = ("frame", "cell_id")

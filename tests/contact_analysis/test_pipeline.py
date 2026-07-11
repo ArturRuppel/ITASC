@@ -258,7 +258,7 @@ def test_pipeline_build_aggregate_round_trip(tmp_path):
     )
     tables = pipeline.aggregate(recs, tmp_path / "catalogue")
     assert "cell_shape" in tables
-    # Tables are written flat (no aggregate_quantification subdir) and are
+    # Tables are written flat (no 4_contact_analysis subdir) and are
     # label-agnostic (no class_label column).
     path = tables["cell_shape"]
     assert path == tmp_path / "catalogue" / "cell_shape.csv"
@@ -392,8 +392,8 @@ def test_run_persists_only_contacts_per_position(tmp_path):
 
     for rec in records:
         pos = Path(rec["position_path"])
-        assert (pos / "aggregate_quantification" / "contact_analysis.h5").exists()
-        assert not (pos / "aggregate_quantification" / "cell_shape.csv").exists()
+        assert (pos / "4_contact_analysis" / "contact_analysis.h5").exists()
+        assert not (pos / "4_contact_analysis" / "cell_shape.csv").exists()
     assert "cell_shape" in tables
     assert "cell_shape.area_um2" in pd.read_csv(tables["cell_shape"]).columns
 

@@ -4,7 +4,7 @@ Wraps :func:`cellflow.contact_analysis.shape.build_relational`, which
 pairs each nucleus with its cell on the shared ``(frame, id)`` key and emits
 relational quantities (nuclear:cell area ratio, centroid offset, orientation
 delta, …). Needs **both** label stacks plus a pixel size; persists
-``aggregate_quantification/shape_relational.csv``. The object-key column is ``cell_id``,
+``4_contact_analysis/shape_relational.csv``. The object-key column is ``cell_id``,
 so the relational table pools and plots through the same path as the per-source
 shape tables.
 """

@@ -115,7 +115,7 @@ columns become the grouping columns of the aggregate table.</p>
 <p><b>Run</b> processes the selected folders and writes each stage back inside the
 data folder:</p>
 <pre>pos01/
-  0_input   1_cellpose   2_nucleus   3_cell   aggregate_quantification</pre>
+  0_input   1_cellpose   2_nucleus   3_cell   4_contact_analysis</pre>
 <p>The status rail on each row shows how far that folder got. Run <b>Find data
 folders</b> again on another parent to add more: the list accumulates and skips any
 folder already listed.</p>

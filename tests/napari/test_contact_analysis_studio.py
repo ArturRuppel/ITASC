@@ -414,9 +414,9 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     for p in (p1, p2):
         p.mkdir(parents=True)
         (p / "cell_labels.tif").touch()
-    # pos01 already built (in the shared aggregate_quantification/ folder); pos02 missing.
-    (p1 / "aggregate_quantification").mkdir()
-    (p1 / "aggregate_quantification" / "contact_analysis.h5").touch()
+    # pos01 already built (in the shared 4_contact_analysis/ folder); pos02 missing.
+    (p1 / "4_contact_analysis").mkdir()
+    (p1 / "4_contact_analysis" / "contact_analysis.h5").touch()
 
     widget = mod.ContactAnalysisStudioWidget()
     panel = widget._panel

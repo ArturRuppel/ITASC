@@ -134,7 +134,7 @@ def test_output_for_record_routes_each_quantifier_to_its_own_artifact():
     )
     # The second quantifier derives its own path — never the contacts artifact.
     assert sp.output_for_record(CellShapeQuantifier(), record) == Path(
-        "/study/p1/aggregate_quantification/cell_shape.csv"
+        "/study/p1/4_contact_analysis/cell_shape.csv"
     )
 
 

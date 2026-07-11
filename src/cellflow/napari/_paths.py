@@ -14,7 +14,7 @@ Canonical file layout under ``<pos_dir>/``:
                             tracked_labels.tif
     nucleus_labels.tif    — FINAL output: committed nucleus tracked labels
     cell_labels.tif       — FINAL output: committed cell tracked labels
-    aggregate_quantification/  — contact_analysis.h5 (+ shape CSVs, NLS CSV)
+    4_contact_analysis/   — contact_analysis.h5 (+ shape CSVs, NLS CSV)
 
 The numbered stage dirs hold re-runnable *working* artifacts; the base-folder
 ``nucleus_labels.tif`` / ``cell_labels.tif`` are the committed, downstream-stable

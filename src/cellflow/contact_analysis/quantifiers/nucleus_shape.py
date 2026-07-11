@@ -2,7 +2,7 @@
 
 The nucleus twin of :mod:`.cell_shape`: it runs the same label-agnostic
 :func:`build_object_shape` over the **nucleus** label stack instead of the cell
-one, persisting ``aggregate_quantification/nucleus_shape.csv``. The object-key column
+one, persisting ``4_contact_analysis/nucleus_shape.csv``. The object-key column
 stays ``cell_id`` — a nucleus is nucleus-seeded so it carries its cell's shared
 track id — so nothing in the pooling/plotting layer treats it differently.
 """

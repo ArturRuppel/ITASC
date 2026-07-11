@@ -490,7 +490,7 @@ class CellFlowMainWidget(QWidget):
         """Pick a position folder and load its config if present.
 
         The chosen folder *is* ``pos_dir`` — the unit of work. Any folder with
-        the stage layout (``0_input/`` … ``aggregate_quantification/``) is valid;
+        the stage layout (``0_input/`` … ``4_contact_analysis/``) is valid;
         the child widgets no-op on missing subdirs, so no validation is needed.
         """
         path = QFileDialog.getExistingDirectory(self, "Select Position Folder")
@@ -714,7 +714,7 @@ class CellFlowMainWidget(QWidget):
             self.contact_analysis_widget.set_context(
                 cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
                 nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
-                out_path=pos_dir / "aggregate_quantification" / "contact_analysis.h5",
+                out_path=pos_dir / CONTACT_ANALYSIS_RELPATH,
                 status_root=pos_dir,
             )
         else:

@@ -23,11 +23,12 @@ from typing import Any, ClassVar
 
 __all__ = ["OUTPUT_SUBDIR", "PositionInputs", "Quantifier", "available_quantifiers"]
 
-#: Per-position subfolder that holds **every** Contact Analysis output
-#: (contacts ``.h5``, the shape-family CSVs, and the NLS classification CSV). A
-#: single home keeps a position's derived artifacts together and decoupled from
-#: the raw input layout.
-OUTPUT_SUBDIR = "aggregate_quantification"
+#: Per-position subfolder that holds the Contact Analysis output. Numbered to
+#: mirror the staged layout (``0_input`` … ``3_cell``). Only
+#: ``contact_analysis.h5`` is persisted here now — the cheap quantities (shape,
+#: dynamics, relational) are pooled in memory during ``run()`` rather than
+#: written to disk.
+OUTPUT_SUBDIR = "4_contact_analysis"
 
 
 @dataclass(frozen=True)

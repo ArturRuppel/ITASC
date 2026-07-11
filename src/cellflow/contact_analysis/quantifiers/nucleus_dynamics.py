@@ -2,7 +2,7 @@
 
 The nucleus twin of :mod:`.cell_dynamics`: it runs the same label-agnostic
 :func:`build_track_dynamics` over the **nucleus** label stack instead of the cell
-one, persisting ``aggregate_quantification/nucleus_dynamics.h5``. Nuclei are
+one, persisting ``4_contact_analysis/nucleus_dynamics.h5``. Nuclei are
 compact, point-like centroids — the robust default for motility / MSD. The
 object-key column stays ``cell_id`` (a nucleus is nucleus-seeded so it carries
 its cell's shared track id), so the pooling / plotting layer treats it no

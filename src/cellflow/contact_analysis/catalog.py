@@ -7,7 +7,7 @@ via :func:`discover_catalog_entries`.
 Each row anchors on a ``position_path`` — the **absolute** path to the position
 folder — and stores every file (the contact-analysis ``.h5``, cell labels,
 nucleus labels) as a path **relative to that folder** (e.g.
-``aggregate_quantification/contact_analysis.h5``). Persisting the position folder lets
+``4_contact_analysis/contact_analysis.h5``). Persisting the position folder lets
 downstream tools (notably the NLS classifier) resolve their own per-position
 relative paths against it. Older catalogs that lack ``position_path`` still load:
 their file paths are resolved relative to the CSV file's directory.

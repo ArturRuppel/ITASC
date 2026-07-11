@@ -29,16 +29,16 @@ def test_available_quantifiers_discovers_shape_trio():
     assert {"cell_shape", "nucleus_shape", "shape_relational"} <= ids
 
 
-def test_shape_quantifiers_nest_outputs_under_aggregate_quantification(tmp_path):
+def test_shape_quantifiers_nest_outputs_under_4_contact_analysis(tmp_path):
     inputs = PositionInputs(position_dir=tmp_path)
     assert CellShapeQuantifier().default_output(inputs) == (
-        tmp_path / "aggregate_quantification" / "cell_shape.csv"
+        tmp_path / "4_contact_analysis" / "cell_shape.csv"
     )
     assert NucleusShapeQuantifier().default_output(inputs) == (
-        tmp_path / "aggregate_quantification" / "nucleus_shape.csv"
+        tmp_path / "4_contact_analysis" / "nucleus_shape.csv"
     )
     assert ShapeRelationalQuantifier().default_output(inputs) == (
-        tmp_path / "aggregate_quantification" / "shape_relational.csv"
+        tmp_path / "4_contact_analysis" / "shape_relational.csv"
     )
 
 
@@ -195,3 +195,10 @@ def test_contacts_quantifier_build_and_read(tmp_path):
     analysis = q.read(out)
     assert isinstance(analysis, PositionContactAnalysis)
     assert set(analysis.edges) >= {"frame", "kind"}
+
+
+def test_output_subdir_is_stage_numbered():
+    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
+    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+    assert OUTPUT_SUBDIR == "4_contact_analysis"
+    assert CONTACT_ANALYSIS_RELPATH == "4_contact_analysis/contact_analysis.h5"

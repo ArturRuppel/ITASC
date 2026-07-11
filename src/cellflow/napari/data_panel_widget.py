@@ -7,6 +7,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
 from cellflow.napari.widgets import PipelineFilesWidget
 
 # Canonical file groups for the project-wide status view. This rolls up the
@@ -42,7 +43,7 @@ _TRACKED_FILE_GROUPS = [
         ("3_cell/tracked_labels.tif", "Tracked labels"),
     ]),
     ("Contact Analysis", [
-        ("aggregate_quantification/contact_analysis.h5", "Contact analysis"),
+        (CONTACT_ANALYSIS_RELPATH, "Contact analysis"),
     ]),
 ]
 

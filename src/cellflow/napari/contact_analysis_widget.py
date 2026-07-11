@@ -30,6 +30,7 @@ from cellflow.contact_analysis import (
     ensure_contacts,
     run_contact_batch,
 )
+from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari.ui_style import action_button, status_label
 from cellflow.napari.widgets import (
@@ -153,7 +154,7 @@ class ContactAnalysisWidget(QWidget):
                     ("3_cell/tracked_labels.tif", "Cell tracked labels"),
                 ]),
                 ("Output", [
-                    ("aggregate_quantification/contact_analysis.h5", "Contact analysis"),
+                    (CONTACT_ANALYSIS_RELPATH, "Contact analysis"),
                 ]),
             ],
             viewer=self.viewer,

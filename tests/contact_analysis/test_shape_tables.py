@@ -33,7 +33,7 @@ def _record(
         "experiment_id": experiment_id if experiment_id is not None else date,
         "position_path": pdir,
         "cell_tracked_labels_path": pdir / "cells.tif",
-        "contact_analysis_path": pdir / "aggregate_quantification" / "contact_analysis.h5",
+        "contact_analysis_path": pdir / "4_contact_analysis" / "contact_analysis.h5",
         "pixel_size_um": 0.5,
     }
 

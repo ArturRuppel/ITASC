@@ -110,7 +110,7 @@ def _set_pos(widget, pos_dir):
     widget.set_context(
         cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
         nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
-        out_path=pos_dir / "aggregate_quantification" / "contact_analysis.h5",
+        out_path=pos_dir / "4_contact_analysis" / "contact_analysis.h5",
         status_root=pos_dir,
     )
 
@@ -124,7 +124,7 @@ def _staged_pos(tmp_path, name, *, cell=True, nucleus=True, h5=False):
     if cell:
         (pos_dir / "3_cell" / "tracked_labels.tif").touch()
     if h5:
-        out = pos_dir / "aggregate_quantification" / "contact_analysis.h5"
+        out = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(b"h5")
     return pos_dir
@@ -140,7 +140,7 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
 
     assert widget.cell_labels_path == pos_dir / "3_cell" / "tracked_labels.tif"
     assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
-    assert widget.contact_analysis_out_path == pos_dir / "aggregate_quantification" / "contact_analysis.h5"
+    assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert hasattr(widget, "_files_widget")
     # Cell labels not on disk yet -> Visualize disabled.
     assert widget.visualize_btn.isEnabled() is False
@@ -237,7 +237,7 @@ def test_visualize_builds_when_missing_then_shows(monkeypatch, tmp_path):
 
     # Built (missing -> compute) then showed.
     assert progress_events == [(2, 5, "Indexing records")]
-    assert captured["output_path"] == pos_dir / "aggregate_quantification" / "contact_analysis.h5"
+    assert captured["output_path"] == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     assert captured["cell_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
     assert captured["nucleus_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
     assert captured["overwrite"] is False
@@ -417,7 +417,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = _staged_pos(tmp_path, "pos08", cell=True, nucleus=True, h5=True)
-    contact_analysis_path = pos_dir / "aggregate_quantification" / "contact_analysis.h5"
+    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     _set_pos(widget, pos_dir)
 
     assert widget.visualize_btn.isEnabled() is True
