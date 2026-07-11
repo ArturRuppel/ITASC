@@ -861,16 +861,14 @@ def test_channels_run_independently_when_only_one_present(_mock_cellpose, monkey
     w.deleteLater()
 
 
-def test_integrated_inputs_are_user_definable_with_0input_defaults(monkeypatch, tmp_path):
+def test_integrated_inputs_are_hidden_and_default_to_0input(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
     w = mod.CellposeWidget(_FakeViewer())  # integrated (orchestrated) mode
 
-    # Input pickers are visible in integrated mode; the output-dir row is not
-    # (the app always writes maps into <pos>/1_cellpose/).
-    assert w._nucleus_edit.isVisibleTo(w)
-    assert w._cell_edit.isVisibleTo(w)
-    assert not w._output_dir_row.isVisibleTo(w)
+    # In the full app every path is fixed by the project structure, so the whole
+    # picker block (both input rows and the output-dir row) is hidden.
+    assert not w._paths_container.isVisibleTo(w)
 
     w.refresh(tmp_path)
 
@@ -878,11 +876,11 @@ def test_integrated_inputs_are_user_definable_with_0input_defaults(monkeypatch, 
     assert w._input_path("nucleus") == tmp_path / "0_input" / "nucleus_3dt.tif"
     assert w._input_path("cell") == tmp_path / "0_input" / "cell_3dt.tif"
 
-    # A relative override resolves under the position dir.
+    # The resolution logic still honours a set value (used programmatically): a
+    # relative one resolves under the position dir, an absolute one verbatim.
     w._nucleus_edit.setText("raw/my_nuc.tif")
     assert w._input_path("nucleus") == tmp_path / "raw" / "my_nuc.tif"
 
-    # An absolute override is used verbatim.
     elsewhere = tmp_path.parent / "elsewhere" / "cell_stack.tif"
     w._cell_edit.setText(str(elsewhere))
     assert w._input_path("cell") == elsewhere

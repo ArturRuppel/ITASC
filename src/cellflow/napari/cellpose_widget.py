@@ -147,12 +147,11 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
 
         # ── Input pickers (both modes) + standalone output dir ─────────
-        # Inputs are the user's raw data, so they are user-definable in BOTH
-        # modes. Integrated: a blank field means the default 0_input/*_3dt.tif
-        # name; a value (absolute, or relative to the position dir) overrides it.
-        # Standalone: the two inputs are explicit and required. The output-dir
-        # picker is standalone-only — the integrated app always writes maps into
-        # <pos_dir>/1_cellpose/.
+        # In the full app every path is fixed by the project structure
+        # (inputs at <pos_dir>/0_input/*_3dt.tif, maps at <pos_dir>/1_cellpose/),
+        # so none of these pickers are shown — see the container visibility gate
+        # below. Standalone: the two inputs are explicit and required, and the
+        # output-dir picker chooses where the maps are written.
         self._paths_container = QWidget()
         paths_col = QVBoxLayout(self._paths_container)
         paths_col.setContentsMargins(0, 0, 0, 0)
@@ -184,8 +183,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         )
         paths_col.addWidget(self._output_dir_row)
         root.addWidget(self._paths_container)
-        # Input rows show in both modes; the output-dir row is standalone-only.
-        self._output_dir_row.setVisible(self._standalone)
+        # The full app derives all paths from the project structure, so the
+        # input and output pickers are standalone-only.
+        self._paths_container.setVisible(self._standalone)
 
         # ── Pipeline files ─────────────────────────────────────────────
         self._files_widget = PipelineFilesWidget(_PIPELINE_FILES, viewer=self.viewer)
