@@ -29,6 +29,7 @@ from cellflow.contact_analysis.catalog import (
 )
 from cellflow.napari._experiments_panel import ExperimentsPanel
 from cellflow.napari._icons import stage_action_icon
+from cellflow.napari.aggregate_widget import AggregateWidget
 from cellflow.napari._stage_loader import load_stage
 from cellflow.napari._stage_status import position_stage_status
 from cellflow.napari.cellpose_widget import CellposeWidget
@@ -210,6 +211,14 @@ class CellFlowMainWidget(QWidget):
             accent_color=stage_accent("contact_analysis"),
         )
 
+        self.aggregate_widget = AggregateWidget()
+        self.aggregate_section = CollapsibleSection(
+            "Aggregate",
+            self.aggregate_widget,
+            expanded=False,
+            accent_color=stage_accent("aggregate"),
+        )
+
         # Positions panel (napariTFM ExperimentsList parity): discover a study
         # root, add its position folders to a list, and select one to drive the
         # detail sections below. The five stage sections ARE the selected
@@ -230,6 +239,7 @@ class CellFlowMainWidget(QWidget):
         self._positions_panel.active_changed.connect(self._on_active_position)
         self._positions_panel.discover_requested.connect(self._on_discover_positions)
         self._positions_panel.stage_load_requested.connect(self._on_position_stage_load)
+        self._positions_panel.records_changed.connect(self._refresh_aggregate)
 
         # Viewer-activity banner sits at the top level, above the stage
         # sections, so the "exit the active mode" hint is visible regardless of which section
@@ -252,6 +262,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
+        self.scroll_layout.addWidget(self.aggregate_section)
 
         # The five stage sections ARE the selected-position detail pane: they
         # stay hidden until a position is active (progressive disclosure — an
@@ -264,6 +275,13 @@ class CellFlowMainWidget(QWidget):
         )
         for section in self._stage_sections:
             section.set_status("not_started")
+
+        # The aggregate capstone is project-level, not a per-position detail
+        # pane: it is NOT in ``_stage_sections`` (so ``_update_disclosure``
+        # never hides it on selection changes). Seed its own initial state,
+        # hidden until the catalog has positions.
+        self.aggregate_section.setVisible(False)
+        self.aggregate_section.set_status(self.aggregate_widget.section_status())
 
         # Add stretch at the end
         self.scroll_layout.addStretch()
@@ -577,6 +595,22 @@ class CellFlowMainWidget(QWidget):
             "columns": dict(columns or {}),
         }
 
+    def _catalog_records_for_panel(self, panel_records) -> list[dict]:
+        """Catalog records (with committed output paths) for a list of panel rows."""
+        return [
+            self._catalog_record_for_position(
+                rec["position_path"], rec.get("columns", {})
+            )
+            for rec in panel_records
+        ]
+
+    def _refresh_aggregate(self) -> None:
+        """Feed the project-level catalog to the capstone; show it once positions exist."""
+        records = self._catalog_records_for_panel(self._positions_panel.records())
+        self.aggregate_widget.set_records(records)
+        self.aggregate_section.setVisible(bool(records))
+        self.aggregate_section.set_status(self.aggregate_widget.section_status())
+
     def _on_save_config_as(self) -> None:
         """Save current configuration to a specific file."""
         path = QFileDialog.getSaveFileName(self, "Save Config As", filter="JSON (*.json)")[0]
@@ -602,12 +636,7 @@ class CellFlowMainWidget(QWidget):
         # getSaveFileName does not always append the filter suffix on Linux/Qt.
         if not path.lower().endswith(".csv"):
             path = f"{path}.csv"
-        records = [
-            self._catalog_record_for_position(
-                rec["position_path"], rec.get("columns", {})
-            )
-            for rec in self._positions_panel.records()
-        ]
+        records = self._catalog_records_for_panel(self._positions_panel.records())
         try:
             save_catalog(Path(path), records)
             show_info(f"Project saved to {path}")
@@ -727,6 +756,7 @@ class CellFlowMainWidget(QWidget):
         # The catalog rail reads on-disk status per row directly; keep it in
         # step with the section dots on every full refresh.
         self._positions_panel.refresh_statuses()
+        self._refresh_aggregate()
         # Emit signal for other widgets
         self.refresh_requested.emit(pos_dir)
 
