@@ -72,3 +72,23 @@ def test_missing_fov_raises_clear_error(tmp_path):
     inputs = _inputs(tmp_path)
     with pytest.raises(ValueError, match="field-of-view"):
         q.build(inputs, q.default_output(inputs), params={})
+
+
+def test_cell_density_compute_matches_build(tmp_path):
+    q = _quantifier()
+    inputs = _inputs(tmp_path)
+    out = q.default_output(inputs)
+    q.build(inputs, out, params={"fov_area_mm2": 2.0})
+    expected = q.object_table(out)
+
+    got = q.compute_object_table(inputs, params={"fov_area_mm2": 2.0})
+
+    assert set(got) == set(expected)
+    assert dict(zip(got["label"].tolist(), got["n_cells"].tolist()))["all"] == 4
+
+
+def test_cell_density_compute_missing_fov_raises(tmp_path):
+    import pytest
+    q = _quantifier()
+    with pytest.raises(ValueError, match="field-of-view"):
+        q.compute_object_table(_inputs(tmp_path), params={})

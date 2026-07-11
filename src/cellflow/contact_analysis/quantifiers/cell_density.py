@@ -40,6 +40,18 @@ class CellDensityQuantifier(Quantifier):
     # until it is set, instead of letting the build raise.
     required_build_params = {"fov_area_mm2": "FOV area (mm²)"}
 
+    def compute_object_table(
+        self, inputs: PositionInputs, *, params: dict | None = None
+    ) -> Mapping[str, np.ndarray]:
+        fov = (params or {}).get("fov_area_mm2")
+        if not (isinstance(fov, (int, float)) and fov > 0):
+            raise ValueError(
+                "Cell density requires a field-of-view area — set 'FOV area (mm²)' "
+                "in Parameters before building."
+            )
+        frame_cells = _frame_cells_from_labels(inputs.cell_labels_path)
+        return cell_density(frame_cells, fov_area_mm2=float(fov))
+
     def build(
         self,
         inputs: PositionInputs,
@@ -48,15 +60,7 @@ class CellDensityQuantifier(Quantifier):
         params: dict | None = None,
         progress_cb: Callable[[int, int, str], None] | None = None,
     ) -> Path:
-        fov = (params or {}).get("fov_area_mm2")
-        if not (isinstance(fov, (int, float)) and fov > 0):
-            raise ValueError(
-                "Cell density requires a field-of-view area — set 'FOV area (mm²)' "
-                "in Parameters before building."
-            )
-        frame_cells = _frame_cells_from_labels(inputs.cell_labels_path)
-        table = cell_density(frame_cells, fov_area_mm2=float(fov))
-        return persist(output_path, table)
+        return persist(output_path, self.compute_object_table(inputs, params=params))
 
     def read(self, output_path: Path) -> dict[str, np.ndarray]:
         return read_derived_table(output_path)
