@@ -117,3 +117,15 @@ def test_load_stage_replaces_existing_layer(tmp_path: Path):
 def test_load_stage_noop_without_pos_dir():
     viewer = _StubViewer()
     assert load_stage(viewer, None, STAGE_NUCLEUS) == []
+
+
+def test_load_stage_hands_napari_a_lazy_array(tmp_path: Path):
+    # The layer data is a dask array, not an eagerly-decoded numpy stack, so a
+    # long timelapse doesn't freeze the UI thread on click.
+    import dask.array as da
+
+    _write(tmp_path / "nucleus_labels.tif")
+    viewer = _StubViewer()
+    load_stage(viewer, tmp_path, STAGE_NUCLEUS)
+    data = viewer.layers[f"{tmp_path.name}:nucleus_labels"].data
+    assert isinstance(data, da.Array)

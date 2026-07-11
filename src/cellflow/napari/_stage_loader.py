@@ -2,10 +2,17 @@
 
 The catalog status rail's dots are clickable: clicking a stage's dot loads that
 stage's canonical output(s) for the position into the viewer. This is *per-stage*
-loading (four stages), coarser than the Pipeline Files panel's per-file loading —
-it reuses the same ``tifffile.imread`` → ``add_labels`` / ``add_image`` logic. The
-image-stage targets prefer a committed ``*_labels.tif`` over its working file so a
-finalized position loads its stable output.
+loading (four stages), coarser than the Pipeline Files panel's per-file loading.
+The image-stage targets prefer a committed ``*_labels.tif`` over its working file
+so a finalized position loads its stable output.
+
+Reads are *lazy*: each target is handed to napari as a dask array backed by
+``tifffile``'s zarr store, so clicking a dot builds a per-slice handle instead of
+decoding the whole (often multi-frame) stack on the UI thread. Napari then reads
+only the visible slice as you scrub. This is what keeps the click responsive; a
+full ``imread`` of a long timelapse (× four maps for the cellpose dot) is exactly
+the freeze it avoids. An eager read is the fallback if a file can't be opened as
+a zarr store.
 
 Qt-free: the viewer is used purely by its duck-typed ``layers`` / ``add_labels`` /
 ``add_image`` surface, so this is testable with a stub viewer.
@@ -67,6 +74,37 @@ def _layer_name(pos_dir: Path, path: Path) -> str:
     return f"{Path(pos_dir).name}:{path.stem}"
 
 
+def _read_lazy(path: Path):
+    """A lazy, per-slice-backed array for *path*.
+
+    Uses ``tifffile``'s zarr store wrapped in a dask array so adding a layer
+    doesn't decode the whole stack up front — napari materializes only the
+    slices it displays. Falls back to an eager ``imread`` if the file can't be
+    opened as a zarr store (e.g. an exotic layout aszarr won't handle).
+    """
+    import tifffile
+
+    try:
+        import dask.array as da
+
+        return da.from_zarr(tifffile.imread(str(path), aszarr=True))
+    except Exception:
+        return tifffile.imread(str(path))
+
+
+def _select(viewer, name: str) -> None:
+    """Make *name* the active/visible layer so a dot click has visible effect.
+
+    Guarded: a duck-typed stub viewer without a selection surface is a no-op.
+    """
+    try:
+        layer = viewer.layers[name]
+        layer.visible = True
+        viewer.layers.selection.active = layer
+    except Exception:
+        pass
+
+
 def load_stage(viewer, pos_dir: Path | str | None, stage: str) -> list[str]:
     """Load *stage*'s existing outputs for *pos_dir* into *viewer*.
 
@@ -76,24 +114,25 @@ def load_stage(viewer, pos_dir: Path | str | None, stage: str) -> list[str]:
     """
     if viewer is None or pos_dir is None:
         return []
-    import tifffile
 
     loaded: list[str] = []
     for target in stage_load_targets(pos_dir, stage):
         if not target.path.is_file():
             continue
-        data = tifffile.imread(str(target.path))
         name = _layer_name(Path(pos_dir), target.path)
         if name in viewer.layers:
             try:
-                viewer.layers[name].data = data
+                viewer.layers[name].data = _read_lazy(target.path)
+                _select(viewer, name)
                 loaded.append(name)
                 continue
             except Exception:
                 viewer.layers.remove(viewer.layers[name])
+        data = _read_lazy(target.path)
         if target.as_labels:
             viewer.add_labels(data, name=name)
         else:
             viewer.add_image(data, name=name, colormap=target.colormap)
+        _select(viewer, name)
         loaded.append(name)
     return loaded
