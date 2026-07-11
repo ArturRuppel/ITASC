@@ -21,6 +21,8 @@ from cellflow.contact_analysis.dynamics import (
     read_instantaneous_table,
     read_track_dynamics,
 )
+from cellflow.contact_analysis.dynamics.kinematics import instantaneous_table
+from cellflow.contact_analysis.dynamics.trajectories import extract_trajectories
 from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
 
 
@@ -69,3 +71,11 @@ class CellDynamicsQuantifier(Quantifier):
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
         return read_instantaneous_table(output_path)
+
+    def compute_object_table(
+        self, inputs: PositionInputs, *, params: dict | None = None
+    ) -> Mapping[str, np.ndarray]:
+        trajectories = extract_trajectories(
+            inputs.cell_labels_path, pixel_size_um=inputs.pixel_size_um
+        )
+        return instantaneous_table(trajectories, time_interval_s=inputs.time_interval_s)

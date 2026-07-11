@@ -136,6 +136,27 @@ def test_build_adds_per_track_msd_and_corr_length(tmp_path):
     assert np.isnan(dyn.corr_length_um) or dyn.corr_length_um >= 0.0
 
 
+def test_cell_dynamics_compute_matches_build(tmp_path):
+    centers = [(40, 10 + 2 * i) for i in range(16)]
+    labels = tmp_path / "cells.tif"
+    tifffile.imwrite(labels, _moving_disk_stack(centers))
+    q = CellDynamicsQuantifier()
+    inputs = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=labels, pixel_size_um=0.5, time_interval_s=2.0
+    )
+    out = q.default_output(inputs)
+    q.build(inputs, out)
+    expected = q.object_table(out)
+
+    got = q.compute_object_table(inputs)
+
+    assert set(got) == set(expected)
+    for key in expected:
+        np.testing.assert_allclose(
+            np.asarray(got[key], float), np.asarray(expected[key], float), equal_nan=True
+        )
+
+
 def test_read_track_dynamics_backward_compatible_without_corr_length(tmp_path):
     # An .h5 built before this change lacks the corr_length_um attr -> loads as NaN.
     import h5py
