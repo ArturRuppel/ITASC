@@ -2,9 +2,12 @@
 
 These cover the orchestration ``pipeline`` adds on top of the (separately tested)
 stages: that ``build_quantities`` runs one ``.build()`` per buildable
-(quantifier, position), threads shared params only into opt-in quantifiers, and
-reports progress; and that ``aggregate`` / ``run`` pool the per-position products
-into flat, label-agnostic tidy CSVs.
+(producer quantifier, position) — only producers (``bool(q.produces)``, in
+practice ``contacts``) ever persist a per-position artifact, since Task 9 —
+threads shared params only into opt-in quantifiers, and reports progress; and
+that ``aggregate`` / ``run`` pool every quantity (producers off disk, cheap
+quantities computed in memory via ``compute_object_table``) into flat,
+label-agnostic tidy CSVs.
 """
 from __future__ import annotations
 
@@ -27,10 +30,18 @@ class _RecordingQuantifier(Quantifier):
 
     No ``quantity_id`` ⇒ it never auto-registers, so it cannot pollute
     ``available_quantifiers``; tests pass it explicitly via ``quantifiers=``.
+
+    Since Task 9, ``build_quantities`` only ever builds **producers**
+    (``bool(q.produces)``) — a normal run persists just ``contacts``. This
+    double stands in for that: it sets a (dummy, unconsumed) ``produces`` so it
+    still exercises the build loop's generic mechanics (skip-on-missing-input,
+    param threading, progress reporting). ``_ConsumerQuantifier`` below
+    overrides ``produces`` back to empty to model a non-producer instead.
     """
 
     display_name = "Recording (test)"
     requires = ("cell_labels_path",)
+    produces = "recording_output_path"
     default_output_name = "recording.txt"
     wants_build_params = False
 
@@ -69,10 +80,13 @@ class _ProducerQuantifier(_RecordingQuantifier):
 
 
 class _ConsumerQuantifier(_RecordingQuantifier):
-    """Builds only from the producer's artifact (mirrors a contacts-derived)."""
+    """A non-producer, derived quantifier (mirrors cell_shape / neighbor_count):
+    ``requires`` names the producer's output, but ``produces`` is empty, so
+    ``build_quantities`` never persists it — it is only ever pooled in memory."""
 
     display_name = "Consumer (test)"
     requires = ("contact_analysis_path",)
+    produces = ""
     default_output_name = "derived.txt"
 
 
@@ -108,44 +122,26 @@ def test_build_quantities_runs_one_build_per_buildable_position(tmp_path):
     assert all(out.is_file() for out, _ in q.calls)
 
 
-def test_build_quantities_builds_derived_after_producer_on_cold_run(tmp_path):
-    """On a cold run a derived quantifier's input does not exist until its
-    producer builds. The scheduler must run the producer first, then re-derive
-    inputs so the consumer becomes buildable — even when listed producer-last."""
+def test_build_quantities_only_builds_producers(tmp_path):
+    """Task 9: ``build_quantities`` persists only producers (``bool(q.produces)``).
+    A non-producer/derived quantifier (mirrors cell_shape, neighbor_count, …) is
+    never built — even when its required input is already sitting on disk — since
+    it is instead pooled in memory (``compute_object_table``) by ``aggregate``."""
     from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
 
     producer = _ProducerQuantifier()
     consumer = _ConsumerQuantifier()
     rec = _record(tmp_path, "a")
-    # Cold: the producer's artifact (the consumer's only input) is not built yet.
-    rec["contact_analysis_path"] = (
-        Path(rec["position_path"]) / OUTPUT_SUBDIR / "contact_analysis.h5"
-    )
+    contact_path = Path(rec["position_path"]) / OUTPUT_SUBDIR / "contact_analysis.h5"
+    contact_path.parent.mkdir(parents=True)
+    contact_path.write_text("already built")  # the consumer's input pre-exists
+    rec["contact_analysis_path"] = contact_path
 
-    # Consumer first to prove ordering is by dependency, not list position.
+    # Consumer listed first: order must not matter, it is filtered out entirely.
     pipeline.build_quantities([rec], quantifiers=[consumer, producer])
 
-    assert len(producer.calls) == 1
-    assert len(consumer.calls) == 1  # 0 with the old plan-all-up-front loop
-
-
-def test_build_quantities_reports_total_including_derived(tmp_path):
-    """Progress total counts the derived job that only becomes buildable mid-run."""
-    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
-
-    producer = _ProducerQuantifier()
-    consumer = _ConsumerQuantifier()
-    rec = _record(tmp_path, "a")
-    rec["contact_analysis_path"] = (
-        Path(rec["position_path"]) / OUTPUT_SUBDIR / "contact_analysis.h5"
-    )
-    seen: list[tuple[int, int, str]] = []
-
-    pipeline.build_quantities(
-        [rec], quantifiers=[consumer, producer], progress_cb=lambda *a: seen.append(a)
-    )
-
-    assert [(d, t) for d, t, _ in seen] == [(1, 2), (2, 2)]
+    assert len(producer.calls) == 1  # the producer still builds (overwritten)
+    assert consumer.calls == []  # never scheduled: not a producer
 
 
 def test_build_quantities_threads_params_only_into_opt_in_quantifiers(tmp_path):
@@ -200,7 +196,12 @@ def test_build_quantities_reports_progress(tmp_path):
 
 
 def test_build_quantities_defaults_to_registered_quantifiers(tmp_path):
-    # cell_shape is registered and builds from cell labels; a real tif drives it.
+    """Task 9: defaulting to the whole registry still only persists the
+    registered *producer* (contacts) — a registered cheap quantity like
+    cell_shape is never written per-position; it only exists pooled (in
+    memory) once ``aggregate`` computes it via ``compute_object_table``."""
+    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
+
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
     frame[:, 4:] = 2
@@ -211,10 +212,12 @@ def test_build_quantities_defaults_to_registered_quantifiers(tmp_path):
     # cell_density is gated out rather than raising — "build all" stays usable.
     pipeline.build_quantities([rec], params={"pixel_size_um": 0.25})
 
-    out = CellShapeQuantifier().default_output(
-        PositionInputs(position_dir=Path(rec["position_path"]))
+    position_dir = Path(rec["position_path"])
+    assert (position_dir / OUTPUT_SUBDIR / "contact_analysis.h5").is_file()
+    shape_out = CellShapeQuantifier().default_output(
+        PositionInputs(position_dir=position_dir)
     )
-    assert out.is_file()  # the registered cell_shape quantifier ran
+    assert not shape_out.is_file()  # cell_shape is a non-producer: pooled only
 
 
 # ------------------------------------------------------------ build_catalog
@@ -354,6 +357,45 @@ def test_run_defaults_out_dir_to_catalogue_root(tmp_path):
     written = pipeline.run(config)
     # No out_dir → catalogue root (the single position's parent = study/).
     assert written["cell_shape"] == study / "cell_shape.csv"
+
+
+def test_run_persists_only_contacts_per_position(tmp_path):
+    """After Task 9, ``run()`` writes only ``contact_analysis.h5`` per position:
+    the cheap quantities (e.g. cell_shape) are no longer built to disk per
+    position — they exist only in the pooled table, computed in memory by
+    ``aggregate`` via ``compute_object_table``."""
+    frame = np.zeros((6, 8), dtype=np.uint16)
+    frame[:, :4] = 1
+    frame[:, 4:] = 2
+    study = tmp_path / "study"
+    for pid in ("a", "b"):
+        pdir = study / pid
+        pdir.mkdir(parents=True)
+        tifffile.imwrite(pdir / "cells.tif", np.stack([frame, frame]))
+
+    # Discover like the studio does, so ``contact_analysis_path`` is properly
+    # stamped to the default location (not the buggy fallback a hand-built
+    # record without "path"/"contact_analysis_path" would normalize to).
+    records = pipeline.build_catalog(study, cell_name="cells.tif")
+    for i, rec in enumerate(records):
+        rec["condition"] = "ctrl"
+        rec["date"] = "d1"
+        rec["experiment_id"] = f"EXP-{i}"
+
+    cfg = pipeline.author_config(
+        tmp_path / "proj",
+        records,
+        quantities=("contacts", "cell_shape"),
+        params={"pixel_size_um": 0.5, "time_interval_s": 1.0},
+    )
+    tables = pipeline.run(cfg)
+
+    for rec in records:
+        pos = Path(rec["position_path"])
+        assert (pos / "aggregate_quantification" / "contact_analysis.h5").exists()
+        assert not (pos / "aggregate_quantification" / "cell_shape.csv").exists()
+    assert "cell_shape" in tables
+    assert "cell_shape.area_um2" in pd.read_csv(tables["cell_shape"]).columns
 
 
 def test_run_forwards_progress_cb(tmp_path, monkeypatch):

@@ -83,7 +83,7 @@ def build_quantities(
     params: Mapping[str, object] | None = None,
     progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> None:
-    """Build every applicable quantity for every position in *catalog*.
+    """Build and persist every **producer** quantity for every position in *catalog*.
 
     THE extracted build loop (previously trapped in the napari studio): one job
     per ``(quantifier, position)`` where the quantifier
@@ -92,8 +92,21 @@ def build_quantities(
     overwriting an existing artifact. Positions lacking a quantifier's inputs are
     skipped.
 
+    Only **producers** — quantifiers whose ``produces`` another quantifier's
+    ``requires`` names (in practice just ``contacts``, writing
+    ``contact_analysis.h5``) — persist a per-position artifact here. Every other
+    (cheap) quantity is never built to disk per-position: it is instead computed
+    in memory, straight from a position's raw inputs, inside
+    :func:`~cellflow.contact_analysis.shape_tables.aggregate` /
+    :func:`~cellflow.contact_analysis.shape_tables.build_table` via
+    :meth:`~cellflow.contact_analysis.quantifier.Quantifier.compute_object_table`.
+    A normal run therefore writes only ``contact_analysis.h5`` per position; the
+    pooled tables are the only place the cheap quantities live.
+
     *quantifiers* defaults to one instance of every registered quantifier
-    (:func:`~cellflow.contact_analysis.quantifier.available_quantifiers`).
+    (:func:`~cellflow.contact_analysis.quantifier.available_quantifiers`); it is
+    filtered down to producers before planning, so passing non-producers here is
+    harmless (they are simply skipped).
     *params* (the shared build knobs — z-score shuffles, density FOV, pixel size,
     frame interval) is threaded only into quantifiers that opt in via
     ``wants_build_params``; the rest keep their own ``params`` schema clean. A
@@ -101,15 +114,8 @@ def build_quantities(
     whole (mirrors the studio greying the metric out), so "build everything" stays
     usable when an optional knob like the density FOV is unset.
     *progress_cb* is called ``(done, total, position_name)`` before each build.
-
-    Quantifiers run in **dependency order** (:func:`_dependency_order`): a producer
-    like contacts builds before the derived quantities whose ``requires`` names its
-    ``produces``. Planning tracks, per position, which ``PositionInputs`` fields a
-    producer *will* make available, so a derived quantity is scheduled (not silently
-    skipped) even though its input is unbuilt at the start of the run; ``total`` is
-    therefore known up front. At build time each position's inputs are re-derived so
-    a dependent sees the artifact its producer just wrote. Exceptions propagate — a
-    failed build aborts the run rather than being silently swallowed.
+    Exceptions propagate — a failed build aborts the run rather than being
+    silently swallowed.
     """
     quants = (
         list(quantifiers)
@@ -117,28 +123,18 @@ def build_quantities(
         else [cls() for cls in available_quantifiers()]
     )
     quants = _dependency_order(quants)
+    quants = [q for q in quants if q.produces]  # only producers persist (contacts)
     records = list(catalog)
-    # Per position, the PositionInputs fields available so far. A producer planned
-    # below grows this set for the dependents planned after it.
-    available = [available_fields(position_inputs_from_record(r)) for r in records]
-
     jobs: list[tuple[Quantifier, dict, dict | None]] = []
     for quantifier in quants:
-        # Only quantifiers that opt in get the shared bar's knobs; the rest keep
-        # their own ``params`` schema clean (mirrors the studio's build planning).
         q_params = dict(params) if (params and quantifier.wants_build_params) else None
-        for record, fields in zip(records, available):
-            if not set(quantifier.requires) <= fields:
+        for record in records:
+            inputs = position_inputs_from_record(record)
+            if not set(quantifier.requires) <= available_fields(inputs):
                 continue
-            # A required build param (e.g. pixel size) may be supplied per-record
-            # rather than in the shared bar, so gate per-position: skip only this
-            # record when neither its own value nor the shared params satisfies it.
             if quantifier.missing_build_params(record_build_params(quantifier, record, params)):
                 continue
             jobs.append((quantifier, record, q_params))
-            produced = _produced_field_for(quantifier, record)
-            if produced is not None:
-                fields.add(produced)
 
     total = len(jobs)
     for index, (quantifier, record, q_params) in enumerate(jobs, start=1):
@@ -179,20 +175,6 @@ def _dependency_order(quants: Sequence[Quantifier]) -> list[Quantifier]:
     return order
 
 
-def _produced_field_for(quantifier: Quantifier, record: dict) -> str | None:
-    """The ``PositionInputs`` field *quantifier*'s build makes available to
-    dependents for *record*, or ``None`` when its output will not be surfaced as an
-    input. Mirrors :func:`position_inputs_from_record`: a produced field is only
-    visible when the record points its same-named input path at the built artifact
-    (so planning predicts exactly what re-derivation will resolve at build time)."""
-    if not quantifier.produces:
-        return None
-    read_path = record.get(quantifier.produces)
-    if read_path and Path(read_path) == output_for_record(quantifier, record):
-        return quantifier.produces
-    return None
-
-
 def select_quantifiers(quantities: Sequence[str]) -> list[Quantifier]:
     """Instantiate the quantifiers a run should build for the selected *quantities*.
 
@@ -231,7 +213,10 @@ def select_quantifiers(quantities: Sequence[str]) -> list[Quantifier]:
 
 
 def aggregate(
-    catalog: Sequence[dict], out_dir: Path | str | None = None
+    catalog: Sequence[dict],
+    out_dir: Path | str | None = None,
+    *,
+    params: Mapping[str, object] | None = None,
 ) -> dict[str, Path]:
     """Pool every built product across *catalog* into the index-keyed tables.
 
@@ -239,9 +224,12 @@ def aggregate(
     :func:`cellflow.contact_analysis.shape_tables.aggregate`: returns the
     table name → written CSV path map. The tables are written **flat** under
     *out_dir* (``<out_dir>/<name>.csv``); *out_dir* defaults to the catalogue root
-    (the common ancestor of the positions).
+    (the common ancestor of the positions). *params* carries the shared build
+    knobs (pixel size, frame interval, FOV area, …) so a param-gated cheap
+    quantity (e.g. cell shape needing ``pixel_size_um``) pools with the same
+    knobs a normal build would have used.
     """
-    return shape_tables.aggregate(catalog, out_dir)
+    return shape_tables.aggregate(catalog, out_dir, params=params)
 
 
 def author_config(
@@ -280,11 +268,13 @@ def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
     """Run the whole pipeline from a TOML run-config: the "author once, then run".
 
     Loads the :class:`~cellflow.contact_analysis.config.RunConfig`, then
-    threads its choices through the stages: load the catalog CSV, build the selected
-    *quantities* (dependency producers pulled in automatically), and aggregate the
-    per-position products into the flat measurement tables under the config's
-    ``out_dir`` (default: the catalogue root). Returns the table name → written CSV
-    path map. The optional *progress_cb* is forwarded to the build stage.
+    threads its choices through the stages: load the catalog CSV, build the
+    selected *quantities* — of which only producers (``contacts``) actually
+    persist a per-position artifact, see :func:`build_quantities` — and aggregate
+    into the flat measurement tables under the config's ``out_dir`` (default: the
+    catalogue root), where the cheap quantities are computed in memory. Returns
+    the table name → written CSV path map. The optional *progress_cb* is
+    forwarded to the build stage.
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -302,4 +292,4 @@ def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
         params=cfg.params or None,
         progress_cb=progress_cb,
     )
-    return aggregate(catalog, cfg.out_dir)
+    return aggregate(catalog, cfg.out_dir, params=cfg.params or None)
