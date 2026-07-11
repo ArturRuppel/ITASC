@@ -103,9 +103,18 @@ def test_catalog_record_stamps_default_paths(widget, tmp_path):
     )
     assert Path(rec["position_path"]) == pos
     assert rec["contact_analysis_path"] == pos / CONTACT_ANALYSIS_RELPATH
-    assert rec["cell_tracked_labels_path"] == pos / "3_cell" / "tracked_labels.tif"
-    assert rec["nucleus_tracked_labels_path"] == pos / "2_nucleus" / "tracked_labels.tif"
+    assert rec["cell_tracked_labels_path"] == pos / "cell_labels.tif"
+    assert rec["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
     assert rec["columns"]["condition"] == "WT"
+
+
+def test_catalog_record_stamps_committed_label_paths(widget, tmp_path):
+    pos = tmp_path / "pos00"
+    rec = widget._catalog_record_for_position(pos, {"condition": "ctrl", "position_id": "pos00"})
+
+    assert rec["cell_tracked_labels_path"] == pos / "cell_labels.tif"
+    assert rec["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
+    assert rec["contact_analysis_path"] == pos / "4_contact_analysis" / "contact_analysis.h5"
 
 
 def _seed_two_rows(widget, tmp_path):

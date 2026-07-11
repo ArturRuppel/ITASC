@@ -58,10 +58,12 @@ from cellflow.napari.ui_style import (
 #: itself; deeper levels get generic ``level_k`` placeholders.
 _SEED_LEVEL_NAMES = ("condition", "experiment_id", "position_id")
 
-#: Staged-layout paths relative to a position folder, stamped onto catalog rows so
+#: Committed-output paths relative to a position folder (see
+#: ``cellflow.napari._paths.NucleusArtifactPaths.cell_labels`` / ``.nucleus_labels``
+#: — the files the finalize/"commit" button writes), stamped onto catalog rows so
 #: a project CSV saved from the full app carries everything the aggregate needs.
-_CELL_LABELS_RELPATH = "3_cell/tracked_labels.tif"
-_NUCLEUS_LABELS_RELPATH = "2_nucleus/tracked_labels.tif"
+_CELL_LABELS_RELPATH = "cell_labels.tif"
+_NUCLEUS_LABELS_RELPATH = "nucleus_labels.tif"
 
 
 def _seed_level_names(depth: int) -> list[str]:
@@ -589,12 +591,16 @@ class CellFlowMainWidget(QWidget):
         self._save_config(str(self._pos_dir / "cellflow_config.json"), quiet=True)
 
     def _catalog_record_for_position(self, position_path: Path, columns: dict) -> dict:
-        """A catalog record for one data folder, stamped with default stage paths.
+        """A catalog record for one data folder, stamped with committed output paths.
 
         Panel rows carry only ``position_path`` + classification ``columns``; the
         aggregate catalog also needs the contact-analysis ``.h5`` and the two label
-        images. Those sit at fixed staged-layout locations, so fill their defaults
-        here (whether or not the folder has been processed yet).
+        images. Those are the *committed* outputs — ``cell_labels.tif`` /
+        ``nucleus_labels.tif`` (what the finalize/"commit" button writes; see
+        ``NucleusArtifactPaths.cell_labels`` / ``.nucleus_labels``) and the
+        canonical ``4_contact_analysis/contact_analysis.h5`` — not the pre-commit
+        working paths under ``2_nucleus`` / ``3_cell``. Fill their defaults here
+        (whether or not the folder has been processed yet).
         """
         pos = Path(position_path)
         return {
