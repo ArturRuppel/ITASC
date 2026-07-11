@@ -18,6 +18,7 @@ import numpy as np
 from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
 from cellflow.contact_analysis.shape import (
     build_relational,
+    compute_relational_table,
     read_relational_table,
 )
 
@@ -60,3 +61,10 @@ class ShapeRelationalQuantifier(Quantifier):
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
         return read_relational_table(output_path)
+
+    def compute_object_table(self, inputs, *, params=None):
+        return compute_relational_table(
+            inputs.cell_labels_path,
+            inputs.nucleus_labels_path,
+            pixel_size_um=inputs.pixel_size_um,
+        )

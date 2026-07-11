@@ -105,6 +105,24 @@ def build_relational(
     return output_path
 
 
+def compute_relational_table(
+    cell_labels_path: str | Path,
+    nucleus_labels_path: str | Path,
+    *,
+    pixel_size_um: float,
+) -> dict[str, np.ndarray]:
+    """The relational per-(frame, id) table, computed in memory (no file written)."""
+    pixel_size_um = float(pixel_size_um)
+    if not pixel_size_um > 0:
+        raise ValueError(f"pixel_size_um must be positive, got {pixel_size_um!r}")
+    cell_stack = read_label_stack(Path(cell_labels_path))
+    nucleus_stack = read_label_stack(Path(nucleus_labels_path))
+    cell_props = _object_props(cell_stack, pixel_size_um)
+    nucleus_props = _object_props(nucleus_stack, pixel_size_um)
+    rows, _dropped = _join_rows(cell_props, nucleus_props)
+    return _columns_from_rows(rows)
+
+
 def read_relational_table(path: str | Path) -> dict[str, np.ndarray]:
     """Return the relational CSV as a column-major dict of 1-D arrays."""
     return read_table_csv(path)

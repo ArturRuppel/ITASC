@@ -115,3 +115,28 @@ def test_build_relational_scales_offset_with_pixel_size(tmp_path):
     assert np.allclose(scaled["centroid_offset_um"], unit["centroid_offset_um"] * 0.5)
     assert np.allclose(scaled["nc_area_ratio"], unit["nc_area_ratio"])
     assert np.allclose(scaled["centroid_offset_norm"], unit["centroid_offset_norm"])
+
+
+def test_relational_compute_matches_build(tmp_path):
+    import numpy as np, tifffile
+    from cellflow.contact_analysis.quantifier import PositionInputs
+    from cellflow.contact_analysis.quantifiers.shape_relational import ShapeRelationalQuantifier
+
+    cell = np.zeros((12, 12), dtype=np.uint16); cell[1:6, 1:6] = 1
+    nuc = np.zeros((12, 12), dtype=np.uint16); nuc[2:5, 2:5] = 1
+    cp = tmp_path / "cells.tif"; np_path = tmp_path / "nuclei.tif"
+    tifffile.imwrite(cp, cell[np.newaxis, ...]); tifffile.imwrite(np_path, nuc[np.newaxis, ...])
+
+    q = ShapeRelationalQuantifier()
+    inputs = PositionInputs(
+        position_dir=tmp_path, cell_labels_path=cp, nucleus_labels_path=np_path, pixel_size_um=0.5
+    )
+    out = q.default_output(inputs)
+    q.build(inputs, out)
+    expected = q.object_table(out)
+
+    got = q.compute_object_table(inputs)
+
+    assert set(got) == set(expected)
+    for key in expected:
+        np.testing.assert_allclose(np.asarray(got[key], float), np.asarray(expected[key], float))

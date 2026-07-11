@@ -15,7 +15,12 @@ from .core import (
     provenance_path,
     read_shape_table,
 )
-from .relational import RELATIONAL_COLUMNS, build_relational, read_relational_table
+from .relational import (
+    RELATIONAL_COLUMNS,
+    build_relational,
+    compute_relational_table,
+    read_relational_table,
+)
 
 __all__ = [
     "DESCRIPTOR_COLUMNS",
@@ -23,6 +28,7 @@ __all__ = [
     "build_object_shape",
     "build_relational",
     "compute_object_shape",
+    "compute_relational_table",
     "provenance_path",
     "read_relational_table",
     "read_shape_table",
