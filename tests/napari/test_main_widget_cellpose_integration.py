@@ -118,34 +118,6 @@ def test_main_widget_constructs_new_cellpose_widget():
     w.deleteLater()
 
 
-def test_folder_change_during_correction_prompts_and_can_be_declined(monkeypatch, tmp_path):
-    """The folder picker stays enabled during correction; selecting a folder is
-    guarded by a confirm-and-exit prompt and is a no-op when declined."""
-    app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
-
-    # The picker is always usable (context-changing controls stay enabled).
-    assert w.project_btn.isEnabled()
-    assert w._pos_dir is None
-
-    # A viewer owner becomes active.
-    w.gate.claim_viewer("correction:nucleus")
-    assert w.project_btn.isEnabled()
-    assert not w.gate.can_change_context()
-
-    # Decline the prompt → the folder is unchanged and the owner is untouched.
-    monkeypatch.setattr(
-        main_mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path)
-    )
-    w.gate.confirm_handler = lambda parent, label: False
-    w._on_set_position_folder()
-    assert w._pos_dir is None
-    assert w.gate.owner == "correction:nucleus"
-
-    w.deleteLater()
-
-
 def test_load_config_is_refused_while_owner_active_and_declined(monkeypatch, tmp_path):
     """Load Config stays clickable during a mode, but a declined prompt must
     not mutate state underneath the active viewer owner."""
@@ -209,10 +181,16 @@ def test_config_save_failure_surfaces_via_notification(monkeypatch, tmp_path):
     w.deleteLater()
 
 
-def test_folder_change_during_correction_exits_owner_when_confirmed(monkeypatch, tmp_path):
+def test_context_change_during_correction_exits_owner_when_confirmed(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     w = main_mod.CellFlowMainWidget(_fake_viewer())
+
+    cfg = tmp_path / "cellflow_config.json"
+    cfg.write_text('{"metadata": {"pixel_size_um": "0.5"}}')
+    w._pos_dir = tmp_path
+    # Calibration now lives in the positions panel's Setup section.
+    w._positions_panel.set_calibration_values({"pixel_size_um": "0.123"})
 
     # Stub owner with a lightweight exit (the real correction teardown needs a
     # live viewer); the point under test is the main-widget confirm wiring.
@@ -226,14 +204,12 @@ def test_folder_change_during_correction_exits_owner_when_confirmed(monkeypatch,
     w.gate.claim_viewer("stub_owner")
     assert not w.gate.can_change_context()
 
-    # Confirm the prompt → the owner is exited and the new folder commits.
-    monkeypatch.setattr(
-        main_mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(tmp_path)
-    )
+    # Confirm the prompt → the owner is exited and the gated config load commits.
+    monkeypatch.setattr(main_mod.QFileDialog, "getOpenFileName", lambda *a, **k: (str(cfg), ""))
     w.gate.confirm_handler = lambda parent, label: True
-    w._on_set_position_folder()
+    w._on_load_config_from()
     assert exited == [True]
-    assert w._pos_dir == tmp_path
+    assert w._positions_panel.calibration_values()["pixel_size_um"] == "0.5"
     assert w.gate.can_change_context()
 
     w.deleteLater()

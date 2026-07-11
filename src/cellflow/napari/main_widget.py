@@ -272,7 +272,6 @@ class CellFlowMainWidget(QWidget):
         self._setup_theme_selector(main_layout)
 
         # Connect signals
-        self.project_btn.clicked.connect(lambda: self._on_set_position_folder())
         self.save_as_btn.clicked.connect(lambda: self._on_save_config_as())
         self.load_from_btn.clicked.connect(lambda: self._on_load_config_from())
         self.save_project_btn.clicked.connect(lambda: self._on_save_project())
@@ -331,7 +330,6 @@ class CellFlowMainWidget(QWidget):
         needs no gating.
         """
         for control in (
-            self.project_btn,
             self.load_project_btn,
             self.load_from_btn,
         ):
@@ -413,10 +411,10 @@ class CellFlowMainWidget(QWidget):
         """The top toolbar: a title + compact Project / Params action buttons.
 
         Calibration (pixel size / frame length) has moved into the positions
-        panel's Setup section; the single manual "Position Folder…" pick remains
-        here as a fallback to the panel's Discover-and-select flow, alongside the
-        project catalog save/load, the standalone params-file save/load, and a
-        global refresh.
+        panel's Setup section. Data folders are added via the panel's
+        Discover-and-select flow, so the toolbar carries just the project
+        catalog load/save, the standalone params-file load/save, and a global
+        refresh.
         """
         bar = QWidget()
         row = QHBoxLayout(bar)
@@ -428,17 +426,15 @@ class CellFlowMainWidget(QWidget):
         row.addWidget(title)
 
         row.addWidget(self._toolbar_group_label("Project"))
-        # ``new`` = open a single position folder (fallback front door). The
-        # load/save pair here act on the PROJECT catalog CSV (the Data folders
+        # The load/save pair act on the PROJECT catalog CSV (the Data folders
         # list + classification columns), not the per-folder config.
-        self.project_btn = self._toolbar_icon_btn("new", "Select a position folder…")
         self.load_project_btn = self._toolbar_icon_btn(
             "load", "Load a project catalog (CSV) into the Data folders list"
         )
         self.save_project_btn = self._toolbar_icon_btn(
             "save", "Save the Data folders list to a project catalog (CSV)"
         )
-        for btn in (self.project_btn, self.load_project_btn, self.save_project_btn):
+        for btn in (self.load_project_btn, self.save_project_btn):
             row.addWidget(btn)
 
         row.addWidget(self._toolbar_group_label("Params"))
@@ -486,33 +482,6 @@ class CellFlowMainWidget(QWidget):
         label = QLabel(text)
         muted_label(label)
         return label
-
-    def _on_set_position_folder(self) -> None:
-        """Pick a position folder and load its config if present.
-
-        The chosen folder *is* ``pos_dir`` — the unit of work. Any folder with
-        the stage layout (``0_input/`` … ``4_contact_analysis/``) is valid;
-        the child widgets no-op on missing subdirs, so no validation is needed.
-        """
-        path = QFileDialog.getExistingDirectory(self, "Select Position Folder")
-        if not path:
-            return
-
-        def action() -> None:
-            p = Path(path)
-            self._pos_dir = p
-            self._update_disclosure()
-            self.path_label.setText(str(p))
-            self.path_label.setToolTip(str(p))
-
-            # Config travels with the data: look for it inside the folder.
-            config_path = p / "cellflow_config.json"
-            if config_path.exists():
-                self._load_config(str(config_path))
-
-            self._refresh_all()
-
-        self._change_context(action)
 
     def _on_discover_positions(self) -> None:
         """Find-data-folders button: pick a parent directory and scan it."""
