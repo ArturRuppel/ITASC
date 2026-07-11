@@ -88,6 +88,42 @@ def test_signed_contact_length_empty_without_t1(tmp_path):
     assert len(table["signed_length"]) == 0
 
 
+def test_neighbor_count_compute_matches_build(tmp_path):
+    from cellflow.contact_analysis.quantifiers.neighbor_count import (
+        NeighborCountQuantifier,
+    )
+
+    inputs = _inputs(tmp_path)
+    q = NeighborCountQuantifier()
+    out = q.default_output(inputs)
+    q.build(inputs, out)
+    expected = q.object_table(out)
+
+    got = q.compute_object_table(inputs)
+
+    assert set(got) == set(expected)
+    for key in expected:
+        np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(expected[key]))
+
+
+def test_signed_contact_length_compute_matches_build(tmp_path):
+    from cellflow.contact_analysis.quantifiers.signed_contact_length import (
+        SignedContactLengthQuantifier,
+    )
+
+    inputs = _inputs(tmp_path)
+    q = SignedContactLengthQuantifier()
+    out = q.default_output(inputs)
+    q.build(inputs, out)
+    expected = q.object_table(out)
+
+    got = q.compute_object_table(inputs)
+
+    assert set(got) == set(expected)
+    for key in expected:
+        np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(expected[key]))
+
+
 def test_missing_contacts_artifact_raises(tmp_path):
     q = _quantifier("neighbor_count")
     inputs = PositionInputs(

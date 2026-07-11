@@ -41,6 +41,16 @@ class SignedContactLengthQuantifier(Quantifier):
         params: dict | None = None,
         progress_cb: Callable[[int, int, str], None] | None = None,
     ) -> Path:
+        table = self.compute_object_table(inputs, params=params)
+        return derived.persist(output_path, table)
+
+    def read(self, output_path: Path) -> dict[str, np.ndarray]:
+        return derived.read_derived_table(output_path)
+
+    def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
+        return derived.read_derived_table(output_path)
+
+    def compute_object_table(self, inputs, *, params=None):
         analysis = derived.load_analysis(inputs)
         table = dict(
             signed_central_junction_lengths(
@@ -51,10 +61,4 @@ class SignedContactLengthQuantifier(Quantifier):
             ct = np.asarray(table["contact_type"], dtype=object)
             ct[ct == ""] = "unlabelled"
             table["contact_type"] = ct
-        return derived.persist(output_path, table)
-
-    def read(self, output_path: Path) -> dict[str, np.ndarray]:
-        return derived.read_derived_table(output_path)
-
-    def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
-        return derived.read_derived_table(output_path)
+        return table

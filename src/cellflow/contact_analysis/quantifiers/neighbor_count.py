@@ -43,3 +43,6 @@ class NeighborCountQuantifier(Quantifier):
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
         return derived.read_derived_table(output_path)
+
+    def compute_object_table(self, inputs, *, params=None):
+        return dict(cell_neighbor_counts(derived.load_analysis(inputs)))
