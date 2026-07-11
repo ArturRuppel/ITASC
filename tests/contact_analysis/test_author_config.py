@@ -54,3 +54,12 @@ def test_out_dir_unset_by_default(tmp_path):
     out = tmp_path / "study"
     config_path = author_config(out, [_record(tmp_path)], quantities=["contacts"])
     assert load_config(config_path).out_dir is None
+
+
+def test_author_config_is_on_package_surface():
+    import cellflow.contact_analysis as ca
+
+    assert hasattr(ca, "author_config")
+    assert ca.author_config is __import__(
+        "cellflow.contact_analysis.pipeline", fromlist=["author_config"]
+    ).author_config

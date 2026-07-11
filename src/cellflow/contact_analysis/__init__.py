@@ -17,6 +17,7 @@ from .catalog import load_catalog, save_catalog
 from .config import RunConfig, load_config
 from .pipeline import (
     aggregate,
+    author_config,
     build_catalog,
     build_quantities,
     run,
@@ -42,6 +43,7 @@ __all__ = [
     "build_quantities",
     "select_quantifiers",
     "aggregate",
+    "author_config",
     "run",
     "load_catalog",
     "save_catalog",
