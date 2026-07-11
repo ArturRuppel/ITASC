@@ -63,10 +63,12 @@ The CLI engine (config-driven `run()`, Iris-only export, analysis subpackage) is
 canonical. napari is refocused from an interactive studio into a thin front-end +
 curator for that engine; all plotting moves to Iris. Each item has its own spec.
 
-- [ ] **napari front-end refocus** — remove the in-napari interactive plot panels
-  (`plot_panel.py`, `plots/`, dynamics/shape plot UI); keep/refocus discover&add +
-  run as the engine driver. Iris owns all plotting.
-  → `docs/superpowers/specs/2026-06-22-aggregate-napari-frontend-refocus-design.md`
+- [x] **napari front-end refocus** — the cross-position aggregate now lives in the
+  full app as the project-level "Aggregate" capstone (`napari/aggregate_widget.py`):
+  a thin front-end that authors `catalog.csv` + `config.toml` and drives
+  `pipeline.run` over the ready positions (pool-only). The legacy interactive studio
+  (`contact_analysis_studio` + `_run_area` + `_params`) is retired. Iris owns all
+  plotting. (Shipped 2026-07-12.)
 - [ ] **NLS classification → CLI engine step** — make headless NLS classification an
   optional config-flagged pipeline step like every other step; drop the napari NLS UI.
   → `docs/superpowers/specs/2026-06-22-aggregate-nls-classification-cli-step-design.md`
