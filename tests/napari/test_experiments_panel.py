@@ -55,8 +55,8 @@ def test_overall_status_done_run_queued():
     assert overall_status({s: UNKNOWN for s in stages}) == "queued"
 
 
-# ----------------------------------------------------------------- discover/commit
-def test_discover_stages_then_commit_adds_rows():
+# ----------------------------------------------------------------- discover (additive Find)
+def test_discover_adds_rows_directly():
     seen: list[tuple[str, dict]] = []
 
     def discover_fn(root, names):
@@ -64,18 +64,59 @@ def test_discover_stages_then_commit_adds_rows():
         return [_entry("/data/WT/p1"), _entry("/data/WT/p2")]
 
     panel = _panel(discover_fn=discover_fn)
-    staged = panel.discover("/data")
-    assert len(staged) == 2
+    found = panel.discover("/data")
+    assert len(found) == 2
     assert seen[0][0] == "/data"
-    # Staging must not commit.
-    assert panel.keys() == []
-    assert panel.commit_btn.isEnabled()
-
-    panel.commit_discovered()
+    # One additive Find commits straight to the list — no staging step.
     assert panel.keys() == ["/data/WT/p1", "/data/WT/p2"]
-    assert not panel.commit_btn.isEnabled()
     # Columns derived from the entries' column dicts.
     assert panel.column_names() == ["condition", "position_id"]
+
+
+def test_discover_is_additive_and_dedupes():
+    calls = {"n": 0}
+
+    def discover_fn(root, names):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [_entry("/data/WT/p1"), _entry("/data/WT/p2")]
+        # Second scan: one overlap, one fresh.
+        return [_entry("/data/WT/p2"), _entry("/data/KO/p1")]
+
+    panel = _panel(discover_fn=discover_fn)
+    panel.discover("/data/WT")
+    panel.discover("/data/KO")
+    # Accumulated, overlap deduped by key, order preserved.
+    assert panel.keys() == ["/data/WT/p1", "/data/WT/p2", "/data/KO/p1"]
+
+
+def test_discover_dry_scan_reports_missing_inputs():
+    panel = _panel(discover_fn=lambda r, n: [])
+    panel.discover("/somewhere")
+    assert "No new data folders" in panel._hint.text()
+    assert "Setup" in panel._hint.text()
+
+
+def test_discover_nudges_when_pick_is_too_deep(tmp_path):
+    # A too-deep pick: root is the position's own subfolder, so the found
+    # position resolves to root's parent (above root).
+    pos = tmp_path / "pos11"
+    (pos / "0_input").mkdir(parents=True)
+    root = str(pos / "0_input")
+    panel = _panel(discover_fn=lambda r, n: [_entry(str(pos))])
+    panel.discover(root)
+    assert "above the folder you picked" in panel._hint.text()
+    assert "parent directory" in panel._hint.text()
+
+
+def test_discover_no_nudge_for_normal_parent_pick(tmp_path):
+    # Positions under the picked root: no nudge.
+    root = tmp_path / "study"
+    (root / "p1").mkdir(parents=True)
+    panel = _panel(discover_fn=lambda r, n: [_entry(str(root / "p1"))])
+    panel.discover(str(root))
+    assert "above the folder" not in panel._hint.text()
+    assert "Added 1 data folder." in panel._hint.text()
 
 
 def test_discover_passes_input_names():
@@ -144,18 +185,6 @@ def test_delete_selected_removes_committed_rows():
     assert panel.keys() == ["a", "c"]
 
 
-def test_delete_removes_staged_previews_first():
-    panel = _panel(discover_fn=lambda r, n: [_entry("s1"), _entry("s2")])
-    panel.set_records([_entry("a")])
-    panel.discover("/data")
-    # Select a committed row AND a preview; preview deletion wins.
-    panel.set_active("a")
-    panel._on_preview_clicked("s1", 0)
-    panel.delete_selected()
-    assert [e["key"] for e in panel.discovered()] == ["s2"]
-    assert panel.keys() == ["a"]  # committed row untouched
-
-
 # ----------------------------------------------------------------- columns
 def test_rename_column_carries_values_table_wide():
     panel = _panel()
@@ -168,18 +197,40 @@ def test_rename_column_carries_values_table_wide():
     assert payload_cols["genotype"] == "WT" and "condition" not in payload_cols
 
 
-# ----------------------------------------------------------------- run
-def test_manual_columns_baked_at_commit():
-    panel = _panel(
-        discover_fn=lambda r, n: [_entry("/d/p1")],
-        show_manual_columns=True,
-    )
-    panel.add_manual_column("operator", "AR")
-    panel.discover("/d")
-    panel.commit_discovered()
-    cols = panel._records["/d/p1"]["columns"]
-    assert cols.get("operator") == "AR"
+# ----------------------------------------------------------------- tagging (fill-down)
+def test_set_column_on_selected_writes_new_column():
+    panel = _panel()
+    panel.set_records([_entry("a"), _entry("b"), _entry("c")])
+    panel.set_active("a", selection={"a", "c"})
+    panel.set_column_on_selected("operator", "AR")
     assert "operator" in panel.column_names()
+    assert panel._records["a"]["columns"]["operator"] == "AR"
+    assert panel._records["c"]["columns"]["operator"] == "AR"
+    # Unselected row is untouched.
+    assert "operator" not in panel._records["b"]["columns"]
+
+
+def test_set_column_on_selected_noop_without_selection():
+    panel = _panel()
+    panel.set_records([_entry("a")])
+    panel.clear_selection()
+    panel.set_column_on_selected("operator", "AR")
+    assert "operator" not in panel.column_names()
+
+
+def test_tag_apply_button_gated_on_selection():
+    panel = _panel()
+    panel.set_records([_entry("a")])
+    assert not panel.tag_apply_btn.isEnabled()
+    panel.set_active("a")
+    assert panel.tag_apply_btn.isEnabled()
+
+
+def test_empty_state_shows_call_to_action():
+    panel = _panel()
+    assert "add folders" in panel._hint.text().lower()
+    panel.set_records([_entry("a")])
+    assert panel._hint.text() == ""
 
 
 def test_run_requested_emits_selection_and_workers():
@@ -211,11 +262,10 @@ def test_rail_and_chip_reflect_status_fn():
     assert all(dot.state == DONE for dot in row.rail.dots)
 
 
-def test_setup_collapses_after_first_commit():
+def test_setup_collapses_after_first_find():
     panel = _panel(discover_fn=lambda r, n: [_entry("a")])
     assert panel.setup_section.is_expanded
     panel.discover("/data")
-    panel.commit_discovered()
     assert not panel.setup_section.is_expanded
 
 
@@ -225,3 +275,11 @@ def test_calibration_round_trips():
     vals = panel.calibration_values()
     assert vals["pixel_size_um"] == "0.1"
     assert vals["time_interval_s"] == "30"
+
+
+def test_quickstart_mentions_project_file():
+    from cellflow.napari._experiments_panel import _QUICKSTART_HTML
+
+    text = _QUICKSTART_HTML.lower()
+    assert "no project file" not in text
+    assert "project" in text and "catalog" in text

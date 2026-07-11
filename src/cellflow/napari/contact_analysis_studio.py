@@ -206,17 +206,17 @@ class ContactAnalysisStudioWidget(QWidget):
     def _build_catalogue_section(self, layout) -> None:
         """Mount the shared ExperimentsPanel + a Load/Save/Clear action row.
 
-        The panel reproduces napariTFM's ExperimentsList flow (Setup → Discover a
-        root → stage previews → Add to list → an editable-column list with a
-        per-position status rail). It owns the displayed catalog and its own
+        The panel runs the filesystem-centric flow (Setup → Find data folders → an
+        additive, de-duped list with a per-folder status rail and per-selection
+        condition tagging). It owns the displayed catalog and its own
         Delete-selected button; the studio only reads it (for scope / run / save)
         and reacts to its signals. Discovery inputs default to the committed final
         outputs (``cell_labels.tif`` / ``nucleus_labels.tif``) so a finalized
-        position is auto-discovered; override to a working stage file when
+        data folder is auto-discovered; override to a working stage file when
         uncommitted.
         """
         self._panel = ExperimentsPanel(
-            title="Positions",
+            title="Data folders",
             input_fields=[
                 ("cell", "Cell labels", "cell_labels.tif"),
                 ("nucleus", "Nucleus labels", "nucleus_labels.tif"),
@@ -225,7 +225,7 @@ class ContactAnalysisStudioWidget(QWidget):
             status_fn=self._status,
             show_calibration=False,
             show_run=False,
-            show_manual_columns=True,
+            show_tagging=True,
             show_output_dir=False,
         )
         self._panel.discover_requested.connect(self._on_discover_requested)
@@ -257,12 +257,12 @@ class ContactAnalysisStudioWidget(QWidget):
 
     # -------------------------------------------------------- panel host contract
     def _discover(self, root: str, input_names: dict) -> list[dict]:
-        """Panel ``discover_fn``: stage every position folder found under *root*.
+        """Panel ``discover_fn``: every data folder found under *root*.
 
         Each entry carries folder-derived columns (one per named nesting level,
         seeded with the recognized identity axes) plus a ``position_id`` pinned to
-        the innermost folder name so positions keep distinct identities. Manual
-        batch-wide tags are *not* added here — the panel bakes those at commit.
+        the innermost folder name so folders keep distinct identities. Condition
+        tags are applied later, per-selection, via the panel's tagging control.
         """
         cell = input_names.get("cell") or None
         nucleus = input_names.get("nucleus") or None
@@ -289,8 +289,10 @@ class ContactAnalysisStudioWidget(QWidget):
         return position_stage_status(pos_dir)
 
     def _on_discover_requested(self) -> None:
-        """Discover button: pick a root, guard uniform depth, then stage it."""
-        root = QFileDialog.getExistingDirectory(self, "Select root folder to scan")
+        """Find-data-folders button: pick a parent, guard uniform depth, then add."""
+        root = QFileDialog.getExistingDirectory(
+            self, "Select a parent folder to scan for data folders"
+        )
         if not root:
             return
         names = self._panel.input_names()

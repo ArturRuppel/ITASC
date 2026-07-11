@@ -1,18 +1,22 @@
 """The shared experiments/positions panel (napariTFM ExperimentsList parity).
 
 One panel, two homes: the main CellFlow app and the standalone Contact Analysis
-distro both mount this. It reproduces napariTFM's initialization ritual —
+distro both mount this. Descended from napariTFM's ExperimentsList, but reshaped
+around a filesystem-centric flow —
 
     Setup (calibration + input-file names + optional output dir)
-      → Discover a root  → stage matches as dimmed preview rows
-      → Add to list      → committed rows with an editable folder-nesting header,
-                            an accent select-bar, a per-position status rail, and
-                            an overall-status chip
+      → Find data folders  → one additive scan of a parent root; every matching
+                             data folder is added straight to the list (deduped),
+                             each a committed row with an editable folder-nesting
+                             header, an accent select-bar, a per-position status
+                             rail, and an overall-status chip
+      → tag selected rows  → set a condition column on the current selection, the
+                             grouping columns of the aggregate tidy table
       → Run selected / Workers, and a running count
 
-— but speaks CellFlow: the rail is :class:`~cellflow.napari._status_rail.StatusRail`
+— and speaks CellFlow: the rail is :class:`~cellflow.napari._status_rail.StatusRail`
 (the five-state commit-contract vocabulary), the styling is CellFlow's own designed
-surface tokens, and *what* Discover scans for / *how* a row maps to a host record is
+surface tokens, and *what* a scan looks for / *how* a row maps to a host record is
 injected by the host (``discover_fn`` / ``status_fn``).
 
 The panel owns the displayed catalog (the ordered rows + their editable columns);
@@ -24,10 +28,14 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterable
+from pathlib import Path
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QDoubleValidator
 from qtpy.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QFrame,
     QHBoxLayout,
@@ -35,6 +43,7 @@ from qtpy.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSpinBox,
+    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -76,6 +85,42 @@ _CHIP_W = 56
 #: Overall-status word → chip text (kept short so the chip column stays narrow).
 _CHIP_TEXT = {"run": "run", "done": "done", "queued": "queued"}
 
+#: The `?` quickstart, distilled from docs/manual/workflow.md. Self-contained
+#: (no browser / hosted-docs dependency: the standalone distros mount this too).
+_QUICKSTART_HTML = """
+<h3>One folder per movie</h3>
+<p>Each movie or field of view lives in its own <i>data folder</i> holding the raw
+nucleus and cell images, and every stage writes its results back into that same
+folder: the folder on disk is the source of truth for results. The list of data
+folders and how you classify them (conditions, replicates) is your <i>project</i>,
+which you save to and reload from a <b>project catalog</b> (a CSV). That catalog is
+also what drives aggregate quantification across the whole set.</p>
+
+<h3>A worked example</h3>
+<p>Say your images sit like this, two conditions and three fields of view:</p>
+<pre>experiment/
+  WT/
+    pos01/   nucleus.tif   cell.tif
+    pos02/   nucleus.tif   cell.tif
+  KO/
+    pos01/   nucleus.tif   cell.tif</pre>
+<p>Name the two files in <b>Setup</b>, then point <b>Find data folders</b> at
+<code>experiment/</code>. CellFlow adds the three folders that hold both images and
+reads the <code>WT</code> / <code>KO</code> / <code>pos..</code> nesting into
+columns. Select the two <code>WT</code> rows and set <code>condition&nbsp;=&nbsp;WT</code>;
+select the <code>KO</code> row and set <code>condition&nbsp;=&nbsp;KO</code>. Those
+columns become the grouping columns of the aggregate table.</p>
+
+<h3>Where results go</h3>
+<p><b>Run</b> processes the selected folders and writes each stage back inside the
+data folder:</p>
+<pre>pos01/
+  0_input   1_cellpose   2_nucleus   3_cell   aggregate_quantification</pre>
+<p>The status rail on each row shows how far that folder got. Run <b>Find data
+folders</b> again on another parent to add more: the list accumulates and skips any
+folder already listed.</p>
+"""
+
 
 def overall_status(status: dict[str, str]) -> str:
     """Collapse a per-stage status map into a single chip word.
@@ -101,12 +146,33 @@ def _format_value(value) -> str:
         return str(value or "")
 
 
-class ExperimentRow(QWidget):
-    """One position: accent select-bar, per-column value cells, rail, status chip.
+def _count_above_root(entries: list[dict], root: str) -> int:
+    """How many found entries resolve to a folder *above* the scanned *root*.
 
-    A *committed* row shows its rail + chip and selects/activates on click. A
-    *preview* row (a discovered, not-yet-added position) is dimmed + italic, hides
-    the rail/chip, and toggles a delete-selection on click.
+    A folder-path key is "above root" when root is neither it nor one of its
+    ancestors: the sign of a too-deep pick (the user chose a data folder's own
+    subfolder, so its position resolves to root's parent). Keys that aren't
+    filesystem paths are ignored.
+    """
+    try:
+        root_resolved = Path(root).resolve()
+    except (OSError, ValueError):
+        return 0
+    n = 0
+    for entry in entries:
+        try:
+            key = Path(str(entry["key"])).resolve()
+        except (OSError, ValueError):
+            continue
+        if key != root_resolved and root_resolved not in key.parents:
+            n += 1
+    return n
+
+
+class ExperimentRow(QWidget):
+    """One data folder: accent select-bar, per-column value cells, rail, status chip.
+
+    Shows its rail + chip and selects/activates on click.
     """
 
     clicked = Signal(str, int)  # key, modifier flag: 0 plain, 1 ctrl, 2 shift
@@ -117,12 +183,10 @@ class ExperimentRow(QWidget):
         key: str,
         values: list[str] | None = None,
         *,
-        preview: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._key = key
-        self._preview = preview
         self._selected = False
         # The row paints its own (styled) background — selected rows lift.
         self.setObjectName("experiment_row")
@@ -157,22 +221,11 @@ class ExperimentRow(QWidget):
         self._chip.setStyleSheet(f"color: {experiment_status_color('queued')};")
         layout.addWidget(self._chip)
 
-        if self._preview:
-            # A not-yet-committed folder has no status to show.
-            self.rail.setVisible(False)
-            self._chip.setVisible(False)
-            for value_label in self._value_labels:
-                value_label.setStyleSheet(f"color: {TEXT_DIM}; font-style: italic;")
-
         self.set_selected(False)
 
     @property
     def key(self) -> str:
         return self._key
-
-    @property
-    def is_preview(self) -> bool:
-        return self._preview
 
     def is_selected(self) -> bool:
         return self._selected
@@ -184,10 +237,9 @@ class ExperimentRow(QWidget):
             f"background: {accent};" if on else "background: transparent;"
         )
         self.setStyleSheet(experiment_row_style(on, accent))
-        if not self._preview:
-            color = experiment_name_color(on)
-            for label in self._value_labels:
-                label.setStyleSheet(f"color: {color};")
+        color = experiment_name_color(on)
+        for label in self._value_labels:
+            label.setStyleSheet(f"color: {color};")
 
     def set_status(self, status: dict[str, str]) -> None:
         """Repaint the rail + derive the chip word from the full status map."""
@@ -209,17 +261,17 @@ class ExperimentRow(QWidget):
 
 
 class ExperimentsPanel(QWidget):
-    """Setup + Discover→Commit + an editable-column list of position rows.
+    """Setup + an additive Find + an editable-column list of data-folder rows.
 
     Host contract:
 
     * ``discover_fn(root, input_names) -> list[entry]`` — scan a root; each *entry*
       is ``{"key": str, "columns": {name: value}, "payload": dict}`` (``key`` is the
-      row identity, typically the position folder path).
+      row identity, typically the data-folder path).
     * ``status_fn(payload) -> {stage: state}`` — the per-stage rail status.
 
     Signals let the host stay the model of record for persistence/scope while the
-    panel owns the list UI, Setup, discovery staging, and selection.
+    panel owns the list UI, Setup, folder discovery, tagging, and selection.
     """
 
     active_changed = Signal(object)      # payload | None — the single active row
@@ -228,19 +280,19 @@ class ExperimentsPanel(QWidget):
     run_requested = Signal(list, int)    # (selected payloads, num_workers)
     stage_load_requested = Signal(object, str)  # (payload, stage)
     calibration_changed = Signal(str, str)      # (name, text)
-    discover_requested = Signal()               # Discover button clicked
+    discover_requested = Signal()               # Find-data-folders button clicked
     output_dir_requested = Signal()             # output-dir button clicked
 
     def __init__(
         self,
         *,
-        title: str = "Positions",
+        title: str = "Data folders",
         input_fields: Iterable[tuple[str, str, str]] = (),
         discover_fn: Callable[[str, dict[str, str]], list[dict]] | None = None,
         status_fn: Callable[[dict], dict[str, str]] | None = None,
         show_calibration: bool = True,
         show_output_dir: bool = False,
-        show_manual_columns: bool = False,
+        show_tagging: bool = True,
         show_run: bool = True,
         parent: QWidget | None = None,
     ) -> None:
@@ -251,11 +303,8 @@ class ExperimentsPanel(QWidget):
         self._status_fn = status_fn
         self._show_calibration = show_calibration
         self._show_output_dir = show_output_dir
-        self._show_manual_columns = show_manual_columns
+        self._show_tagging = show_tagging
         self._show_run = show_run
-        #: Batch-wide constant-tag (name, value) fields, copied onto every row a
-        #: Discover→Commit adds — for descriptors not encoded in the folder tree.
-        self._manual_fields: list[tuple[QLineEdit, QLineEdit]] = []
 
         # Committed rows: ordered keys + per-key {columns, payload}; the shared,
         # editable column names line up over the value cells.
@@ -263,11 +312,6 @@ class ExperimentsPanel(QWidget):
         self._records: dict[str, dict] = {}
         self._column_names: list[str] = []
         self._rows: list[ExperimentRow] = []
-        self._preview_rows: list[ExperimentRow] = []
-
-        # Staged (discovered, not-yet-committed) entries + their delete-selection.
-        self._discovered: list[dict] = []
-        self._discovered_selected: set[str] = set()
 
         # Committed-row selection: a single active row plus a multi-selection for
         # delete/run; ``_anchor`` is the Shift-range pivot.
@@ -279,18 +323,18 @@ class ExperimentsPanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(COMPACT_SPACING)
 
-        heading = QLabel(title)
-        heading.setObjectName("experiments_panel_label")
-        heading.setStyleSheet(f"color: {TEXT_MID}; font-weight: bold;")
-        layout.addWidget(heading)
+        layout.addLayout(self._build_heading(title))
 
         self.setup_section = self._build_setup_section()
         layout.addWidget(self.setup_section)
 
-        self._staging_label = QLabel("")
-        self._staging_label.setStyleSheet(f"color: {TEXT_DIM};")
-        self._staging_label.setVisible(False)
-        layout.addWidget(self._staging_label)
+        # One status line, double duty: the empty-state call to action when the
+        # list is empty, transient "Added N…" / dry-scan feedback after a Find.
+        self._hint = QLabel("")
+        self._hint.setObjectName("experiments_hint_label")
+        self._hint.setWordWrap(True)
+        self._hint.setStyleSheet(f"color: {TEXT_DIM};")
+        layout.addWidget(self._hint)
 
         # Rows in a bounded scroll region: a long list scrolls internally instead
         # of shoving the action bar off-screen. The editable column header is the
@@ -311,6 +355,8 @@ class ExperimentsPanel(QWidget):
         layout.addWidget(self._rows_scroll)
 
         layout.addLayout(self._build_list_actions())
+        if self._show_tagging:
+            layout.addLayout(self._build_tagging_row())
         if self._show_run:
             layout.addLayout(self._build_run_actions())
 
@@ -321,6 +367,39 @@ class ExperimentsPanel(QWidget):
         self._rebuild_table()
         self._update_meta()
 
+    # -- heading + quickstart --------------------------------------------
+    def _build_heading(self, title: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        heading = QLabel(title)
+        heading.setObjectName("experiments_panel_label")
+        heading.setStyleSheet(f"color: {TEXT_MID}; font-weight: bold;")
+        row.addWidget(heading)
+        row.addStretch()
+        self.help_btn = QToolButton()
+        self.help_btn.setObjectName("experiments_help_button")
+        self.help_btn.setText("?")
+        self.help_btn.setToolTip("Quickstart: how CellFlow manages your data")
+        self.help_btn.clicked.connect(self._show_quickstart)
+        row.addWidget(self.help_btn)
+        return row
+
+    def _show_quickstart(self) -> None:
+        dialog = QDialog(self)
+        dialog.setObjectName("experiments_quickstart_dialog")
+        dialog.setWindowTitle("CellFlow quickstart")
+        dialog.setMinimumWidth(460)
+        box = QVBoxLayout(dialog)
+        body = QTextBrowser()
+        body.setOpenExternalLinks(False)
+        body.setHtml(_QUICKSTART_HTML)
+        box.addWidget(body)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close)
+        buttons.rejected.connect(dialog.reject)
+        buttons.accepted.connect(dialog.accept)
+        box.addWidget(buttons)
+        dialog.exec_()
+
     # -- setup: calibration + input names + optional output dir ----------
     def _build_setup_section(self) -> CollapsibleSection:
         inner = QWidget()
@@ -330,8 +409,6 @@ class ExperimentsPanel(QWidget):
         if self._show_calibration:
             box.addLayout(self._build_calibration_row())
         box.addLayout(self._build_input_config())
-        if self._show_manual_columns:
-            box.addLayout(self._build_manual_columns())
         if self._show_output_dir:
             box.addLayout(self._build_output_dir_row())
         return CollapsibleSection("Setup", inner, expanded=True, title_color=TEXT_MID)
@@ -405,57 +482,6 @@ class ExperimentsPanel(QWidget):
             if field.text().strip()
         }
 
-    def _build_manual_columns(self) -> QVBoxLayout:
-        """Batch-wide constant tags copied onto every Discover→Commit row.
-
-        For descriptors not encoded in the folder tree (operator, treatment).
-        Editing a field re-renders the staged previews; the values are baked into
-        each row's columns at Add-to-list time.
-        """
-        box = QVBoxLayout()
-        box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(2)
-        self._manual_box = QVBoxLayout()
-        self._manual_box.setContentsMargins(12, 0, 0, 0)
-        self._manual_box.setSpacing(2)
-        box.addLayout(self._manual_box)
-        add_btn = QToolButton()
-        add_btn.setObjectName("experiments_add_column_button")
-        add_btn.setText("+ Add column")
-        add_btn.setToolTip(
-            "Tag every added position with a constant column not in the folder "
-            "tree, e.g. operator or treatment."
-        )
-        add_btn.clicked.connect(lambda: self.add_manual_column())
-        box.addWidget(add_btn)
-        return box
-
-    def add_manual_column(self, name: str = "", value: str = "") -> None:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(2)
-        name_edit = QLineEdit(name)
-        name_edit.setPlaceholderText("column")
-        name_edit.setStyleSheet(mono_input_style())
-        value_edit = QLineEdit(value)
-        value_edit.setPlaceholderText("value")
-        value_edit.setStyleSheet(mono_input_style())
-        for edit in (name_edit, value_edit):
-            edit.textChanged.connect(lambda _t: self._rebuild_table())
-        row.addWidget(name_edit, 1)
-        row.addWidget(value_edit, 1)
-        self._manual_box.addLayout(row)
-        self._manual_fields.append((name_edit, value_edit))
-
-    def manual_columns(self) -> dict[str, str]:
-        """Current non-blank batch-wide constant columns (name → value)."""
-        cols: dict[str, str] = {}
-        for name_edit, value_edit in self._manual_fields:
-            name = name_edit.text().strip()
-            if name:
-                cols[name] = value_edit.text().strip()
-        return cols
-
     def _build_output_dir_row(self) -> QHBoxLayout:
         out = QHBoxLayout()
         out.setContentsMargins(0, 0, 0, 0)
@@ -488,16 +514,13 @@ class ExperimentsPanel(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         self.discover_btn = QToolButton()
         self.discover_btn.setObjectName("experiments_discover_button")
-        self.discover_btn.setText("Discover")
+        self.discover_btn.setText("Find data folders…")
+        self.discover_btn.setToolTip(
+            "Pick a parent directory; every folder under it holding the Setup "
+            "image files is added to the list (run again to add more)."
+        )
         self.discover_btn.clicked.connect(self.discover_requested)
         row.addWidget(self.discover_btn)
-
-        self.commit_btn = QToolButton()
-        self.commit_btn.setObjectName("experiments_commit_button")
-        self.commit_btn.setText("Add to list")
-        self.commit_btn.setEnabled(False)
-        self.commit_btn.clicked.connect(self.commit_discovered)
-        row.addWidget(self.commit_btn)
 
         self.delete_btn = QToolButton()
         self.delete_btn.setObjectName("experiments_delete_button")
@@ -532,7 +555,7 @@ class ExperimentsPanel(QWidget):
         self.workers_spinbox.setObjectName("experiments_workers_spinbox")
         self.workers_spinbox.setRange(1, os.cpu_count() or 1)
         self.workers_spinbox.setValue(1)
-        self.workers_spinbox.setToolTip("How many positions Run processes in parallel")
+        self.workers_spinbox.setToolTip("How many data folders Run processes in parallel")
         row.addWidget(self.workers_spinbox)
         return row
 
@@ -542,50 +565,102 @@ class ExperimentsPanel(QWidget):
     def _on_run_clicked(self) -> None:
         self.run_requested.emit(self.selected_payloads(), self.num_workers())
 
-    # -- discovery (two-step Discover → Commit) --------------------------
-    def discover(self, root: str) -> list[dict]:
-        """Step 1: stage the entries ``discover_fn`` finds under *root*.
+    # -- tagging: set a column on the current selection ------------------
+    def _build_tagging_row(self) -> QHBoxLayout:
+        """Set a column value on the selected rows — the condition-label affordance.
 
-        A second call *replaces* the current staged set. Staging never mutates the
-        committed list — the Add-to-list step does.
+        These columns become the grouping columns of the aggregate tidy table. The
+        name combo offers the existing column names but is editable, so a fresh
+        column name can be typed in.
+        """
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(COMPACT_SPACING + 2)
+        row.addWidget(QLabel("Set"))
+        self.tag_name = QComboBox()
+        self.tag_name.setObjectName("experiments_tag_name")
+        self.tag_name.setEditable(True)
+        self.tag_name.setMinimumWidth(90)
+        self.tag_name.lineEdit().setPlaceholderText("column")
+        self.tag_name.setToolTip("Column to set — pick an existing one or type a new name")
+        row.addWidget(self.tag_name, 1)
+        row.addWidget(QLabel("="))
+        self.tag_value = QLineEdit()
+        self.tag_value.setObjectName("experiments_tag_value")
+        self.tag_value.setPlaceholderText("value")
+        self.tag_value.setStyleSheet(mono_input_style())
+        self.tag_value.returnPressed.connect(self._on_apply_tag)
+        row.addWidget(self.tag_value, 1)
+        self.tag_apply_btn = QToolButton()
+        self.tag_apply_btn.setObjectName("experiments_tag_apply_button")
+        self.tag_apply_btn.setText("→ selected")
+        self.tag_apply_btn.setToolTip("Write this column value into every selected row")
+        self.tag_apply_btn.setEnabled(False)
+        self.tag_apply_btn.clicked.connect(self._on_apply_tag)
+        row.addWidget(self.tag_apply_btn)
+        return row
+
+    def _refresh_tag_names(self) -> None:
+        """Keep the tag-name combo's dropdown in sync with the live columns."""
+        if not self._show_tagging:
+            return
+        current = self.tag_name.currentText()
+        self.tag_name.blockSignals(True)
+        self.tag_name.clear()
+        self.tag_name.addItems(self._column_names)
+        self.tag_name.setCurrentText(current)
+        self.tag_name.blockSignals(False)
+
+    def _on_apply_tag(self) -> None:
+        self.set_column_on_selected(self.tag_name.currentText(), self.tag_value.text())
+
+    def set_column_on_selected(self, name: str, value: str) -> None:
+        """Write ``columns[name] = value`` into every selected row.
+
+        Creates the column if it is new. No-op with no selection or a blank name.
+        """
+        name = name.strip()
+        if not name or not self._selected_paths:
+            return
+        self._ensure_columns([name])
+        for key in self._paths:
+            if key in self._selected_paths:
+                self._records[key]["columns"][name] = value
+        self._rebuild_table()
+        self.records_changed.emit()
+
+    # -- discovery (one additive Find) -----------------------------------
+    def discover(self, root: str) -> list[dict]:
+        """Scan *root* via ``discover_fn`` and add every match straight to the list.
+
+        Additive and de-duped by key: re-running against another root accumulates
+        and never disturbs existing (possibly edited) rows. Returns the newly added
+        entries and leaves a transient hint naming what happened.
         """
         if self._discover_fn is None:
             return []
-        self._discovered = list(self._discover_fn(root, self.input_names()))
-        self._discovered_selected = set()
-        self._update_staging()
-        self._rebuild_table()
-        return list(self._discovered)
-
-    def discovered(self) -> list[dict]:
-        return list(self._discovered)
-
-    def commit_discovered(self) -> None:
-        """Step 2: add every staged entry as a committed row.
-
-        Batch-wide manual columns are baked into each entry's columns here, so a
-        committed row keeps its own snapshot even if the fields change later.
-        """
-        if not self._discovered:
-            return
-        manual = self.manual_columns()
-        entries = []
-        for entry in self._discovered:
-            merged = dict(entry.get("columns") or {})
-            merged.update(manual)
-            entries.append({**entry, "columns": merged})
-        self._discovered = []
-        self._discovered_selected = set()
-        self._add_entries(entries)
-        self._update_staging()
-
-    def _update_staging(self) -> None:
-        n = len(self._discovered)
-        self.commit_btn.setEnabled(n > 0)
-        self._staging_label.setText(
-            f"{n} folder{'s' if n != 1 else ''} discovered — Add to list" if n else ""
-        )
-        self._staging_label.setVisible(n > 0)
+        found = list(self._discover_fn(root, self.input_names()))
+        added = self._add_entries(found)
+        if added:
+            message = (
+                f"Added {added} data folder{'s' if added != 1 else ''}."
+                + ("" if added == len(found) else f" ({len(found) - added} already listed.)")
+            )
+            above = _count_above_root(found, root)
+            if above:
+                message += (
+                    f" {'It sits' if above == 1 else f'{above} sit'} above the folder "
+                    "you picked: point Find at the parent directory to scan a whole batch."
+                )
+            self._refresh_hint(message)
+        else:
+            self._refresh_hint(
+                f"No new data folders found under {root} — "
+                "check the image filenames in Setup."
+                if not found
+                else f"All {len(found)} found data folders were already listed."
+            )
+        return found
 
     # -- committed-row model ---------------------------------------------
     def column_names(self) -> list[str]:
@@ -612,10 +687,13 @@ class ExperimentsPanel(QWidget):
             if name and name not in self._column_names:
                 self._column_names.append(name)
 
-    def _add_entries(self, entries: list[dict]) -> None:
-        """Append entries as committed rows (de-duped by key), extending columns."""
+    def _add_entries(self, entries: list[dict]) -> int:
+        """Append entries as committed rows (de-duped by key), extending columns.
+
+        Returns the number of rows actually added (skips keys already listed).
+        """
         was_empty = not self._paths
-        added = False
+        added = 0
         for entry in entries:
             key = str(entry["key"])
             if key in self._records:
@@ -624,15 +702,16 @@ class ExperimentsPanel(QWidget):
             self._ensure_columns(cols.keys())
             self._records[key] = {"columns": cols, "payload": entry.get("payload")}
             self._paths.append(key)
-            added = True
+            added += 1
         if not added:
-            return
+            return 0
         self._rebuild_table()
         self._update_meta()
         self.records_changed.emit()
         if was_empty:
             self.set_active(self._paths[0])
             self.setup_section.collapse()
+        return added
 
     def set_records(self, entries: list[dict]) -> None:
         """Replace the whole committed list from host-owned records (CSV / load).
@@ -733,16 +812,7 @@ class ExperimentsPanel(QWidget):
         self.selection_changed.emit()
 
     def delete_selected(self) -> None:
-        """Delete staged previews first (if any selected), else committed rows."""
-        if self._discovered_selected:
-            self._discovered = [
-                e for e in self._discovered if str(e["key"]) not in self._discovered_selected
-            ]
-            self._discovered_selected = set()
-            self._update_staging()
-            self._rebuild_table()
-            self._update_action_buttons()
-            return
+        """Remove the selected committed rows."""
         if not self._selected_paths:
             return
         remaining = [k for k in self._paths if k not in self._selected_paths]
@@ -771,27 +841,20 @@ class ExperimentsPanel(QWidget):
             self._anchor = key
             self.set_active(key)
 
-    def _on_preview_clicked(self, key: str, _flag: int) -> None:
-        self._discovered_selected.symmetric_difference_update({key})
-        for row in self._preview_rows:
-            row.set_selected(row.key in self._discovered_selected)
-        self._update_action_buttons()
-
     def _apply_selection_styles(self) -> None:
         for row in self._rows:
             row.set_selected(row.key in self._selected_paths)
 
     def _update_action_buttons(self) -> None:
-        self.delete_btn.setEnabled(
-            bool(self._selected_paths) or bool(self._discovered_selected)
-        )
+        has_sel = bool(self._selected_paths)
+        self.delete_btn.setEnabled(has_sel)
+        if self._show_tagging:
+            self.tag_apply_btn.setEnabled(has_sel)
         if self._show_run:
-            self.run_btn.setEnabled(bool(self._selected_paths))
+            self.run_btn.setEnabled(has_sel)
 
     def keyPressEvent(self, event) -> None:
-        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and (
-            self._selected_paths or self._discovered_selected
-        ):
+        if event.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected_paths:
             self.delete_selected()
             event.accept()
             return
@@ -861,7 +924,6 @@ class ExperimentsPanel(QWidget):
             if item.widget() is not None:
                 item.widget().deleteLater()
         self._rows = []
-        self._preview_rows = []
 
         self._rows_box.addWidget(self._build_header_widget())
 
@@ -875,22 +937,24 @@ class ExperimentsPanel(QWidget):
             self._rows_box.addWidget(row)
             self._rows.append(row)
 
-        manual = self.manual_columns()
-        for entry in self._discovered:
-            key = str(entry["key"])
-            cols = dict(entry.get("columns") or {})
-            cols.update(manual)
-            values = [cols.get(name, "") for name in self._column_names] if self._column_names else list(cols.values())
-            row = ExperimentRow(key, values or None, preview=True)
-            row.clicked.connect(self._on_preview_clicked)
-            row.set_selected(key in self._discovered_selected)
-            self._rows_box.addWidget(row)
-            self._preview_rows.append(row)
-
-        self._rows_scroll.setVisible(bool(self._paths) or bool(self._discovered))
+        self._rows_scroll.setVisible(bool(self._paths))
+        self._refresh_tag_names()
         self.refresh_statuses()
+
+    def _refresh_hint(self, message: str | None = None) -> None:
+        """The one status line: a transient *message*, else the empty-state CTA."""
+        if message:
+            self._hint.setText(message)
+        elif not self._paths:
+            self._hint.setText(
+                "Add folders with cell and nucleus images to start. "
+                "Click ? for how CellFlow stores its work."
+            )
+        else:
+            self._hint.setText("")
 
     def _update_meta(self) -> None:
         n = len(self._paths)
-        self._meta.setText(f"{n} position{'s' if n != 1 else ''}")
+        self._meta.setText(f"{n} data folder{'s' if n != 1 else ''}")
+        self._refresh_hint()
         self._update_action_buttons()

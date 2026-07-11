@@ -1,6 +1,9 @@
 # Installation
 
-CellFlow requires **Python 3.10+**.
+CellFlow requires **Python 3.10+**. What you install depends on where you enter
+the pipeline: the full app for the whole workflow, or a single piece for one
+stage. If you have not decided yet, [Choosing your install](index.md) routes you
+by your data.
 
 ## Full workflow (the napari plugin)
 
@@ -8,9 +11,9 @@ CellFlow requires **Python 3.10+**.
 pip install cellflow[all]
 ```
 
-This pulls the core scientific stack plus the optional workflow engines —
-Cellpose-SAM (`cellpose`, `torch`, `torchvision`) and the Ultrack solver. From a
-local checkout:
+The `[all]` extra pulls the core scientific stack plus the optional workflow
+engines: Cellpose-SAM (`cellpose`, `torch`, `torchvision`) and the Ultrack
+solver. From a local checkout:
 
 ```bash
 python -m pip install -e .[all]
@@ -22,26 +25,27 @@ Each tool installs on its own and shares the `cellflow.*` namespace, so
 `import cellflow.<stage>` works whether or not the full app is present.
 
 ```bash
-pip install "cellflow-cellpose[cellpose,laptrack]"  # Cellpose segment + track
+pip install "cellflow-cellpose[cellpose,laptrack]"  # sparse cells: segment + track
 pip install "cellflow-tracking[solve]"              # maps → tracks + correction
-pip install cellflow-aggregate                      # cell labels → contacts (HDF5)
+pip install cellflow-aggregate                      # tracked labels → contacts (HDF5)
 pip install cellflow-core                           # shared library only
 ```
 
-Divergence-based cell segmentation is not published as a standalone wheel — it
-ships inside the full `cellflow` plugin (`pip install cellflow[all]`).
+Divergence-based cell segmentation is not published as a standalone wheel: it
+ships inside the full `cellflow` app (`pip install cellflow[all]`).
 
 ## Optional engines
 
-These are heavy and imported lazily, so they are only needed when you actually
-run the stage that uses them:
+The extras below pull in heavy dependencies. They are imported lazily, loaded
+only when you run the stage that uses them, so a browse-or-correct session
+without the extra still works.
 
 - **Cellpose / Cellpose-SAM** (`cellpose>=4.0`, PyTorch): the local map-building
   runner. GPU is used when PyTorch detects it; CPU is the fallback. Extra:
   `[cellpose]`.
 - **Ultrack**: candidate segmentation, database construction, linking, and
-  solving for nucleus tracking. Extra: `[solve]` (or `[tracking]` on the full
-  `cellflow` distribution).
+  solving for nucleus tracking. Extra: `[solve]`, or `[tracking]` on the full
+  `cellflow` distribution.
 
 ## Development install
 
@@ -49,3 +53,6 @@ run the stage that uses them:
 python -m pip install -e .[dev]    # + ruff, pytest
 python -m pip install -e .[docs]   # to build this documentation locally
 ```
+
+With CellFlow installed, [The staged workflow](workflow.md) walks through what
+each stage reads and writes, and how to drive the plugin in napari.

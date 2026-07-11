@@ -19,7 +19,14 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from cellflow.contact_analysis.catalog import columns_from_levels, relative_levels
+from cellflow.contact_analysis.catalog import (
+    CONTACT_ANALYSIS_RELPATH,
+    columns_from_levels,
+    load_catalog,
+    merge_catalog_records,
+    relative_levels,
+    save_catalog,
+)
 from cellflow.napari._experiments_panel import ExperimentsPanel
 from cellflow.napari._icons import stage_action_icon
 from cellflow.napari._stage_loader import load_stage
@@ -50,6 +57,11 @@ from cellflow.napari.ui_style import (
 #: position_id), so the common ``condition / experiment_id / pos`` layout names
 #: itself; deeper levels get generic ``level_k`` placeholders.
 _SEED_LEVEL_NAMES = ("condition", "experiment_id", "position_id")
+
+#: Staged-layout paths relative to a position folder, stamped onto catalog rows so
+#: a project CSV saved from the full app carries everything the aggregate needs.
+_CELL_LABELS_RELPATH = "3_cell/tracked_labels.tif"
+_NUCLEUS_LABELS_RELPATH = "2_nucleus/tracked_labels.tif"
 
 
 def _seed_level_names(depth: int) -> list[str]:
@@ -92,10 +104,16 @@ def _discover_positions(root: str, input_names: dict[str, str]) -> list[dict]:
 
     entries: list[dict] = []
     for pos in sorted(by_position):
-        levels = relative_levels(root_path, pos)
+        try:
+            levels = relative_levels(root_path, pos)
+        except ValueError:
+            # The chosen root sits inside the position (the user picked the
+            # position's own ``0_input`` folder, so the position is root's
+            # parent): there is no nesting under root. Add it plainly, its own
+            # folder name as the identity.
+            levels = ()
         columns = columns_from_levels(_seed_level_names(len(levels)), levels)
-        if levels:
-            columns.setdefault("position_id", levels[-1])
+        columns.setdefault("position_id", levels[-1] if levels else pos.name)
         entries.append(
             {"key": str(pos), "columns": columns, "payload": {"position_path": pos}}
         )
@@ -195,7 +213,7 @@ class CellFlowMainWidget(QWidget):
         # detail sections below. The five stage sections ARE the selected
         # position's detail pane — selecting a row sets ``_pos_dir``.
         self._positions_panel = ExperimentsPanel(
-            title="Positions",
+            title="Data folders",
             input_fields=[
                 ("nucleus", "Nucleus image", "0_input/nucleus_3dt.tif"),
                 ("cell", "Cell image", "0_input/cell_3dt.tif"),
@@ -205,7 +223,7 @@ class CellFlowMainWidget(QWidget):
                 payload.get("position_path") if payload else None
             ),
             show_calibration=True,  # pixel size / frame length live in Setup
-            show_manual_columns=True,
+            show_tagging=True,  # condition-label columns for the aggregate tidy table
             show_run=False,  # batch Run selected is a later (stage-spine) pass
         )
         self._positions_panel.active_changed.connect(self._on_active_position)
@@ -254,12 +272,26 @@ class CellFlowMainWidget(QWidget):
 
         # Connect signals
         self.project_btn.clicked.connect(lambda: self._on_set_position_folder())
-        self.save_btn.clicked.connect(lambda: self._on_save_config())
         self.save_as_btn.clicked.connect(lambda: self._on_save_config_as())
-        self.load_btn.clicked.connect(lambda: self._on_load_config())
         self.load_from_btn.clicked.connect(lambda: self._on_load_config_from())
+        self.save_project_btn.clicked.connect(lambda: self._on_save_project())
+        self.load_project_btn.clicked.connect(lambda: self._on_load_project())
 
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
+
+        # Config travels with the folder: snapshot params into the folder on every
+        # run. The stage widgets' run buttons are the trigger (cancel re-clicks
+        # re-save the same config, which is harmless).
+        for widget_obj, attr in (
+            (self._cellpose_widget, "nucleus_run_btn"),
+            (self._cellpose_widget, "cell_run_btn"),
+            (self.nucleus_workflow_widget, "seg_run_btn"),
+            (self.nucleus_workflow_widget, "db_run_btn"),
+            (self.nucleus_workflow_widget, "solve_run_btn"),
+            (self.cell_workflow_widget, "run_btn"),
+        ):
+            getattr(widget_obj, attr).clicked.connect(self._autosave_config)
+
         self._register_gate_controls()
 
         self.gate.changed.connect(self._update_activity_banner)
@@ -299,7 +331,7 @@ class CellFlowMainWidget(QWidget):
         """
         for control in (
             self.project_btn,
-            self.load_btn,
+            self.load_project_btn,
             self.load_from_btn,
         ):
             self.gate.register(control, ControlClass.CONTEXT_CHANGING)
@@ -382,7 +414,8 @@ class CellFlowMainWidget(QWidget):
         Calibration (pixel size / frame length) has moved into the positions
         panel's Setup section; the single manual "Position Folder…" pick remains
         here as a fallback to the panel's Discover-and-select flow, alongside the
-        per-position config save/load and a global refresh.
+        project catalog save/load, the standalone params-file save/load, and a
+        global refresh.
         """
         bar = QWidget()
         row = QHBoxLayout(bar)
@@ -394,16 +427,22 @@ class CellFlowMainWidget(QWidget):
         row.addWidget(title)
 
         row.addWidget(self._toolbar_group_label("Project"))
-        # ``new`` = open/start work on a position folder (the front door); the
-        # config load/save pair reuse napariTFM's load/save glyphs — the caption
-        # and the arrow direction disambiguate the two groups on purpose.
+        # ``new`` = open a single position folder (fallback front door). The
+        # load/save pair here act on the PROJECT catalog CSV (the Data folders
+        # list + classification columns), not the per-folder config.
         self.project_btn = self._toolbar_icon_btn("new", "Select a position folder…")
-        self.load_btn = self._toolbar_icon_btn("load", "Load config from the position folder")
-        self.save_btn = self._toolbar_icon_btn("save", "Save config into the position folder")
-        for btn in (self.project_btn, self.load_btn, self.save_btn):
+        self.load_project_btn = self._toolbar_icon_btn(
+            "load", "Load a project catalog (CSV) into the Data folders list"
+        )
+        self.save_project_btn = self._toolbar_icon_btn(
+            "save", "Save the Data folders list to a project catalog (CSV)"
+        )
+        for btn in (self.project_btn, self.load_project_btn, self.save_project_btn):
             row.addWidget(btn)
 
         row.addWidget(self._toolbar_group_label("Params"))
+        # Per-folder config now autosaves on run; these move a tuned param SET
+        # between experiments as a standalone file.
         self.load_from_btn = self._toolbar_icon_btn("load", "Load config from a file…")
         self.save_as_btn = self._toolbar_icon_btn("save", "Save config to a file…")
         for btn in (self.load_from_btn, self.save_as_btn):
@@ -475,8 +514,10 @@ class CellFlowMainWidget(QWidget):
         self._change_context(action)
 
     def _on_discover_positions(self) -> None:
-        """Discover button on the positions panel: pick a study root and scan it."""
-        path = QFileDialog.getExistingDirectory(self, "Select study root to scan")
+        """Find-data-folders button: pick a parent directory and scan it."""
+        path = QFileDialog.getExistingDirectory(
+            self, "Select a parent folder to scan for data folders"
+        )
         if path:
             self._positions_panel.discover(path)
 
@@ -541,13 +582,28 @@ class CellFlowMainWidget(QWidget):
         if "cell" in state:
             self.cell_workflow_widget.set_state(state["cell"])
 
-    def _on_save_config(self) -> None:
-        """Save current configuration into the position folder."""
+    def _autosave_config(self) -> None:
+        """Write the current config into the active folder (quiet) on each run."""
         if self._pos_dir is None:
             return
+        self._save_config(str(self._pos_dir / "cellflow_config.json"), quiet=True)
 
-        config_path = self._pos_dir / "cellflow_config.json"
-        self._save_config(str(config_path))
+    def _catalog_record_for_position(self, position_path: Path, columns: dict) -> dict:
+        """A catalog record for one data folder, stamped with default stage paths.
+
+        Panel rows carry only ``position_path`` + classification ``columns``; the
+        aggregate catalog also needs the contact-analysis ``.h5`` and the two label
+        images. Those sit at fixed staged-layout locations, so fill their defaults
+        here (whether or not the folder has been processed yet).
+        """
+        pos = Path(position_path)
+        return {
+            "position_path": pos,
+            "contact_analysis_path": pos / CONTACT_ANALYSIS_RELPATH,
+            "cell_tracked_labels_path": pos / _CELL_LABELS_RELPATH,
+            "nucleus_tracked_labels_path": pos / _NUCLEUS_LABELS_RELPATH,
+            "columns": dict(columns or {}),
+        }
 
     def _on_save_config_as(self) -> None:
         """Save current configuration to a specific file."""
@@ -555,30 +611,75 @@ class CellFlowMainWidget(QWidget):
         if path:
             self._save_config(path)
 
-    def _on_load_config(self) -> None:
-        """Load configuration from the position folder."""
-        if self._pos_dir is None:
-            return
-
-        config_path = self._pos_dir / "cellflow_config.json"
-        if config_path.exists():
-            self._change_context(lambda: self._load_config(str(config_path)))
-        else:
-            print(f"Config not found: {config_path}")
-
     def _on_load_config_from(self) -> None:
         """Load configuration from a specific file."""
         path = QFileDialog.getOpenFileName(self, "Load Config From", filter="JSON (*.json)")[0]
         if path:
             self._change_context(lambda: self._load_config(path))
 
-    def _save_config(self, path: str) -> None:
-        """Save state to a JSON file."""
+    def _on_save_project(self) -> None:
+        """Write the Data folders catalog to a CSV the aggregate studio can run."""
+        if not self._positions_panel.keys():
+            show_warning("No data folders to save: the catalog is empty.")
+            return
+        path = QFileDialog.getSaveFileName(
+            self, "Save project catalog", "catalog.csv", filter="CSV (*.csv)"
+        )[0]
+        if not path:
+            return
+        # getSaveFileName does not always append the filter suffix on Linux/Qt.
+        if not path.lower().endswith(".csv"):
+            path = f"{path}.csv"
+        records = [
+            self._catalog_record_for_position(
+                rec["position_path"], rec.get("columns", {})
+            )
+            for rec in self._positions_panel.records()
+        ]
+        try:
+            save_catalog(Path(path), records)
+            show_info(f"Project saved to {path}")
+        except Exception as e:
+            show_error(f"Error saving project: {e}")
+
+    def _on_load_project(self) -> None:
+        """Load a project catalog CSV, merging its rows into the Data folders list."""
+        path = QFileDialog.getOpenFileName(
+            self, "Load project catalog", filter="CSV (*.csv)"
+        )[0]
+        if not path:
+            return
+
+        def action() -> None:
+            try:
+                loaded = load_catalog(Path(path))
+            except Exception as e:
+                show_error(f"Error loading project: {e}")
+                return
+            merged = merge_catalog_records(self._positions_panel.records(), loaded)
+            entries = [
+                {
+                    "key": str(rec.get("position_path") or rec["id"]),
+                    "columns": dict(rec.get("columns") or {}),
+                    "payload": {"position_path": Path(rec["position_path"])}
+                    if rec.get("position_path")
+                    else {"position_path": None},
+                }
+                for rec in merged
+            ]
+            self._positions_panel.set_records(entries)
+            show_info(f"Project loaded: {len(entries)} data folder(s).")
+
+        self._change_context(action)
+
+    def _save_config(self, path: str, *, quiet: bool = False) -> None:
+        """Save state to a JSON file. ``quiet`` suppresses the success toast."""
         state = self.get_state()
         try:
             with open(path, "w") as f:
                 json.dump(state, f, indent=4)
-            show_info(f"Config saved to {path}")
+            if not quiet:
+                show_info(f"Config saved to {path}")
         except Exception as e:
             show_error(f"Error saving config: {e}")
 

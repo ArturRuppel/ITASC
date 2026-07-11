@@ -1,180 +1,147 @@
 # CellFlow
 
-CellFlow is a napari-based research software project for time-lapse cell
-microscopy. It brings together Cellpose-derived probability and flow outputs,
-Ultrack-based nucleus tracking, interactive correction, cell-label propagation,
-validation-aware resolving, and downstream contact analysis.
+CellFlow segments and tracks cells in time-lapse microscopy, corrects the result
+by hand where the automatics miss, and quantifies what the tracked cells do. It
+is a [napari](https://napari.org) plugin, and it is factored into independent
+pieces that share the `cellflow.*` namespace: install the whole pipeline, or
+install only the stage your data actually needs.
+
+The rest of this page starts from your data and points you at the right piece.
+
+## Which piece do you need?
+
+Read down the first column until a row describes your data and your goal. Each
+piece installs and runs on its own; the full `cellflow` app orchestrates all of
+them into one workflow.
+
+| If you have… | Reach for | It gives you |
+| --- | --- | --- |
+| **Sparse, well-separated cells** with a cell and/or nucleus marker, and you want to segment and track one or both channels | `cellflow-cellpose` | A local Cellpose-SAM runner for native masks, then [`laptrack`](https://github.com/yfukai/laptrack) linking across time, with correction. One channel or two. Every result lands as a napari layer. |
+| **Dense, motile cells of varying shape** (a confluent monolayer) and you want to go from raw stacks all the way to quantified contacts | `cellflow[all]` (the full app) | The unified `CellFlow` workflow widget: Cellpose maps, divergence-based cell segmentation, Ultrack nucleus tracking, interactive correction, and contact analysis, end to end. |
+| **Foreground and contour maps already** (from Cellpose or any other source) and you want to skip segmentation | `cellflow-tracking` | Ultrack candidate database, track solving, database browsing, and interactive nucleus correction. Maps in, tracked and corrected labels out. |
+| **Tracked cell labels already** and you are here for the analysis | `cellflow-aggregate` | Cell-cell edges, border edges, and T1 events extracted to a self-describing HDF5 file, with napari views of the result. |
+| **Code to build on** | `cellflow-core` | The shared substrate: TIFF/path/label-IO helpers, the track lineage model, and reusable napari UI primitives. |
+
+The pieces coexist because they share one namespace ([PEP 420](https://peps.python.org/pep-0420/)):
+`import cellflow.contact_analysis` works whether you installed `cellflow-aggregate`
+alone or the whole app. The heavy engines (Cellpose plus PyTorch, laptrack, the
+Ultrack solver) are optional extras, imported only when you run the stage that
+needs them, so correction-only use stays light.
+
+> 📷 **Screenshot:** the CellFlow plugin open in napari, the workflow widget
+> docked on the right with its stages stacked in run order.
 
 ## Status
 
-CellFlow is under active research development. The repository is being prepared
-for eventual public release and possible JOSS submission, but the workflow,
-installation details, and public API should still be treated as provisional.
-Claims in this README are descriptive only; no benchmarking or performance
-superiority is claimed here.
+CellFlow is under active research development. Treat the workflow,
+installation details, and public API as provisional. 
 
-## Independent packages
+## How the pieces fit
 
-CellFlow is being factored into independently-installable pieces that share the
-`cellflow.*` namespace (PEP 420), so others can install just the part they need.
-The full plugin orchestrates them into the unified workflow described below.
-
-- [`cellflow-tracking`](packages/cellflow-tracking) — Ultrack-based nucleus
-  tracking + interactive correction (napari). Flat working-directory contract:
-  2D+t `foreground.tif` + `contours.tif` → atoms, database, tracked labels, and
-  validated/corrected annotations. The Ultrack solver is an optional `[solve]`
-  extra. Depends on `cellflow-core`.
-- [`cellflow-aggregate`](packages/cellflow-aggregate) — aggregate quantification;
-  bundled quantifier is contacts (cell-cell edges, T1 events) + napari
-  visualization. Headless I/O: 2D+t cell labels (optional nucleus labels) → HDF5.
-  Depends on `cellflow-core`.
-- [`cellflow-cellpose`](packages/cellflow-cellpose) — **Cellpose Segment +
-  Track** (napari): a local Cellpose-SAM native-mask runner + laptrack tracking
-  for one or two channels, with embedded basic correction. It also ships the
-  Cellpose runner + divergence-map builder that the full `cellflow` app uses for
-  its in-app Cellpose stage. The Cellpose model is an optional `[cellpose]`
-  extra. Depends on `cellflow-core`.
-- [`cellflow-core`](packages/cellflow-core) — shared TIFF/path helpers, generic
-  image ops + label-stack IO, the shared interactive-correction base, the track
-  lineage model, and reusable napari UI primitives.
-
-Divergence-based cell segmentation is no longer published as a standalone wheel;
-it ships inside the full `cellflow` plugin (`pip install cellflow[all]`), reachable
-as the **Cell** stage of the `CellFlow` workflow widget.
-
-## Main Capabilities
-
-- napari plugin UI with a unified `CellFlow` workflow widget.
-- Local Cellpose-SAM runner for nucleus and cell channels.
-- Nucleus segmentation-input generation, Ultrack database building, solving,
-  database browsing, and interactive correction.
-- Cell segmentation workflow using Cellpose-derived probabilities, flow
-  filtering, foreground masks, contour maps, and tracked label output.
-- Interactive nucleus/cell correction tools with synchronized label selection.
-- Validation/anchor-aware resolving for corrected tracks.
-- Contact-analysis export to HDF5 and napari visualization of cell contacts,
-  edges, and T1 events.
-
-## High-Level Workflow
-
-CellFlow expects a project directory containing one directory per position, for
-example `pos00`, `pos01`, and so on. The current workflow uses staged
-subdirectories inside each position:
+CellFlow processes a project directory with **one subdirectory per position**
+(`pos00`, `pos01`, …). Within each position, work flows through staged
+subdirectories, each stage reading the previous one's plain `.tif` or HDF5 files
+off disk:
 
 ```text
 pos00/
-  0_input/             raw prepared input stacks
-  1_cellpose/          Cellpose probability and flow outputs
-  2_nucleus/           nucleus segmentation, Ultrack database, tracked labels
-  3_cell/              cell segmentation and tracked labels
-  aggregate_quantification/  quantification output (contact_analysis.h5 + tables)
+  0_input/                    raw prepared input stacks
+  1_cellpose/                 Cellpose probability and flow outputs + divergence maps
+  2_nucleus/                  nucleus segmentation, Ultrack database, tracked labels
+  3_cell/                     cell segmentation and tracked labels
+  aggregate_quantification/   quantification output (contact_analysis.h5 + tables)
 ```
 
-Typical use is:
-
-1. Provide input stacks under `0_input/`.
-2. Run Cellpose for nucleus and cell channels to create probability, flow, and
-   z-average TIFFs under `1_cellpose/`.
-3. Build nucleus contour/foreground sources, create an Ultrack database, solve
-   tracks, and correct/validate nucleus labels under `2_nucleus/`.
-4. Generate cell foregrounds/contours and tracked cell labels under `3_cell/`.
-5. Build quantification under `aggregate_quantification/` and inspect the results
-   in napari.
+The full app drives every stage in order; each standalone piece owns one stage
+and reads the files on disk, so you can enter the pipeline wherever your data
+already sits. The [staged-workflow guide](docs/manual/workflow.md) walks through
+what each stage produces.
 
 ## Installation
 
-CellFlow is packaged with `pyproject.toml` and currently requires Python 3.10 or
-newer.
-
-For development from a local checkout:
+CellFlow requires **Python 3.10+**. Each piece is a standalone tool: install the
+one whose job you have (the table above says which), with its engines switched on.
 
 ```bash
-python -m pip install -e .
+pip install "cellflow-cellpose[cellpose,laptrack]"  # sparse cells: segment + track
+pip install "cellflow-tracking[solve]"              # maps → tracks + correction
+pip install cellflow-aggregate                      # tracked labels → contacts (HDF5)
 ```
 
-For the full interactive workflow, install the optional Cellpose and Ultrack
-dependencies:
+To take the whole interactive workflow at once, install the meta-package:
 
 ```bash
-python -m pip install -e .[all]
+pip install cellflow[all]
 ```
 
-For linting support declared by the project:
+**About the `[...]`.** The bracketed names are optional dependency groups the
+package switches on, not separate packages. `cellflow-cellpose` needs `[cellpose]`
+to segment (this pulls in Cellpose-SAM and PyTorch) and `[laptrack]` to track;
+`cellflow-tracking` needs `[solve]` for the Ultrack solver. They are optional
+because PyTorch installs differently for every CUDA/CPU setup: install the `torch`
+build that matches your machine first, then add the package and pip leaves your
+torch alone. Without its engine a piece imports but cannot do its headline job, so
+the commands above turn the engines on by default.
 
-```bash
-python -m pip install -e .[dev]
-```
+`cellflow-core` is the shared library. The other pieces pull it in automatically;
+install it alone (`pip install cellflow-core`) only to build on top of it.
 
-The core declared dependencies include napari, Qt support through `qtpy`,
-NumPy/SciPy/scikit-image, pandas, tifffile, h5py, SQLAlchemy, matplotlib,
-pymaxflow, pydantic, and numba. Cellpose, PyTorch, torchvision, and Ultrack are
-declared as optional workflow extras.
+From a local checkout, add `-e` and swap the name for `.`, for example
+`python -m pip install -e .[all]`. The [installation guide](docs/manual/install.md)
+has the full extras matrix.
 
-## External and Optional Tools
+## Basic usage in napari
 
-- **Cellpose / Cellpose-SAM**: CellFlow includes a local runner based on
-  `cellpose>=4.0`. Install with `python -m pip install -e .[cellpose]`.
-  GPU use is detected through PyTorch when available; CPU use is the fallback.
-- **Ultrack**: The nucleus-tracking stages import Ultrack for candidate
-  segmentation, database construction, linking, and solving. Install with
-  `python -m pip install -e .[tracking]`.
-
-## Basic Usage in napari
-
-After installation, start napari:
+Start napari, then open the plugin from the menu:
 
 ```bash
 napari
+# then: Plugins > CellFlow > CellFlow
 ```
-
-Then open the main plugin widget from the napari plugin menu:
-
-- `Plugins > CellFlow > CellFlow`
 
 In the main `CellFlow` widget:
 
 1. Select a project directory.
-2. Set or load project metadata such as pixel size, time interval, condition,
-   and position.
-3. Expand the workflow sections in order: project status, Cellpose, nucleus
-   segmentation/tracking, cell segmentation, and contact analysis.
+2. Set or load project metadata: pixel size, time interval, condition,
+   position. The widget saves and loads `cellflow_config.json` in the project
+   directory.
+3. Expand the workflow sections in run order: project status, Cellpose, nucleus
+   tracking, cell segmentation, contact analysis.
 
-The widget can save and load `cellflow_config.json` files in the selected
-project directory.
+> 📷 **Screenshot:** the metadata panel filled in for one position, with the
+> **Save config** button that writes `cellflow_config.json`.
 
-## Public API Boundary
+> 📷 **Screenshot:** the contact-analysis view in napari, cell-cell edges drawn
+> over the tracked labels with a T1 event highlighted.
 
-CellFlow is currently published primarily as a napari plugin and research
-workflow package. The top-level `import cellflow` exposes only `__version__`
-and intentionally avoids importing napari, Cellpose, Ultrack, or other heavy
-workflow dependencies.
+## Programmatic use
 
-Programmatic use should import from the relevant subpackages, such as
-`cellflow.segmentation`, `cellflow.tracking_ultrack`,
-`cellflow.correction`, and `cellflow.contact_analysis` (with generic
-label-stack IO in `cellflow.core.label_store`). These subpackage APIs
-are useful for scripting and testing, but they should still be treated as
-provisional until the public release and manuscript stabilize.
+CellFlow is published primarily as a napari plugin, but the stages are scriptable.
+The top-level `import cellflow` exposes only `__version__` and deliberately avoids
+importing napari, Cellpose, or Ultrack, so importing the package is cheap.
+
+Import the stage you need directly: `cellflow.segmentation`,
+`cellflow.tracking_ultrack`, `cellflow.correction`, and
+`cellflow.contact_analysis`, with generic label-stack IO in
+`cellflow.core.label_store`. These APIs are useful for scripting and testing, and
+are provisional until the public release stabilizes.
 
 ## Testing
 
-Install the package with the declared development dependencies, then run:
+Install the development dependencies, then run the suite:
 
 ```bash
 python -m pip install -e .[dev]
-```
-
-```bash
 python -m pytest
 ```
 
-For headless systems, set Qt to offscreen before running napari/Qt tests:
+On a headless machine, set Qt to offscreen before the napari/Qt tests:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python -m pytest tests/napari
 ```
 
-Focused test examples:
+Individual stages test in isolation:
 
 ```bash
 python -m pytest tests/segmentation
@@ -182,13 +149,8 @@ python -m pytest tests/tracking_ultrack
 python -m pytest tests/contact_analysis
 ```
 
-Some tests or workflow stages may require optional packages such as Ultrack,
-Cellpose, or napari/Qt.
-
-## Archived Experiments
-
-Exploratory one-off scripts are kept under `notes/archived_scripts/` so the
-installable package and active test surface stay focused on maintained code.
+Some tests and workflow stages need the optional packages (Ultrack, Cellpose, or
+napari/Qt) and skip when those are absent.
 
 ## AI Usage Disclosure
 
@@ -206,12 +168,12 @@ ethical/legal compliance of the submitted work.
 
 ## Citation
 
-If you use CellFlow, please cite the software using the metadata in
-`CITATION.cff`. A DOI and manuscript citation will be added when the public
-release and associated manuscript are ready. For pre-publication citation
-questions, contact Artur Ruppel at `artur@ruppel.pro`.
+If you use CellFlow, cite the software using the metadata in `CITATION.cff`. A
+DOI and manuscript citation will be added when the public release and associated
+manuscript are ready. For pre-publication citation questions, contact Artur
+Ruppel at `artur@ruppel.pro`.
 
 ## License
 
 CellFlow is distributed under the AGPL-3.0 license. See the repository-level
-`LICENSE` file for the full license terms.
+`LICENSE` file for the full terms.

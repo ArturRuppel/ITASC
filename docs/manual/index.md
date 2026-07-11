@@ -1,32 +1,35 @@
 # Choosing your install
 
-CellFlow is factored into independently installable distributions that share the
-`cellflow.*` namespace ([PEP 420](https://peps.python.org/pep-0420/)). The full
-plugin orchestrates them into one unified workflow, but each piece installs and
-runs on its own. Pick the row that matches what you actually do.
+CellFlow is one pipeline, factored into independently installable pieces that
+share the `cellflow.*` namespace ([PEP 420](https://peps.python.org/pep-0420/)).
+The full plugin orchestrates them into one workflow, but each piece installs and
+runs on its own. Which one you want is decided by your data and where you enter
+the pipeline, not by taste: read down the first column until a row fits.
 
-| If you are… | Install | What you get | Depends on |
-| --- | --- | --- | --- |
-| Running the **whole pipeline** in napari | `pip install cellflow[all]` | The unified `CellFlow` workflow widget end to end | everything |
-| **Segmenting & tracking** with Cellpose | `pip install "cellflow-cellpose[cellpose,laptrack]"` | Cellpose-SAM native masks + laptrack tracking of 1–2 channels, with correction | `cellflow-core` |
-| **Tracking & correcting nuclei** with Ultrack | `pip install "cellflow-tracking[solve]"` | Ultrack candidate DB, solving, browsing, interactive correction | `cellflow-core` |
-| Doing **contact / aggregate analysis** | `pip install cellflow-aggregate` | Cell-cell edges, T1 events, NLS classes → HDF5 + napari views | `cellflow-core` |
-| Building **on top of CellFlow** as a library | `pip install cellflow-core` | TIFF/path/label-IO helpers, lineage model, napari UI primitives | — |
+| If you have… | Reach for | It gives you |
+| --- | --- | --- |
+| **Sparse, well-separated cells** with a cell and/or nucleus marker, and you want to segment and track one or both channels | `pip install "cellflow-cellpose[cellpose,laptrack]"` | A local Cellpose-SAM runner for native masks, then `laptrack` linking across time, with correction. One channel or two. |
+| **Dense, motile cells of varying shape** (a confluent monolayer), from raw stacks to quantified contacts | `pip install cellflow[all]` | The unified `CellFlow` workflow widget, every stage end to end. |
+| **Foreground and contour maps already** and you want to skip segmentation | `pip install "cellflow-tracking[solve]"` | Ultrack candidate database, solving, browsing, and interactive nucleus correction. |
+| **Tracked cell labels already** and you are here for the analysis | `pip install cellflow-aggregate` | Cell-cell edges, border edges, and T1 events to HDF5, with napari views. |
+| **Code to build on** | `pip install cellflow-core` | TIFF/path/label-IO helpers, the lineage model, and napari UI primitives. |
 
 The optional extras (`[cellpose]`, `[laptrack]`, `[solve]`) pull in heavy engines
-(Cellpose + PyTorch, laptrack, the Ultrack solver) that are imported lazily — so
-correction-only use does not require them.
+(Cellpose plus PyTorch, laptrack, the Ultrack solver). They are imported lazily,
+so a correction-only session never loads them, and you can drop the extra when
+you only need to browse or correct existing results.
 
-Divergence-based cell segmentation is no longer a standalone wheel; it ships
-inside the full `cellflow` plugin (`pip install cellflow[all]`) as the **Cell**
-stage of the `CellFlow` workflow widget.
+Divergence-based cell segmentation is not a standalone wheel: it ships inside the
+full `cellflow` app (`pip install cellflow[all]`) as the **Cell** stage of the
+workflow widget.
 
 ## How the pieces fit
 
 CellFlow processes a project directory with **one subdirectory per position**
-(`pos00`, `pos01`, …). Each position is processed through staged subdirectories;
-the full `CellFlow` app drives them end to end, and most stages are also
-available as a standalone wheel:
+(`pos00`, `pos01`, …). Each position moves through staged subdirectories. The
+full `cellflow` app drives them end to end; each standalone piece owns one stage
+and reads the previous stage's files off disk, so you can enter the pipeline
+wherever your data already sits.
 
 ```{mermaid}
 flowchart LR
@@ -39,5 +42,5 @@ flowchart LR
     agg["cellflow-aggregate<br/>aggregate_quantification: HDF5"]
 ```
 
-See [The staged workflow](workflow.md) for what happens at each stage, and
-[Installation](install.md) for the dependency/extra matrix.
+See [The staged workflow](workflow.md) for what each stage produces, and
+[Installation](install.md) for the dependency and extras matrix.

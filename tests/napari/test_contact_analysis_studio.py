@@ -252,20 +252,19 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
     panel.input_name_fields["nucleus"].setText("2_nucleus/tracked_labels.tif")
 
-    # Discover stages a collection (dimmed preview rows) but does not commit it.
-    staged = panel.discover(str(study))
-    assert len(staged) == 2
-    assert panel.keys() == []
+    # One additive Find adds both folders straight to the list.
+    found = panel.discover(str(study))
+    assert len(found) == 2
+    assert len(panel.keys()) == 2
     # The three nesting levels (study → condition → experiment → position) are
     # seeded with the recognized identity axes, innermost = position_id.
-    assert set(staged[0]["columns"]) >= {"condition", "experiment_id", "position_id"}
+    assert set(found[0]["columns"]) >= {"condition", "experiment_id", "position_id"}
 
-    # A manual constant tag rides onto every added row alongside the folder levels.
-    panel.add_manual_column("operator", "Ada")
-    panel.commit_discovered()
+    # A constant tag is filled onto every row via the per-selection tagging control.
+    panel.select_all()
+    panel.set_column_on_selected("operator", "Ada")
     records = widget._all_records()
     assert len(records) == 2
-    assert panel.discovered() == []
     by_id = {r["id"]: r for r in records}
     assert set(by_id) == {"pos01", "pos02"}
     assert all(r["condition"] == "ctrl" for r in records)
@@ -291,29 +290,23 @@ def test_discover_levels_add_then_csv_roundtrip(tmp_path):
     app.processEvents()
 
 
-def test_staged_preview_row_individually_removable(tmp_path):
+def test_find_accumulates_across_roots(tmp_path):
     app = _app()
     study = tmp_path / "study"
-    _make_ready_position(study, "ctrl", "exp1", "pos01")
-    _make_ready_position(study, "ctrl", "exp1", "pos02")
+    _make_ready_position(study, "wt", "exp1", "pos01")
+    _make_ready_position(study, "ko", "exp1", "pos02")
 
     widget = mod.ContactAnalysisStudioWidget()
     panel = widget._panel
     panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
-    panel.discover(str(study))
-    assert len(panel.discovered()) == 2
 
-    # Drop one staged preview before committing — the other survives. (The panel
-    # deletes selected previews before committed rows.)
-    first_key = panel.discovered()[0]["key"]
-    panel._on_preview_clicked(first_key, 0)
-    panel.delete_selected()
-    assert len(panel.discovered()) == 1
-
-    # Adding commits the remaining preview; previews clear, one record lands.
-    panel.commit_discovered()
-    assert len(widget._all_records()) == 1
-    assert panel.discovered() == []
+    # Two separate Finds accumulate into one list (deduped by folder path).
+    panel.discover(str(study / "wt"))
+    panel.discover(str(study / "ko"))
+    assert len(panel.keys()) == 2
+    # Re-scanning a root already listed adds nothing.
+    panel.discover(str(study / "wt"))
+    assert len(panel.keys()) == 2
 
     widget.deleteLater()
     app.processEvents()
@@ -328,7 +321,6 @@ def test_renaming_a_column_carries_folder_values(tmp_path):
     panel = widget._panel
     panel.input_name_fields["cell"].setText("3_cell/tracked_labels.tif")
     panel.discover(str(study))
-    panel.commit_discovered()
 
     # The folder-derived columns seed to the recognized identity axes; renaming
     # the outermost column (condition → genotype) carries the folder value across
@@ -360,8 +352,7 @@ def test_discover_refuses_mixed_depth_positions(tmp_path, monkeypatch):
     )
     widget._on_discover_requested()
 
-    # Differing depths can't line up to named levels → nothing staged, a warning.
-    assert widget._panel.discovered() == []
+    # Differing depths can't line up to named levels → nothing added, a warning.
     assert widget._panel.keys() == []
     assert "differing folder depths" in widget._catalog_status_lbl.text()
 
@@ -369,7 +360,7 @@ def test_discover_refuses_mixed_depth_positions(tmp_path, monkeypatch):
     app.processEvents()
 
 
-def test_discover_button_opens_dialog_and_stages(tmp_path, monkeypatch):
+def test_discover_button_opens_dialog_and_adds(tmp_path, monkeypatch):
     app = _app()
     study = tmp_path / "study"
     _make_ready_position(study, "ctrl", "exp1", "pos01")
@@ -381,9 +372,8 @@ def test_discover_button_opens_dialog_and_stages(tmp_path, monkeypatch):
         mod.QFileDialog, "getExistingDirectory", lambda *a, **k: str(study)
     )
     widget._on_discover_requested()
-    # Uniform-depth root → both positions staged as previews, none committed yet.
-    assert len(widget._panel.discovered()) == 2
-    assert widget._panel.keys() == []
+    # Uniform-depth root → both folders added straight to the list.
+    assert len(widget._panel.keys()) == 2
 
     widget.deleteLater()
     app.processEvents()
@@ -432,9 +422,6 @@ def test_add_is_register_only_no_build(tmp_path, monkeypatch):
     panel = widget._panel
     panel.input_name_fields["cell"].setText("cell_labels.tif")
     panel.discover(str(study))
-    assert len(panel.discovered()) == 2
-
-    panel.commit_discovered()
     records = widget._all_records()
     assert len(records) == 2
     by_id = {r["id"]: r for r in records}

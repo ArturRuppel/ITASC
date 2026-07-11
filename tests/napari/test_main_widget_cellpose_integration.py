@@ -5,6 +5,7 @@ import importlib
 import os
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -66,7 +67,7 @@ def _fake_viewer():
 
 
 def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
-    """Discover finds position folders; activating a row sets ``_pos_dir``."""
+    """Find data folders adds rows directly; activating a row sets ``_pos_dir``."""
     app = QApplication.instance() or QApplication([])
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     for cond, pos in (("WT", "p1"), ("WT", "p2"), ("KO", "p1")):
@@ -75,18 +76,35 @@ def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
         (raw / "nucleus_3dt.tif").touch()  # the discovery input file
 
     w = main_mod.CellFlowMainWidget(_fake_viewer())
-    staged = w._positions_panel.discover(str(tmp_path))
-    assert len(staged) == 3
-    assert w._positions_panel.keys() == []  # staging does not commit
-    w._positions_panel.commit_discovered()
+    found = w._positions_panel.discover(str(tmp_path))
+    assert len(found) == 3
     keys = w._positions_panel.keys()
-    assert len(keys) == 3
+    assert len(keys) == 3  # additive Find commits directly, no staging step
 
     target = str(tmp_path / "WT" / "p2")
     w._positions_panel.set_active(target)
     assert w._pos_dir == (tmp_path / "WT" / "p2")
     assert w.path_label.text() == target
     w.deleteLater()
+
+
+def test_discover_positions_handles_root_inside_a_position(tmp_path):
+    """Picking a position's own ``0_input`` folder finds the position, not a crash.
+
+    The relative input name is ``0_input/nucleus_3dt.tif``, so the derived position
+    is the parent of the chosen root. It sits above root and has no nesting under
+    it: added plainly, identified by its own folder name.
+    """
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    pos = tmp_path / "processed" / "pos11"
+    (pos / "0_input").mkdir(parents=True)
+    (pos / "0_input" / "nucleus_3dt.tif").touch()
+
+    entries = main_mod._discover_positions(
+        str(pos / "0_input"), {"nucleus": "0_input/nucleus_3dt.tif"}
+    )
+    assert [Path(e["key"]) for e in entries] == [pos]
+    assert entries[0]["columns"]["position_id"] == "pos11"
 
 
 def test_main_widget_constructs_new_cellpose_widget():
@@ -128,7 +146,7 @@ def test_folder_change_during_correction_prompts_and_can_be_declined(monkeypatch
     w.deleteLater()
 
 
-def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
+def test_load_config_is_refused_while_owner_active_and_declined(monkeypatch, tmp_path):
     """Load Config stays clickable during a mode, but a declined prompt must
     not mutate state underneath the active viewer owner."""
     app = QApplication.instance() or QApplication([])
@@ -146,7 +164,11 @@ def test_load_config_is_refused_while_owner_active_and_declined(tmp_path):
 
     prompted = []
     w.gate.confirm_handler = lambda parent, label: prompted.append(label) or False
-    w._on_load_config()
+    # Per-folder config load/save buttons are gone (config now autosaves on
+    # every run); ``_on_load_config_from`` is the remaining ``_change_context``
+    # gated config-load path.
+    monkeypatch.setattr(main_mod.QFileDialog, "getOpenFileName", lambda *a, **k: (str(cfg), ""))
+    w._on_load_config_from()
 
     assert prompted == ["stub mode"]  # the user was asked
     # Nothing was loaded — the panel's pixel size is untouched.
