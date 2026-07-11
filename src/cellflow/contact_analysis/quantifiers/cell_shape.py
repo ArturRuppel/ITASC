@@ -16,6 +16,7 @@ import numpy as np
 from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
 from cellflow.contact_analysis.shape import (
     build_object_shape,
+    compute_object_shape,
     read_shape_table,
 )
 
@@ -60,3 +61,10 @@ class CellShapeQuantifier(Quantifier):
 
     def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
         return read_shape_table(output_path)
+
+    def compute_object_table(self, inputs, *, params=None):
+        return compute_object_shape(
+            inputs.cell_labels_path,
+            pixel_size_um=inputs.pixel_size_um,
+            object_key="cell_id",
+        )
