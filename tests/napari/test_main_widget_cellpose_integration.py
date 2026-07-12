@@ -37,9 +37,25 @@ def _mock_cellpose(monkeypatch):
     fake_cellpose.models = fake_models
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
-    monkeypatch.delitem(sys.modules, "cellflow.cellpose.cellpose_runner", raising=False)
-    monkeypatch.delitem(sys.modules, "cellflow.napari.cellpose_widget", raising=False)
-    monkeypatch.delitem(sys.modules, "cellflow.napari.main_widget", raising=False)
+    reloaded = (
+        "cellflow.cellpose.cellpose_runner",
+        "cellflow.napari.cellpose_widget",
+        "cellflow.napari.main_widget",
+    )
+    for name in reloaded:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    # ``delitem`` only restores the ``sys.modules`` entry on teardown; re-importing
+    # these modules below also rebinds the same-named attribute on their parent
+    # package (e.g. ``cellflow.napari.main_widget``) to the fresh copy. That parent
+    # attribute is what ``mock.patch("cellflow.napari.main_widget.show_info")``
+    # resolves, so a leaked copy would silently divert patches in later tests away
+    # from the module other tests imported via ``from ... import``. Arm monkeypatch
+    # to restore the parent attributes to their original modules too.
+    for name in reloaded:
+        parent_name, _, attr = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and hasattr(parent, attr):
+            monkeypatch.setattr(parent, attr, getattr(parent, attr))
 
 
 def _fake_viewer():
