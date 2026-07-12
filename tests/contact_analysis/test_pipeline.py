@@ -417,3 +417,31 @@ def test_run_forwards_progress_cb(tmp_path, monkeypatch):
 
     pipeline.run(cfg, progress_cb=cb)
     assert seen["build"] is cb
+
+
+def test_run_build_false_skips_build_but_aggregates(tmp_path, monkeypatch):
+    """run(build=False) is pool-only: no per-position build, aggregate still runs.
+
+    The producer's ``.build`` overwrites its ``.h5`` unconditionally, so a plain
+    ``run`` recomputes every position. ``build=False`` must reach ``aggregate``
+    without ever touching ``build_quantities`` — the load-and-pool the napari
+    Aggregate capstone relies on."""
+    calls = {"build": 0, "aggregate": 0}
+
+    def fake_build(*a, **k):
+        calls["build"] += 1
+
+    def fake_aggregate(*a, **k):
+        calls["aggregate"] += 1
+        return {"cell_shape": tmp_path / "cell_shape.csv"}
+
+    monkeypatch.setattr(pipeline, "build_quantities", fake_build)
+    monkeypatch.setattr(pipeline, "aggregate", fake_aggregate)
+    monkeypatch.setattr(pipeline, "load_catalog", lambda p: [])
+
+    cfg = tmp_path / "config.toml"
+    cfg.write_text('catalog = "catalog.csv"\n', encoding="utf-8")
+
+    tables = pipeline.run(cfg, build=False)
+    assert calls == {"build": 0, "aggregate": 1}
+    assert "cell_shape" in tables

@@ -264,7 +264,9 @@ def author_config(
     )
 
 
-def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
+def run(
+    config_path: Path | str, *, progress_cb=None, build: bool = True
+) -> dict[str, Path]:
     """Run the whole pipeline from a TOML run-config: the "author once, then run".
 
     Loads the :class:`~cellflow.contact_analysis.config.RunConfig`, then
@@ -275,6 +277,15 @@ def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
     catalogue root), where the cheap quantities are computed in memory. Returns
     the table name → written CSV path map. The optional *progress_cb* is
     forwarded to the build stage.
+
+    Set *build* to ``False`` for **pool-only**: skip the per-position build stage
+    entirely and go straight to aggregate. The producer's ``.build`` overwrites its
+    ``.h5`` unconditionally (it is not guarded like ``ensure_contacts``), so a plain
+    ``run`` recomputes every position's contacts even when the artifact already
+    exists. ``build=False`` reads the existing ``.h5`` via each quantifier's
+    ``compute_object_table`` and computes the cheap quantities in memory — a
+    load-and-pool with no recompute. Positions missing their ``.h5`` simply
+    contribute nothing (scope them out before calling).
     """
     cfg: RunConfig = load_config(config_path)
     catalog = load_catalog(cfg.catalog)
@@ -286,10 +297,11 @@ def run(config_path: Path | str, *, progress_cb=None) -> dict[str, Path]:
     for record in catalog:
         for key, value in cfg.params.items():
             record.setdefault(key, value)
-    build_quantities(
-        catalog,
-        quantifiers=select_quantifiers(cfg.quantities),
-        params=cfg.params or None,
-        progress_cb=progress_cb,
-    )
+    if build:
+        build_quantities(
+            catalog,
+            quantifiers=select_quantifiers(cfg.quantities),
+            params=cfg.params or None,
+            progress_cb=progress_cb,
+        )
     return aggregate(catalog, cfg.out_dir, params=cfg.params or None)

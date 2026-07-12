@@ -57,17 +57,19 @@ def test_pool_positions_authors_ready_subset_and_runs(tmp_path, monkeypatch):
     ]
     seen = {}
 
-    def _fake_run(config_path):
+    def _fake_run(config_path, *, build=True):
         seen["config_path"] = Path(config_path)
+        seen["build"] = build
         return {"object_table": Path(config_path).parent / "object_table.csv"}
 
     monkeypatch.setattr(aw, "run", _fake_run)
 
     result = aw.pool_positions(ready, skipped_names=["posC"])
 
-    # The engine was driven with the authored config.
+    # The engine was driven with the authored config, pool-only (no rebuild).
     config_path = seen["config_path"]
     assert config_path.name == "config.toml"
+    assert seen["build"] is False
     # The authored catalog contains exactly the two ready positions.
     catalog = load_catalog(config_path.parent / "catalog.csv")
     names = sorted(Path(rec["position_path"]).name for rec in catalog)

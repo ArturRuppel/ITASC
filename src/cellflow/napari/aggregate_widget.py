@@ -55,7 +55,10 @@ def pool_positions(ready_records, skipped_names):
     """
     project_dir = catalogue_root(ready_records)
     config_path = author_config(project_dir, ready_records, quantities=())
-    tables = run(config_path)
+    # Pool-only: read each position's existing contacts.h5 and pool it (plus the
+    # in-memory cheap quantities). build=False skips the producer's unconditional
+    # rebuild, so ready positions are loaded, never recomputed.
+    tables = run(config_path, build=False)
     return {
         "tables": tables,
         "skipped": list(skipped_names),
