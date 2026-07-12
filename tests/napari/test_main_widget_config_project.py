@@ -1,7 +1,6 @@
 """Config autosave + project-catalog CSV behavior in the full CellFlow app."""
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from types import SimpleNamespace

@@ -18,8 +18,6 @@ import napari
 import numpy as np
 from qtpy.QtCore import Qt, QSettings, QTimer
 from qtpy.QtWidgets import (
-    QHBoxLayout,
-    QLabel,
     QVBoxLayout,
     QSizePolicy,
     QWidget,
@@ -43,9 +41,6 @@ from cellflow.napari._standalone_paths import StandalonePathsMixin
 from cellflow.napari.ui_gate import ControlClass, UiGate
 from cellflow.napari._paths import NucleusArtifactPaths, NucleusWorkspace
 from cellflow.napari._widget_helpers import tool_btn as _tool_btn
-from cellflow.napari.ui_style import (
-    stage_header_action_button as _stage_header_action_button,
-)
 from cellflow.core.commit import commit_state, promote_labels
 from cellflow.napari._state import dump_state, load_state
 from cellflow.napari.widgets import (

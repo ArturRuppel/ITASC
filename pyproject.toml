@@ -134,3 +134,9 @@ select = [
     "F811",
     "UP",
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests import napari/Qt only after setting QT_QPA_PLATFORM=offscreen, and
+# import fixtures next to the test that needs them, so module-level import
+# placement (E402) and terse one-line imports (E401) are intentional here.
+"tests/**" = ["E401", "E402"]

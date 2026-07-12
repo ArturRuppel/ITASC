@@ -142,10 +142,10 @@ def set_active_theme(name: str) -> None:
 
 STAGE_ACCENTS = {
     "project_status":   "sapphire",
-    "cellpose":         "peach",
-    "nucleus":          "green",
-    "cell":             "lavender",
-    "contact_analysis": "mauve",
+    "cellpose":         "sapphire",
+    "nucleus":          "peach",
+    "cell":             "green",
+    "contact_analysis": "lavender",
     "aggregate":        "teal",
 }
 

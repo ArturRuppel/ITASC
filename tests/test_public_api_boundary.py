@@ -64,7 +64,7 @@ def test_top_level_import_does_not_import_ui_or_optional_workflow_modules() -> N
 def test_readme_documents_public_api_boundary() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "## Public API Boundary" in readme
+    assert "## Programmatic use" in readme
     assert "`import cellflow` exposes only `__version__`" in readme
     assert "napari plugin" in readme
     assert "provisional" in readme
