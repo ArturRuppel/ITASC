@@ -13,6 +13,10 @@ packages/_wheels/
 .ipynb_checkpoints/
 *.so
 .env
+
+# Local sample/test datasets (image + segmentation data, not code)
+sample_data/
+sample_data_dimensionality_test/
 .venv
 .envrc
 .claude/

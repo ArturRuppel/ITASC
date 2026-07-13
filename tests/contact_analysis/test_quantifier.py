@@ -172,8 +172,11 @@ def test_contacts_quantifier_build_and_read(tmp_path):
 def test_output_subdir_is_stage_numbered():
     from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
     from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+    # The dynamics quantifiers still persist under the stage-numbered folder…
     assert OUTPUT_SUBDIR == "4_contact_analysis"
-    assert CONTACT_ANALYSIS_RELPATH == "4_contact_analysis/contact_analysis.h5"
+    # …but the contacts h5 lives in the position base folder, beside the
+    # committed labels (one homogeneous layout for the downstream-stable outputs).
+    assert CONTACT_ANALYSIS_RELPATH == "contact_analysis.h5"
 
 
 # --------------------------------------------------------- supported_quantities

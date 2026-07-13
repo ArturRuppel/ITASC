@@ -6,7 +6,7 @@ plugin embeds the contact-visualization display for one selected position and
 turns exclude actions into rows of the curation CSV — via the Qt-free
 :class:`~cellflow.napari.contact_analysis.curation_controller.CurationController`,
 which auto-saves so the table is always the source of truth. No plots live here
-(Iris owns plotting).
+(plotting is a downstream concern).
 """
 from __future__ import annotations
 

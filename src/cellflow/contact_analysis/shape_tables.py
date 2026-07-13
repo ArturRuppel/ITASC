@@ -20,7 +20,7 @@ declares its natural index (``table_keys``); its tidy ``object_table`` is pooled
 across positions into a table named by the quantifier's ``quantity_id``. Value
 columns stay namespaced by ``quantity_id`` (``cell_shape.area_um2``) so a later
 joined *view* across tables never has colliding names. The keys and the catalogue
-metadata (``condition`` / ``experiment_id`` / ``position_id``) stay
+metadata (the classification columns — whatever the widget defined) stay
 bare. (Previously several quantities sharing an index were outer-joined into one
 wide table — that produced god tables and is gone.)
 
@@ -55,7 +55,6 @@ __all__ = [
     "table_path",
     "catalogue_root",
     "PROVENANCE_NAME",
-    "METADATA_COLUMNS",
 ]
 
 #: The single run-level provenance sidecar written beside the pooled tables. The
@@ -63,9 +62,6 @@ __all__ = [
 #: their old per-position ``.provenance.json`` sidecars are gone; this one file
 #: records how a whole aggregate run was produced instead.
 PROVENANCE_NAME = "provenance.json"
-
-#: The catalogue-metadata axes stamped (bare) onto every pooled row, in order.
-METADATA_COLUMNS = ("condition", "experiment_id", "position_id")
 
 
 @dataclass(frozen=True)
@@ -134,35 +130,42 @@ def build_table(
         raise KeyError(f"No aggregated table named {name!r}")
     quantifiers = _quantifiers_for(spec)
     frames: list[pd.DataFrame] = []
+    identity_cols: list[str] = []
+    seen: set[str] = set()
     for record in records:
         merged = _position_frame(record, quantifiers, spec.keys, params)
         if merged is None:
             continue
-        # Insert in reverse so the columns end up condition · experiment_id · position_id.
-        for key, value in reversed(list(_position_metadata(record).items())):
+        meta = _position_metadata(record)
+        for key in meta:
+            if key not in seen:
+                seen.add(key)
+                identity_cols.append(key)
+        # Insert in reverse so the metadata columns lead the frame in bag order.
+        for key, value in reversed(list(meta.items())):
             merged.insert(0, key, value)
         frames.append(merged)
     if not frames:
         return pd.DataFrame()
     pooled = pd.concat(frames, ignore_index=True)
-    _assign_row_id(pooled, spec.keys)
+    _assign_row_id(pooled, identity_cols, spec.keys)
     return pooled
 
 
-#: Identity axes that prefix every row ``id``, ahead of the table's own grain keys.
-#: ``date`` is a descriptor, not identity, so it is excluded.
-_ROW_ID_IDENTITY = ("experiment_id", "condition", "position_id")
 #: Separator joining the id components; chosen not to occur in the identifier
 #: values it concatenates.
 _ROW_ID_SEP = "|"
 
 
-def _assign_row_id(df: pd.DataFrame, keys: tuple[str, ...]) -> None:
-    """Insert a deterministic ``id`` first column: the row's identity axes plus the
-    table's grain keys, joined as a string. Stable across regeneration (a function
-    of identity, not row order) so a row keeps the same identity across rebuilds —
-    what Iris keys on, and what any upstream annotation joined by ``id`` relies on."""
-    components = [*_ROW_ID_IDENTITY, *(k for k in keys if k not in _ROW_ID_IDENTITY)]
+def _assign_row_id(
+    df: pd.DataFrame, identity_cols: Sequence[str], keys: tuple[str, ...]
+) -> None:
+    """Insert a deterministic ``id`` first column: the row's identity (the
+    classification columns) plus the table's grain keys, joined as a string.
+    Stable across regeneration (a function of identity, not row order) so a row
+    keeps the same identity across rebuilds — what downstream consumers key on,
+    and what any upstream annotation joined by ``id`` relies on."""
+    components = [*identity_cols, *(k for k in keys if k not in identity_cols)]
     present = [c for c in components if c in df.columns]
     if not present:
         return
@@ -211,23 +214,11 @@ def _position_frame(
 
 
 def _position_metadata(record: dict) -> dict[str, str]:
-    """The per-position descriptor columns stamped onto every pooled row.
-
-    The recognized identity/descriptor axes (:data:`METADATA_COLUMNS`) come first,
-    followed by any extra free-form columns (folder-derived nesting levels or
-    manual constant tags) carried in ``record["columns"]``. Extras ride along as
-    constant descriptors; they never alter the row-id identity hash. ``date`` is no
-    longer a descriptor axis (removed with the catalog's date column) and is
-    skipped even if a legacy ``columns`` bag still carries it."""
-    meta = {
-        "condition": str(record.get("condition", "")),
-        "experiment_id": str(record.get("experiment_id", "")),
-        "position_id": str(record.get("id", "")),
-    }
-    for key, value in (record.get("columns") or {}).items():
-        if key not in meta and key != "date":  # recognized axes already stamped; date dropped
-            meta[key] = str(value)
-    return meta
+    """The per-position descriptor columns stamped onto every pooled row — the
+    record's classification columns (``record["columns"]``, the widget columns),
+    verbatim. Their combination is the position's identity: it forms the row-id
+    prefix and is what the aggregator checks for uniqueness."""
+    return {key: str(value) for key, value in (record.get("columns") or {}).items()}
 
 
 def catalogue_root(records: Sequence[dict]) -> Path:
@@ -272,6 +263,7 @@ def aggregate(
     names (unknown / non-tabular ids — e.g. the ``contacts`` producer — are simply
     absent from the table registry and ignored). An empty sequence writes nothing.
     """
+    _require_unique_identity(records)
     root = Path(out_dir) if out_dir is not None else catalogue_root(records)
     selected = None if quantities is None else set(quantities)
     written: dict[str, Path] = {}
@@ -295,6 +287,43 @@ def aggregate(
     if written:
         _write_run_provenance(root, records, quant_meta, params)
     return written
+
+
+def _identity(record: dict) -> tuple[tuple[str, str], ...]:
+    """A position's identity: its classification columns as a name-sorted tuple of
+    ``(column, value)`` pairs. Two positions with equal identities would pool their
+    cells under one row-id and silently merge — the collision the aggregator refuses."""
+    columns = record.get("columns") or {}
+    return tuple(sorted((str(k), str(v)) for k, v in columns.items()))
+
+
+def _require_unique_identity(records: Sequence[dict]) -> None:
+    """Refuse to aggregate when the classification columns do not uniquely identify
+    the in-scope positions.
+
+    The pooled row-id is the combination of a position's columns plus the grain
+    keys; if two positions share every column value, their cells collapse onto the
+    same identities and merge silently. Rather than corrupt the pooled table, stop
+    and explain which positions collide and that a distinguishing column is needed.
+    """
+    groups: dict[tuple[tuple[str, str], ...], list[dict]] = {}
+    for record in records:
+        groups.setdefault(_identity(record), []).append(record)
+    collisions = {ident: recs for ident, recs in groups.items() if len(recs) > 1}
+    if not collisions:
+        return
+    blocks = []
+    for ident, recs in collisions.items():
+        shown = ", ".join(f"{name}={value!r}" for name, value in ident) or "(no columns)"
+        paths = "\n".join(f"    {r.get('position_path', '?')}" for r in recs)
+        blocks.append(f"  {shown}\n{paths}")
+    detail = "\n".join(blocks)
+    raise ValueError(
+        "Cannot aggregate: these positions are not uniquely identified by their "
+        "columns. Positions sharing identical column values would pool their cells "
+        "under one identity and silently merge. Add or edit a column that "
+        f"distinguishes them:\n{detail}"
+    )
 
 
 def _write_run_provenance(
@@ -330,14 +359,16 @@ def _write_run_provenance(
 
 
 def _provenance_position(record: dict) -> dict[str, str]:
-    """Identity + source paths for one contributing position, for provenance."""
-    return {
-        "position_id": str(record.get("id", "")),
-        "experiment_id": str(record.get("experiment_id", "")),
-        "condition": str(record.get("condition", "")),
+    """Identity + source paths for one contributing position, for provenance.
+
+    The identity is the position's classification columns (verbatim), alongside its
+    source paths — enough to trace any pooled row back to the folder it came from."""
+    prov = {
         "position_path": str(record.get("position_path", "")),
         "contact_analysis_path": str(record.get("contact_analysis_path", "")),
     }
+    prov.update({key: str(value) for key, value in (record.get("columns") or {}).items()})
+    return prov
 
 
 def read_table(path: Path | str) -> pd.DataFrame:
@@ -345,11 +376,12 @@ def read_table(path: Path | str) -> pd.DataFrame:
     (``frame`` / ``*_id``) so downstream group-bys match the in-memory build."""
     df = pd.read_csv(path)
     for column in df.columns:
-        # The integer keys (``frame`` / per-object ``*_id``); ``position_id`` is a
-        # string metadata column, not an integer key, so it is excluded. Only a
-        # numeric, fully-populated column is narrowed (an outer-join NaN keeps the
-        # column float).
-        if (column == "frame" or column.endswith("_id")) and column != "position_id":
+        # The integer grain keys (``frame`` / per-object ``*_id``). The row-id
+        # column is named exactly ``id`` (never matches ``*_id``) and stays a
+        # string; classification columns are strings and only narrow when they
+        # happen to be fully numeric — harmless for a descriptor. Only a numeric,
+        # fully-populated column is narrowed (an outer-join NaN keeps it float).
+        if column == "frame" or column.endswith("_id"):
             if pd.api.types.is_numeric_dtype(df[column]) and df[column].notna().all():
                 df[column] = df[column].astype(np.int64)
     return df

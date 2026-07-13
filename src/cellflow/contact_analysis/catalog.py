@@ -7,7 +7,7 @@ via :func:`discover_catalog_entries`.
 Each row anchors on a ``position_path`` — the **absolute** path to the position
 folder — and stores every file (the contact-analysis ``.h5``, cell labels,
 nucleus labels) as a path **relative to that folder** (e.g.
-``4_contact_analysis/contact_analysis.h5``). Persisting the position folder lets
+``contact_analysis.h5``, beside the committed labels). Persisting the position folder lets
 downstream tools (notably the NLS classifier) resolve their own per-position
 relative paths against it. Older catalogs that lack ``position_path`` still load:
 their file paths are resolved relative to the CSV file's directory.
@@ -20,53 +20,41 @@ import os
 from pathlib import Path
 from collections.abc import Iterable
 
-from .quantifier import OUTPUT_SUBDIR
-
 STATUS_READY = "ready"
 STATUS_INCOMPLETE = "incomplete"
 
-#: The contacts ``.h5`` is a *derived* Contact Analysis output, not a
-#: discovery input — every position's path is the fixed default location under
-#: the shared :data:`OUTPUT_SUBDIR` folder.
-CONTACT_ANALYSIS_RELPATH = f"{OUTPUT_SUBDIR}/contact_analysis.h5"
+#: The contacts ``.h5`` is a *derived* Contact Analysis output, not a discovery
+#: input. It lives in the position base folder, beside the committed
+#: ``cell_labels.tif`` / ``nucleus_labels.tif`` — one homogeneous layout for every
+#: downstream-stable per-position artifact.
+CONTACT_ANALYSIS_RELPATH = "contact_analysis.h5"
 
-# Identity columns validated on load. ``position_path`` is the anchor every
-# canonical artifact path is resolved against, so it is required.
-REQUIRED_CSV_COLUMNS = ("position_path", "condition", "id")
-# Full column order written on save: the absolute position folder, the canonical
-# contact-analysis h5 (relative to it), identity, and the two committed label
-# images (relative). The cheap derived quantities are pooled-only (no per-position
-# file), so no ``date`` / ``notes`` / free-form ``path`` columns.
+# The only column validated on load: ``position_path`` is the anchor every
+# canonical artifact path is resolved against, so it is required. A position's
+# *identity* is the combination of its classification columns (whatever the
+# widget defined); that is validated for uniqueness at aggregate time, not here.
+REQUIRED_CSV_COLUMNS = ("position_path",)
+# The fixed structural columns written first: the absolute position folder, the
+# canonical contact-analysis h5 (relative to it), and the two committed label
+# images (relative). The classification columns — the widget columns, whatever
+# they are named — follow, verbatim (see :func:`save_catalog`). No privileged
+# ``condition`` / ``experiment_id`` / ``id`` columns: a position is identified by
+# the combination of its own columns, not a fixed triple.
 CSV_COLUMNS = (
     "position_path",
-    "contact_analysis_path",
-    "condition",
-    "experiment_id",
-    "id",
+    "contact_analysis",
     "cell_labels",
     "nucleus_labels",
 )
 
-#: The free-form metadata bag (``record["columns"]``) carries one entry per
-#: folder-nesting level plus any manual constant tags. These canonical bag keys
-#: have a dedicated CSV home (``position_id`` is the bag's name for the ``id``
-#: column); every other bag key is an *extra* free-form column, appended to the
-#: CSV header after :data:`CSV_COLUMNS`.
-_BAG_TO_CSV = {
-    "condition": "condition",
-    "experiment_id": "experiment_id",
-    "date": "date",
-    "position_id": "id",
-    "notes": "notes",
-}
-#: Flat recognized metadata fields handled explicitly by normalization — never
-#: copied verbatim into the free-form bag (they map to canonical bag keys).
-_RECOGNIZED_FLAT = frozenset({"condition", "experiment_id", "date", "notes"})
-#: Structural / internal record keys that are never free-form metadata columns.
-_NON_COLUMN_KEYS = frozenset(
+#: Structural / internal record keys that are never classification columns.
+#: Everything else on a record — a flat CSV field or an entry in its ``columns``
+#: bag — is a free-form classification column and rides through verbatim.
+_STRUCTURAL_KEYS = frozenset(
     {
         "path",
         "position_path",
+        "contact_analysis",
         "contact_analysis_path",
         "cell_labels",
         "nucleus_labels",
@@ -74,10 +62,6 @@ _NON_COLUMN_KEYS = frozenset(
         "nucleus_tracked_labels_path",
         "contact_analysis_status",
         "columns",
-        "condition_id",
-        "id",
-        "position_id",
-        "labels",  # legacy alias for notes
         "pixel_size_um",
         "time_interval_s",
     }
@@ -121,7 +105,14 @@ def discovered_level_depth(
 
 
 def load_catalog(csv_path: Path | str) -> list[dict]:
-    """Load CSV catalog records and expose normalized compatibility keys."""
+    """Load CSV catalog records and expose normalized compatibility keys.
+
+    Only ``position_path`` is required. Uniqueness of the position *identity* (the
+    combination of classification columns) is **not** checked here — a catalog may
+    hold more positions than any one run aggregates; the aggregator validates
+    uniqueness over the in-scope subset and refuses with an explanation there (see
+    :func:`cellflow.contact_analysis.shape_tables.aggregate`).
+    """
     catalog_path = Path(csv_path)
     with catalog_path.open(newline="") as handle:
         reader = csv.DictReader(handle)
@@ -136,35 +127,7 @@ def load_catalog(csv_path: Path | str) -> list[dict]:
             for row in reader
         ]
 
-    _check_unique_identity(records)
     return sorted(records, key=_catalog_sort_key)
-
-
-def _identity_key(record: dict) -> tuple[str, str, str]:
-    """The axes that must jointly identify a position: a collision here would
-    silently pool two positions' cells under one group downstream."""
-    return (
-        str(record.get("experiment_id", "")),
-        str(record.get("condition", "")),
-        str(record.get("id", "")),
-    )
-
-
-def _check_unique_identity(records: Iterable[dict]) -> None:
-    counts: dict[tuple[str, str, str], int] = {}
-    for record in records:
-        key = _identity_key(record)
-        counts[key] = counts.get(key, 0) + 1
-    duplicates = [key for key, count in counts.items() if count > 1]
-    if duplicates:
-        listed = "; ".join(
-            f"(experiment_id={e!r}, condition={c!r}, position_id={p!r})"
-            for e, c, p in duplicates
-        )
-        raise ValueError(
-            "Catalog has duplicate position identities that would silently merge "
-            f"two positions' cells downstream: {listed}. Give each a distinct id."
-        )
 
 
 def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
@@ -181,15 +144,15 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
         _normalize_catalog_record(record, base_dir=catalog_path.parent)
         for record in records
     ]
-    # The header is the fixed core columns plus the union of every free-form
-    # column (folder levels + manual tags) across records, in first-seen order.
-    # Recognized bag keys map to existing core columns, so only the *extras*
-    # extend the header — keeping legacy catalogs byte-identical.
+    # The header is the fixed structural columns plus every classification column
+    # (the widget columns — folder levels + manual tags), in first-seen order.
+    # There are no privileged identity columns: whatever the widget shows is what
+    # the CSV holds, one column per column.
     extras: list[str] = []
     seen: set[str] = set()
     for normalized in normalized_records:
         for key in normalized.get("columns", {}):
-            if key in _BAG_TO_CSV or key in seen:
+            if key in CSV_COLUMNS or key in seen:
                 continue
             seen.add(key)
             extras.append(key)
@@ -206,12 +169,9 @@ def save_catalog(csv_path: Path | str, records: Iterable[dict]) -> None:
             columns = normalized.get("columns", {})
             row = {
                 "position_path": str(position_path) if position_path is not None else "",
-                "contact_analysis_path": _path_for_csv(
+                "contact_analysis": _path_for_csv(
                     normalized["contact_analysis_path"], file_base
                 ),
-                "condition": normalized["condition"],
-                "experiment_id": normalized["experiment_id"],
-                "id": normalized["id"],
                 "cell_labels": _optional_path_for_csv(
                     normalized.get("cell_tracked_labels_path"), file_base
                 ),
@@ -241,7 +201,12 @@ def merge_catalog_records(existing: Iterable[dict], incoming: Iterable[dict]) ->
 
 
 def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dict:
-    """Return a record with required CSV fields and widget compatibility keys."""
+    """Return a record with resolved paths and a normalized ``columns`` bag.
+
+    The classification columns are carried verbatim in ``record["columns"]`` (the
+    widget columns). There are no privileged identity fields: a record's identity
+    is the combination of its columns, validated downstream at aggregate time.
+    """
     normalized = dict(record)
 
     # Absolute position folder; the anchor for this position's relative file
@@ -256,38 +221,15 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
     # known; older catalogs (no position_path) stored them relative to the CSV.
     file_base = position_path if position_path is not None else base_dir
 
+    # Read the canonical ``contact_analysis`` header, falling back to the legacy
+    # ``contact_analysis_path`` / free-form ``path`` columns so older catalogs load.
     contact_analysis_path = _resolve_with_base(
-        normalized.get("path", normalized.get("contact_analysis_path", "")), file_base
+        normalized.get(
+            "contact_analysis",
+            normalized.get("path", normalized.get("contact_analysis_path", "")),
+        ),
+        file_base,
     )
-
-    # A record may carry its recognized axes flat (CSV load / legacy) or only in
-    # an incoming free-form ``columns`` bag (the folder-derived UI path). Prefer
-    # the flat field, fall back to the bag, then to the default.
-    incoming_columns = normalized.get("columns") or {}
-
-    def _meta(flat_key: str, bag_key: str, default: str) -> str:
-        value = normalized.get(flat_key)
-        if value in (None, ""):
-            value = incoming_columns.get(bag_key)
-        return str(value) if value not in (None, "") else default
-
-    date = _meta("date", "date", "unknown_date")
-    # The paired-replicate key. Its own annotation, *not* an alias for date;
-    # defaults to date only when the catalog leaves it blank (single-replicate
-    # experiments need not fill it). See the artifact-contract spec, §2.
-    experiment_id = _meta("experiment_id", "experiment_id", date)
-    condition = _meta(
-        "condition",
-        "condition",
-        str(normalized.get("condition_id", "unknown_condition")),
-    )
-    source_id = _meta(
-        "id",
-        "position_id",
-        str(normalized.get("position_id", contact_analysis_path.stem)),
-    )
-    # ``notes`` is the free-text field; accept the legacy ``labels`` column too.
-    notes = str(normalized.get("notes", normalized.get("labels", "")))
     cell_labels_path = _resolve_optional_with_base(
         normalized.get("cell_tracked_labels_path", normalized.get("cell_labels")), file_base
     )
@@ -296,17 +238,10 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
         file_base,
     )
 
-    columns = _columns_bag(normalized, condition, experiment_id, date, source_id)
+    columns = _columns_bag(normalized)
 
     normalized.update({
         "path": contact_analysis_path,
-        "date": date,
-        "condition": condition,
-        "id": source_id,
-        "notes": notes,
-        "condition_id": condition,
-        "experiment_id": experiment_id,
-        "position_id": source_id,
         "columns": columns,
         "position_path": position_path,
         "contact_analysis_path": contact_analysis_path,
@@ -317,33 +252,26 @@ def _normalize_catalog_record(record: dict, base_dir: Path | None = None) -> dic
     return normalized
 
 
-def _columns_bag(
-    record: dict, condition: str, experiment_id: str, date: str, position_id: str
-) -> dict[str, str]:
-    """The canonical free-form metadata bag for a record.
+def _columns_bag(record: dict) -> dict[str, str]:
+    """The classification-column bag for a record — the widget columns, verbatim.
 
-    Holds one entry per folder-nesting level plus any manual constant tags. The
-    recognized identity/pooling axes always appear under their canonical bag keys
-    (``position_id`` for the ``id`` column); every other non-structural,
-    non-``None`` field — whether a flat CSV column or an entry in an incoming
-    ``columns`` dict — rides along as an extra column. ``notes`` is display-only
-    and excluded (it never becomes a downstream metadata axis)."""
+    Every non-structural field rides along as a column: a flat CSV field surfaced
+    by ``csv.DictReader`` (legacy or hand-written catalogs) first, then an explicit
+    incoming ``columns`` dict (the folder-derived UI path) overriding. The
+    combination of these columns *is* the position's identity."""
     bag: dict[str, str] = {}
-    # Flat extras first (a CSV load surfaces extra columns as flat keys)…
+    # Flat columns first (a CSV load surfaces every column as a flat key)…
     for key, value in record.items():
-        if key in _NON_COLUMN_KEYS or key in _RECOGNIZED_FLAT or value is None:
+        if key in _STRUCTURAL_KEYS or value is None:
             continue
-        bag[key] = str(value)
+        # ``id`` was the legacy privileged position column and is the pooled
+        # row-id column downstream — a classification column may not use that
+        # name, so carry its value under ``position_id`` (which is what it meant).
+        # A real ``position_id`` column, if also present, wins (it comes later).
+        bag["position_id" if key == "id" else key] = str(value)
     # …then an explicit incoming bag overrides (the UI / round-trip path).
     for key, value in (record.get("columns") or {}).items():
-        if key == "notes":
-            continue
         bag[key] = str(value)
-    # Recognized axes win last so they always carry the normalized values.
-    bag["condition"] = condition
-    bag["experiment_id"] = experiment_id
-    bag["date"] = date
-    bag["position_id"] = position_id
     return bag
 
 
@@ -452,9 +380,10 @@ def _optional_path_for_csv(path: Path | str | None, base_dir: Path) -> str:
     return _path_for_csv(Path(path), base_dir)
 
 
-def _catalog_sort_key(record: dict) -> tuple[str, str, str]:
-    return (
-        str(record.get("condition", record.get("condition_id", ""))),
-        str(record.get("date", "")),
-        str(record.get("id", record.get("position_id", ""))),
-    )
+def _catalog_sort_key(record: dict) -> tuple[tuple[str, ...], str]:
+    """Order by the classification columns (name-sorted values), then the position
+    folder — a stable order that groups like-classified positions together
+    regardless of what the columns are named."""
+    columns = record.get("columns") or {}
+    values = tuple(str(columns[key]) for key in sorted(columns))
+    return (values, str(record.get("position_path") or ""))

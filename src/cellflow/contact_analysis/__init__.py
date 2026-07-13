@@ -7,7 +7,7 @@ This package hosts the quantifier seam. The stable, napari-free surface that the
 load/save helpers and the quantifier registry. Everything it produces is
 **label-agnostic**: tidy CSVs with no subpopulation classification baked in.
 Reduction to replicate-level summaries and plotting are downstream concerns
-owned by Iris / the data repo, not this package.
+owned by the data repo, not this package.
 
 The contacts quantifier's public API (cell-cell edges, T1 events) is also
 re-exported for stability; see :mod:`cellflow.contact_analysis.contacts`.

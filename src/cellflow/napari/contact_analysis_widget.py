@@ -143,8 +143,8 @@ class ContactAnalysisWidget(QWidget):
         self._files_widget = PipelineFilesWidget(
             [
                 ("Inputs", [
-                    ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
-                    ("3_cell/tracked_labels.tif", "Cell tracked labels"),
+                    ("nucleus_labels.tif", "Nucleus labels (committed)"),
+                    ("cell_labels.tif", "Cell labels (committed)"),
                 ]),
                 ("Output", [
                     (CONTACT_ANALYSIS_RELPATH, "Contact analysis"),
@@ -208,7 +208,15 @@ class ContactAnalysisWidget(QWidget):
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 0, 0, 0)
         actions_row.setSpacing(6)
-        self.visualize_btn = QPushButton("Visualize")
+        self.recompute_btn = QPushButton("Run Contact Analysis")
+        self.recompute_btn.setToolTip(
+            "Rebuild the contact-analysis .h5 from the current inputs, then show "
+            "the overlays. Use this when the result is stale."
+        )
+        action_button(self.recompute_btn, expand=True)
+        actions_row.addWidget(self.recompute_btn, 1)
+
+        self.visualize_btn = QPushButton("Visualize Contact Analysis")
         self.visualize_btn.setToolTip(
             "Show contact-analysis overlays for the current position. "
             "If the analysis has not been computed yet, it is computed first; "
@@ -216,14 +224,6 @@ class ContactAnalysisWidget(QWidget):
         )
         action_button(self.visualize_btn, expand=True)
         actions_row.addWidget(self.visualize_btn, 1)
-
-        self.recompute_btn = QPushButton("Recompute")
-        self.recompute_btn.setToolTip(
-            "Rebuild the contact-analysis .h5 from the current inputs, then show "
-            "the overlays. Use this when the result is stale."
-        )
-        action_button(self.recompute_btn, expand=True)
-        actions_row.addWidget(self.recompute_btn, 1)
         layout.addLayout(actions_row)
 
         self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))

@@ -14,11 +14,12 @@ Canonical file layout under ``<pos_dir>/``:
                             tracked_labels.tif
     nucleus_labels.tif    — FINAL output: committed nucleus tracked labels
     cell_labels.tif       — FINAL output: committed cell tracked labels
-    4_contact_analysis/   — contact_analysis.h5 (+ shape CSVs, NLS CSV)
+    contact_analysis.h5   — FINAL output: contact graph built from the labels
 
 The numbered stage dirs hold re-runnable *working* artifacts; the base-folder
 ``nucleus_labels.tif`` / ``cell_labels.tif`` are the committed, downstream-stable
-*final* outputs (see :func:`cellflow.core.commit.promote_labels`). Contact
+*final* outputs (see :func:`cellflow.core.commit.promote_labels`), and
+``contact_analysis.h5`` — the graph derived from them — sits beside them. Contact
 Analysis discovery defaults to these committed names.
 """
 from __future__ import annotations

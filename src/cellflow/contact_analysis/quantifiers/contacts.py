@@ -52,6 +52,15 @@ class ContactsQuantifier(Quantifier):
             progress_cb=progress_cb,
         )
 
+    def default_output(self, inputs: PositionInputs) -> Path:
+        """The contacts ``.h5`` lives in the position base folder, beside the
+        committed ``cell_labels.tif`` / ``nucleus_labels.tif`` — not under the
+        shared :data:`~cellflow.contact_analysis.quantifier.OUTPUT_SUBDIR` that the
+        other (dynamics) quantifiers persist into. One homogeneous per-position
+        layout for the downstream-stable inputs and this derived-from-them graph.
+        """
+        return inputs.position_dir / self.default_output_name
+
     def read(self, output_path: Path) -> Any:
         return read_position_contacts(output_path)
 

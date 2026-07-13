@@ -175,21 +175,23 @@ def build_position_contacts(
 ) -> Path:
     """Staged-layout wrapper around :func:`build_contacts`.
 
-    Resolves the canonical ``<position>/3_cell`` and ``<position>/2_nucleus``
-    tracked-label paths when explicit paths are not supplied, then delegates to
-    the position-agnostic core. Retained for the orchestrator and out-of-repo
-    consumers that pass a position directory.
+    Resolves the *committed* ``<position>/cell_labels.tif`` and
+    ``<position>/nucleus_labels.tif`` labels (what finalize/"commit" writes to the
+    position base folder) when explicit paths are not supplied, then delegates to
+    the position-agnostic core. These are the downstream-stable inputs, not the
+    pre-commit working ``3_cell`` / ``2_nucleus`` tracked labels. Retained for the
+    orchestrator and out-of-repo consumers that pass a position directory.
     """
     position_path = Path(position_path)
     cell_labels_path = (
         Path(cell_tracked_labels_path)
         if cell_tracked_labels_path
-        else position_path / "3_cell" / "tracked_labels.tif"
+        else position_path / "cell_labels.tif"
     )
     nucleus_labels_path = (
         Path(nucleus_tracked_labels_path)
         if nucleus_tracked_labels_path
-        else position_path / "2_nucleus" / "tracked_labels.tif"
+        else position_path / "nucleus_labels.tif"
     )
     return build_contacts(
         cell_labels_path=cell_labels_path,

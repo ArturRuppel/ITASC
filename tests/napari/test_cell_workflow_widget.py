@@ -150,7 +150,6 @@ def _write_inputs(pos_dir: Path, *, T=2, Y=24, X=24) -> None:
     """
     rng = np.random.default_rng(0)
     (pos_dir / "1_cellpose").mkdir(parents=True, exist_ok=True)
-    (pos_dir / "2_nucleus").mkdir(parents=True, exist_ok=True)
     fg = np.clip(rng.normal(0.6, 0.1, (T, Y, X)), 0, 1).astype(np.float32)
     contours = np.abs(rng.normal(0, 1, (T, Y, X))).astype(np.float32)
     nuc = np.zeros((T, Y, X), np.uint32)
@@ -158,7 +157,8 @@ def _write_inputs(pos_dir: Path, *, T=2, Y=24, X=24) -> None:
     nuc[:, 16:19, 16:19] = 2
     tifffile.imwrite(pos_dir / "1_cellpose" / "cell_foreground.tif", fg)
     tifffile.imwrite(pos_dir / "1_cellpose" / "cell_contours.tif", contours)
-    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", nuc)
+    # Cell segmentation reads the *committed* nucleus labels in the base folder.
+    tifffile.imwrite(pos_dir / "nucleus_labels.tif", nuc)
 
 
 # ── construction / layout ─────────────────────────────────────────────────────
@@ -227,7 +227,9 @@ def test_pipeline_files_list_divergence_inputs_and_output(monkeypatch):
     source = Path(mod.__file__).read_text()
     assert "1_cellpose/cell_contours.tif" in source
     assert "1_cellpose/cell_foreground.tif" in source
-    assert "2_nucleus/tracked_labels.tif" in source
+    # The nucleus input is the committed base-folder labels, not the working
+    # 2_nucleus/tracked_labels.tif.
+    assert '("nucleus_labels.tif", "Nucleus labels (committed)")' in source
     assert "3_cell/tracked_labels.tif" in source
     # The split-out fill-mask intermediate is gone (derived in-process now).
     assert "cell_foreground_mask.tif" not in source

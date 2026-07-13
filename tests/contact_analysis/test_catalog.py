@@ -1,39 +1,71 @@
-"""Tests for cellflow.contact_analysis.catalog – CSV catalog + name-based discovery."""
+"""Tests for cellflow.contact_analysis.catalog – CSV catalog + name-based discovery.
+
+The catalog holds exactly the structural path columns plus the *classification
+columns* the widget defined (whatever they are named) — no privileged
+``condition`` / ``experiment_id`` / ``id`` columns. A position is identified by the
+combination of its own columns; uniqueness is enforced at aggregate time, not on
+load (see ``tests/contact_analysis/test_shape_tables.py``).
+"""
 
 from __future__ import annotations
 
-import pytest
+import csv
 
 
-def test_saved_catalog_has_slim_columns(tmp_path):
-    import csv
+def _structural_header():
+    return ["position_path", "contact_analysis", "cell_labels", "nucleus_labels"]
+
+
+def test_saved_catalog_header_is_structural_plus_widget_columns(tmp_path):
+    """The CSV header is the fixed path columns followed by the record's columns —
+    one column per widget column, verbatim, and nothing else."""
     from cellflow.contact_analysis.catalog import save_catalog
 
-    pos = tmp_path / "ctrl" / "p1"
+    pos = tmp_path / "WT" / "p1"
     pos.mkdir(parents=True)
     record = {
         "position_path": pos,
         "contact_analysis_path": pos / "4_contact_analysis" / "contact_analysis.h5",
         "cell_tracked_labels_path": pos / "cell_labels.tif",
         "nucleus_tracked_labels_path": pos / "nucleus_labels.tif",
-        "condition": "ctrl",
-        "experiment_id": "E1",
-        "id": "p1",
+        "columns": {"genotype": "WT", "position_id": "p1"},
     }
     out = tmp_path / "catalog.csv"
     save_catalog(out, [record])
 
     with out.open(newline="") as fh:
         header = next(csv.reader(fh))
+    # No privileged identity columns, no date / notes / path.
+    assert "condition" not in header
+    assert "experiment_id" not in header
+    assert "id" not in header
     assert "date" not in header and "notes" not in header and "path" not in header
-    assert header[:7] == [
-        "position_path", "contact_analysis_path", "condition",
-        "experiment_id", "id", "cell_labels", "nucleus_labels",
-    ]
+    assert header == _structural_header() + ["genotype", "position_id"]
 
 
-def test_catalog_roundtrip_slim(tmp_path):
-    from cellflow.contact_analysis.catalog import save_catalog, load_catalog
+def test_columns_are_named_exactly_as_the_widget(tmp_path):
+    """Renamed widget columns land in the CSV under their own names — the point of
+    the whole change: as many columns as the widget shows, named as it names them."""
+    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+
+    pos = tmp_path / "study" / "p1"
+    pos.mkdir(parents=True)
+    out = tmp_path / "catalog.csv"
+    save_catalog(out, [{
+        "position_path": pos,
+        "contact_analysis_path": pos / "4_contact_analysis" / "contact_analysis.h5",
+        "columns": {"drug": "nocodazole", "replicate": "r2", "field": "f07"},
+    }])
+
+    header = out.read_text().splitlines()[0].split(",")
+    assert header == _structural_header() + ["drug", "replicate", "field"]
+
+    record = load_catalog(out)[0]
+    assert record["columns"] == {"drug": "nocodazole", "replicate": "r2", "field": "f07"}
+
+
+def test_catalog_roundtrip(tmp_path):
+    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
 
     pos = tmp_path / "ctrl" / "p1"
     pos.mkdir(parents=True)
@@ -42,7 +74,7 @@ def test_catalog_roundtrip_slim(tmp_path):
         "contact_analysis_path": pos / "4_contact_analysis" / "contact_analysis.h5",
         "cell_tracked_labels_path": pos / "cell_labels.tif",
         "nucleus_tracked_labels_path": pos / "nucleus_labels.tif",
-        "condition": "ctrl", "experiment_id": "E1", "id": "p1",
+        "columns": {"condition": "ctrl", "position_id": "p1"},
     }
     out = tmp_path / "catalog.csv"
     save_catalog(out, [record])
@@ -50,7 +82,7 @@ def test_catalog_roundtrip_slim(tmp_path):
 
     assert len(loaded) == 1
     r = loaded[0]
-    assert r["condition"] == "ctrl" and r["id"] == "p1" and r["experiment_id"] == "E1"
+    assert r["columns"] == {"condition": "ctrl", "position_id": "p1"}
     assert r["contact_analysis_path"].name == "contact_analysis.h5"
     assert r["cell_tracked_labels_path"].name == "cell_labels.tif"
     assert r["nucleus_tracked_labels_path"].name == "nucleus_labels.tif"
@@ -61,13 +93,13 @@ def test_load_requires_position_path(tmp_path):
     from cellflow.contact_analysis.catalog import load_catalog
 
     out = tmp_path / "bad.csv"
-    out.write_text("condition,id\nctrl,p1\n")
+    out.write_text("condition,pos\nctrl,p1\n")
     with pytest.raises(ValueError, match="position_path"):
         load_catalog(out)
 
 
 def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
-    """Saved catalogs should use relative paths and load them as resolved contact-analysis paths."""
+    """Saved catalogs use relative paths and reload them as resolved paths."""
     from cellflow.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "analysis" / "contact_analysis.h5"
@@ -82,10 +114,7 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
 
     save_catalog(csv_path, [{
         "path": source,
-        "date": "2026-05-09",
-        "condition": "treated",
-        "id": "pos01",
-        "notes": "edge,bright",
+        "columns": {"condition": "treated", "position_id": "pos01"},
         "cell_tracked_labels_path": cell,
         "nucleus_tracked_labels_path": nucleus,
     }])
@@ -96,13 +125,6 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     assert "analysis/cell_labels.tif" in csv_text
     assert "analysis/nucleus_labels.tif" in csv_text
     assert str(source) not in csv_text
-    # date/notes are no longer catalog columns; the header no longer names
-    # them (the date *value* still appears once, as the experiment_id column's
-    # default-to-date fallback — that's the experiment_id column, not a date
-    # column).
-    header = csv_text.splitlines()[0].split(",")
-    assert "date" not in header and "notes" not in header
-    assert "edge,bright" not in csv_text
 
     records = load_catalog(csv_path)
 
@@ -111,8 +133,8 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     assert record["contact_analysis_path"] == source
     assert record["cell_tracked_labels_path"] == cell
     assert record["nucleus_tracked_labels_path"] == nucleus
-    assert record["condition"] == "treated"
-    assert record["id"] == "pos01"
+    assert record["columns"]["condition"] == "treated"
+    assert record["columns"]["position_id"] == "pos01"
     assert record["contact_analysis_status"] == "ready"
 
 
@@ -134,10 +156,7 @@ def test_save_catalog_stores_absolute_position_and_relative_files(tmp_path):
     save_catalog(csv_path, [{
         "position_path": position,
         "path": contact,
-        "date": "2026-05-09",
-        "condition": "treated",
-        "id": "pos00",
-        "notes": "",
+        "columns": {"condition": "treated", "position_id": "pos00"},
         "cell_tracked_labels_path": cell,
         "nucleus_tracked_labels_path": nucleus,
     }])
@@ -167,7 +186,7 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
     csv_path = tmp_path / "catalog.csv"
 
     save_catalog(csv_path, [{
-        "path": source, "date": "d1", "condition": "ctrl", "id": "p1", "notes": "",
+        "path": source, "columns": {"condition": "ctrl", "position_id": "p1"},
     }])
 
     record = load_catalog(csv_path)[0]
@@ -175,90 +194,56 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
     assert record["nucleus_tracked_labels_path"] is None
 
 
-def test_experiment_id_defaults_to_date_when_absent(tmp_path):
-    """experiment_id falls back to date as a *default* when not supplied."""
+def test_no_columns_still_saves_and_loads(tmp_path):
+    """A record with no classification columns is legal to persist; the CSV is just
+    the structural columns. (Aggregating >1 such position is what fails, later.)"""
     from cellflow.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
-    save_catalog(csv_path, [{
-        "path": source, "date": "2026-05-09", "condition": "c", "id": "p1", "notes": "",
-    }])
+    save_catalog(csv_path, [{"path": source, "position_path": tmp_path}])
 
+    header = csv_path.read_text().splitlines()[0].split(",")
+    assert header == _structural_header()
     record = load_catalog(csv_path)[0]
-    assert record["experiment_id"] == "2026-05-09"
+    assert record["columns"] == {}
 
 
-def test_experiment_id_is_distinct_from_date_when_provided(tmp_path):
-    """experiment_id is its own field, not an alias for date: the same experiment
-    (paired) can carry two conditions / dates while sharing one experiment_id."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
-
-    source = tmp_path / "contact_analysis.h5"
-    source.touch()
-    csv_path = tmp_path / "catalog.csv"
-    save_catalog(csv_path, [{
-        "path": source, "experiment_id": "EXP-01", "date": "2026-05-09",
-        "condition": "treated", "id": "p1", "notes": "",
-    }])
-
-    record = load_catalog(csv_path)[0]
-    # experiment_id was explicitly supplied and differs from date; it survives
-    # the round-trip on its own persisted column (date itself is no longer a
-    # catalog column, so it is not asserted here).
-    assert record["experiment_id"] == "EXP-01"
-    assert record["condition"] == "treated"
-
-
-def test_experiment_id_column_is_optional_for_legacy_catalogs(tmp_path):
-    """A hand-written CSV lacking the experiment_id column still loads, with
-    experiment_id defaulting to date (backward compatible)."""
+def test_load_maps_legacy_id_column_to_position_id(tmp_path):
+    """A catalog written by the old code carried a privileged ``id`` column; it must
+    still load, its value carried under ``position_id`` (which is what it meant)."""
     from cellflow.contact_analysis.catalog import load_catalog
 
-    source = tmp_path / "contact_analysis.h5"
-    source.touch()
+    (tmp_path / "contact_analysis.h5").touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "position_path,path,date,condition,id\n"
-        ",contact_analysis.h5,day1,ctrl,p1\n"
+        "position_path,path,condition,experiment_id,id\n"
+        ",contact_analysis.h5,ctrl,EXP-01,Pos0\n"
     )
 
     record = load_catalog(csv_path)[0]
-    assert record["experiment_id"] == "day1"
+    assert record["columns"]["position_id"] == "Pos0"
+    assert record["columns"]["condition"] == "ctrl"
+    assert record["columns"]["experiment_id"] == "EXP-01"
+    # The reserved ``id`` name never becomes a classification column.
+    assert "id" not in record["columns"]
 
 
-def test_load_catalog_rejects_duplicate_identity(tmp_path):
-    """Two rows sharing (experiment_id, condition, position_id) would silently
-    merge two positions' cells downstream; loading must error instead."""
+def test_load_does_not_reject_duplicate_identity(tmp_path):
+    """Load is permissive: a catalog may hold more positions than one run pools, so
+    identity uniqueness is checked at aggregate time, not on load."""
     from cellflow.contact_analysis.catalog import load_catalog
 
     (tmp_path / "a.h5").touch()
     (tmp_path / "b.h5").touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "position_path,path,date,condition,experiment_id,id\n"
-        ",a.h5,d1,ctrl,EXP-01,Pos0\n"
-        ",b.h5,d1,ctrl,EXP-01,Pos0\n"
+        "position_path,path,condition,position_id\n"
+        ",a.h5,ctrl,Pos0\n"
+        ",b.h5,ctrl,Pos0\n"
     )
-
-    with pytest.raises(ValueError, match="Pos0"):
-        load_catalog(csv_path)
-
-
-def test_load_catalog_allows_same_position_id_in_different_condition(tmp_path):
-    """The same position_id under a different condition is a distinct identity."""
-    from cellflow.contact_analysis.catalog import load_catalog
-
-    (tmp_path / "a.h5").touch()
-    (tmp_path / "b.h5").touch()
-    csv_path = tmp_path / "catalog.csv"
-    csv_path.write_text(
-        "position_path,path,date,condition,experiment_id,id\n"
-        ",a.h5,d1,ctrl,EXP-01,Pos0\n"
-        ",b.h5,d1,drug,EXP-01,Pos0\n"
-    )
-
+    # No raise — two identical identities load fine (the aggregator refuses them).
     assert len(load_catalog(csv_path)) == 2
 
 
@@ -286,14 +271,32 @@ def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
     assert all(e["position_path"].name.startswith("pos") for e in entries)
     assert entries[0]["cell_tracked_labels_path"] == p1 / "3_cell" / "tracked_labels.tif"
     # The contact path is always the fixed default output location.
-    assert entries[0]["contact_analysis_path"] == (
-        p1 / "4_contact_analysis" / "contact_analysis.h5"
-    )
+    assert entries[0]["contact_analysis_path"] == p1 / "contact_analysis.h5"
     assert entries[0]["nucleus_tracked_labels_path"] == p1 / "2_nucleus" / "tracked_labels.tif"
     # pos02 has no nucleus labels -> not associated.
     assert entries[1]["nucleus_tracked_labels_path"] is None
     # No metadata is assigned at discovery time.
     assert "condition" not in entries[0] and "date" not in entries[0]
+
+
+def test_discover_entry_id_becomes_position_id_column_on_save(tmp_path):
+    """The discovery skeleton's per-folder ``id`` persists as a ``position_id``
+    classification column, so a discovered catalog has a usable identity."""
+    from cellflow.contact_analysis.catalog import (
+        discover_catalog_entries,
+        load_catalog,
+        save_catalog,
+    )
+
+    pos = tmp_path / "pos01"
+    pos.mkdir()
+    (pos / "cell_labels.tif").touch()
+    entries = discover_catalog_entries(tmp_path, cell_name="cell_labels.tif")
+    csv_path = tmp_path / "catalog.csv"
+    save_catalog(csv_path, entries)
+
+    assert "position_id" in csv_path.read_text().splitlines()[0].split(",")
+    assert load_catalog(csv_path)[0]["columns"]["position_id"] == "pos01"
 
 
 def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
@@ -309,7 +312,7 @@ def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
 
     assert len(entries) == 1
     contact = entries[0]["contact_analysis_path"]
-    assert contact == pos / "4_contact_analysis" / "contact_analysis.h5"
+    assert contact == pos / "contact_analysis.h5"
     assert not contact.exists()
     assert entries[0]["cell_tracked_labels_path"] == pos / "cell_labels.tif"
 
@@ -329,7 +332,7 @@ def test_discover_catalog_entries_by_nucleus_only(tmp_path):
     assert entries[0]["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
     assert entries[0]["cell_tracked_labels_path"] is None
     # The contact-analysis output path is still derived even with no cell labels.
-    assert entries[0]["contact_analysis_path"] == pos / "4_contact_analysis" / "contact_analysis.h5"
+    assert entries[0]["contact_analysis_path"] == pos / "contact_analysis.h5"
 
 
 def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_path):
@@ -388,8 +391,8 @@ def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "position_path,path,date,condition,id,labels\n"
-        ",nested/contact_analysis.h5,day1,control,pos00,\n"
+        "position_path,path,condition,position_id\n"
+        ",nested/contact_analysis.h5,control,pos00\n"
     )
 
     records = load_catalog(csv_path)
@@ -400,33 +403,23 @@ def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
 
 
 def test_load_catalog_preserves_extra_columns(tmp_path):
-    """Extra CSV columns should remain available in loaded record dictionaries."""
+    """Every non-structural CSV column is a classification column, available both as
+    a flat key and in the columns bag."""
     from cellflow.contact_analysis.catalog import load_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "position_path,path,date,condition,id,labels,operator\n"
-        ",contact_analysis.h5,day1,control,pos00,,Ada\n"
+        "position_path,path,condition,position_id,operator\n"
+        ",contact_analysis.h5,control,pos00,Ada\n"
     )
 
-    records = load_catalog(csv_path)
+    record = load_catalog(csv_path)[0]
 
-    assert records[0]["operator"] == "Ada"
-
-
-def test_load_catalog_reports_missing_required_columns(tmp_path):
-    """Catalog validation errors should name missing required columns."""
-    import pytest
-
-    from cellflow.contact_analysis.catalog import load_catalog
-
-    csv_path = tmp_path / "catalog.csv"
-    csv_path.write_text("position_path,condition,labels\n,c,\n")
-
-    with pytest.raises(ValueError, match="id"):
-        load_catalog(csv_path)
+    assert record["operator"] == "Ada"
+    assert record["columns"]["operator"] == "Ada"
+    assert record["columns"]["condition"] == "control"
 
 
 def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
@@ -435,8 +428,8 @@ def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
 
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
-        "position_path,path,date,condition,id,labels\n"
-        ",missing.h5,day1,control,pos00,\n"
+        "position_path,path,condition,position_id\n"
+        ",missing.h5,control,pos00\n"
     )
 
     records = load_catalog(csv_path)
@@ -505,46 +498,32 @@ def test_save_catalog_persists_extra_free_form_columns(tmp_path):
     assert "r2" in csv_text
 
     record = load_catalog(csv_path)[0]
-    # Recognized levels become the identity/axis fields.
-    assert record["condition"] == "WT"
-    assert record["experiment_id"] == "E1"
-    assert record["id"] == "pos3"
-    # The extra column round-trips, both flat and in the columns bag.
-    assert record["columns"]["replicate"] == "r2"
+    assert record["columns"] == {
+        "condition": "WT",
+        "experiment_id": "E1",
+        "position_id": "pos3",
+        "replicate": "r2",
+    }
+    # And each column is also available as a flat key.
     assert record["replicate"] == "r2"
 
 
-def test_extra_columns_do_not_join_identity(tmp_path):
-    """Two rows differing only in an extra column still share an identity (error)."""
-    from cellflow.contact_analysis.catalog import load_catalog
-
-    (tmp_path / "a.h5").touch()
-    (tmp_path / "b.h5").touch()
-    csv_path = tmp_path / "catalog.csv"
-    csv_path.write_text(
-        "position_path,path,date,condition,experiment_id,id,replicate\n"
-        ",a.h5,d1,ctrl,EXP-01,Pos0,r1\n"
-        ",b.h5,d1,ctrl,EXP-01,Pos0,r2\n"
-    )
-    with pytest.raises(ValueError, match="Pos0"):
-        load_catalog(csv_path)
-
-
 def test_legacy_flat_record_gains_a_columns_bag(tmp_path):
-    """Old-style flat records (no columns key) still save/load and expose a bag."""
+    """Old-style flat records (no columns key) still save/load and expose a bag,
+    with the legacy ``id`` carried as ``position_id``."""
     from cellflow.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
     csv_path = tmp_path / "catalog.csv"
     save_catalog(csv_path, [{
-        "path": source, "date": "d1", "condition": "ctrl", "id": "p1", "notes": "",
+        "path": source, "condition": "ctrl", "id": "p1",
     }])
 
     record = load_catalog(csv_path)[0]
     assert record["columns"]["condition"] == "ctrl"
     assert record["columns"]["position_id"] == "p1"
-    # No spurious extra columns for a plain record.
+    assert "id" not in record["columns"]
     assert "replicate" not in record["columns"]
 
 
@@ -558,10 +537,10 @@ def test_merge_catalog_records_skips_duplicate_resolved_paths(tmp_path):
     other.touch()
 
     merged = merge_catalog_records(
-        [{"path": source, "date": "d", "condition": "c", "id": "p", "labels": ""}],
+        [{"path": source, "columns": {"condition": "c", "position_id": "p"}}],
         [
-            {"path": source, "date": "d", "condition": "c", "id": "dupe", "labels": ""},
-            {"path": other, "date": "d", "condition": "c", "id": "other", "labels": ""},
+            {"path": source, "columns": {"condition": "c", "position_id": "dupe"}},
+            {"path": other, "columns": {"condition": "c", "position_id": "other"}},
         ],
     )
 

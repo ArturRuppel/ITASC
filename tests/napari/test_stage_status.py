@@ -78,7 +78,7 @@ def test_cell_working_then_committed(tmp_path: Path) -> None:
 
 def test_contacts_done_when_h5_present(tmp_path: Path) -> None:
     assert position_stage_status(tmp_path)[STAGE_CONTACTS] == MISSING
-    _touch(tmp_path / "4_contact_analysis" / "contact_analysis.h5")
+    _touch(tmp_path / "contact_analysis.h5")
     assert position_stage_status(tmp_path)[STAGE_CONTACTS] == DONE
 
 

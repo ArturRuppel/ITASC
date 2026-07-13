@@ -11,6 +11,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from napari.qt import get_qapp
+from cellflow.napari._stage_status import STAGE_CELL, STAGE_CONTACTS
 from cellflow.napari.main_widget import CellFlowMainWidget
 
 
@@ -113,7 +114,7 @@ def test_catalog_record_stamps_committed_label_paths(widget, tmp_path):
 
     assert rec["cell_tracked_labels_path"] == pos / "cell_labels.tif"
     assert rec["nucleus_tracked_labels_path"] == pos / "nucleus_labels.tif"
-    assert rec["contact_analysis_path"] == pos / "4_contact_analysis" / "contact_analysis.h5"
+    assert rec["contact_analysis_path"] == pos / "contact_analysis.h5"
 
 
 def _seed_two_rows(widget, tmp_path):
@@ -174,6 +175,43 @@ def test_load_project_repopulates_panel(widget, tmp_path):
     ):
         widget._on_load_project()
     assert len(widget._positions_panel.keys()) == 2
+
+
+def test_contacts_dot_visualizes_after_retargeting(widget, tmp_path):
+    # The 4th rail dot (contacts) has no raw-image output; clicking it retargets
+    # the detail pane to the row's position and fires the Visualize action, exactly
+    # as the "Visualize Contact Analysis" button does.
+    pos = tmp_path / "posA"
+    pos.mkdir()
+    payload = {"position_path": pos}
+
+    widget.contact_analysis_widget._on_visualize = MagicMock()
+    with patch.object(widget, "_retarget_to_position") as retarget:
+        widget._on_position_stage_load(payload, STAGE_CONTACTS)
+
+    retarget.assert_called_once_with(pos)
+    widget.contact_analysis_widget._on_visualize.assert_called_once_with(overwrite=False)
+
+
+def test_contacts_dot_skips_retarget_when_already_selected(widget, tmp_path):
+    pos = tmp_path / "posA"
+    pos.mkdir()
+    widget._pos_dir = pos
+
+    widget.contact_analysis_widget._on_visualize = MagicMock()
+    with patch.object(widget, "_retarget_to_position") as retarget:
+        widget._on_position_stage_load({"position_path": pos}, STAGE_CONTACTS)
+
+    retarget.assert_not_called()
+    widget.contact_analysis_widget._on_visualize.assert_called_once_with(overwrite=False)
+
+
+def test_non_contacts_dot_loads_stage_into_viewer(widget, tmp_path):
+    pos = tmp_path / "posA"
+    pos.mkdir()
+    with patch("cellflow.napari.main_widget.load_stage") as load_stage:
+        widget._on_position_stage_load({"position_path": pos}, STAGE_CELL)
+    load_stage.assert_called_once_with(widget.viewer, pos, STAGE_CELL)
 
 
 def test_toolbar_has_project_and_params_pairs(widget):

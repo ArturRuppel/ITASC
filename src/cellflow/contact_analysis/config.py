@@ -2,8 +2,8 @@
 
 One small file, authored once and git-versioned (it carries *code status*, per the
 artifact-contract spec §1): it names the per-position **catalog** CSV, selects
-which **quantities** to compute, supplies the shared build **params**, and points
-at an optional **curation** table. Everything in it is a run-level choice — the
+which **quantities** to compute, and supplies the shared build **params**.
+Everything in it is a run-level choice — the
 per-position table itself stays a CSV (tabular, many-row, with its own
 relative-path resolution); this file is the "author once, then run" surface a
 single ``run(config)`` entry point consumes.
@@ -31,9 +31,6 @@ from .quantifier import available_quantifiers
 
 __all__ = ["RunConfig", "load_config", "write_config"]
 
-#: Default for the optional curation-table key, relative to the config dir.
-_DEFAULT_CURATION = "curation.csv"
-
 
 @dataclass(frozen=True)
 class RunConfig:
@@ -44,13 +41,10 @@ class RunConfig:
     time even when omitted). *params* is the shared build-knob mapping threaded to
     quantifiers that opt in. *out_dir* is where the pooled tidy tables land (flat);
     ``None`` defaults to the catalogue root (the positions' common ancestor).
-    *curation* names an optional exclusion table authored by the curation tool for
-    downstream consumers; the aggregate step itself writes all rows.
     """
 
     catalog: Path
     out_dir: Path | None = None
-    curation: Path = field(default=Path(_DEFAULT_CURATION))
     quantities: tuple[str, ...] = ()
     params: dict = field(default_factory=dict)
 
@@ -80,7 +74,6 @@ def load_config(config_path: Path | str) -> RunConfig:
     return RunConfig(
         catalog=_resolve(base, data["catalog"]),
         out_dir=_resolve(base, out_dir) if out_dir else None,
-        curation=_resolve(base, data.get("curation", _DEFAULT_CURATION)),
         quantities=quantities,
         params=dict(data.get("params", {})),
     )
@@ -110,7 +103,6 @@ def write_config(
     *,
     catalog: str = "catalog.csv",
     out_dir: str | None = None,
-    curation: str = _DEFAULT_CURATION,
     quantities: Sequence[str] = (),
     params: Mapping[str, object] | None = None,
 ) -> Path:
@@ -126,7 +118,6 @@ def write_config(
     path = Path(path)
     lines: list[str] = [
         f"catalog = {_toml_str(catalog)}",
-        f"curation = {_toml_str(curation)}",
     ]
     if out_dir is not None:
         lines.append(f"out_dir = {_toml_str(out_dir)}")

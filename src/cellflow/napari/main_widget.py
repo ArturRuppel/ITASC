@@ -32,7 +32,7 @@ from cellflow.napari._experiments_panel import ExperimentsPanel
 from cellflow.napari._icons import stage_action_icon
 from cellflow.napari.aggregate_widget import AggregateWidget
 from cellflow.napari._stage_loader import load_stage
-from cellflow.napari._stage_status import position_stage_status
+from cellflow.napari._stage_status import STAGE_CONTACTS, position_stage_status
 from cellflow.napari.cellpose_widget import CellposeWidget
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
 from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
@@ -235,7 +235,7 @@ class CellFlowMainWidget(QWidget):
 
         self.contact_analysis_widget = ContactAnalysisWidget(self.viewer, gate=self.gate)
         self.contact_analysis_section = CollapsibleSection(
-            "Results",
+            "Contact Analysis",
             self.contact_analysis_widget,
             expanded=False,
 
@@ -589,24 +589,43 @@ class CellFlowMainWidget(QWidget):
         if not payload or not payload.get("position_path"):
             return
         pos = Path(payload["position_path"])
+        self._change_context(lambda: self._retarget_to_position(pos))
 
-        def action() -> None:
-            self._pos_dir = pos
-            self._update_disclosure()
-            self.path_label.setText(str(pos))
-            self.path_label.setToolTip(str(pos))
-            config_path = pos / "cellflow_config.json"
-            if config_path.exists():
-                self._load_config(str(config_path))
-            self._refresh_all()
+    def _retarget_to_position(self, pos: Path) -> None:
+        """Point every detail section at *pos* — the selected folder is ``pos_dir``.
 
-        self._change_context(action)
+        Shared by row selection and the contacts rail dot; assumes the caller has
+        already cleared the active viewer owner via ``_change_context``.
+        """
+        self._pos_dir = pos
+        self._update_disclosure()
+        self.path_label.setText(str(pos))
+        self.path_label.setToolTip(str(pos))
+        config_path = pos / "cellflow_config.json"
+        if config_path.exists():
+            self._load_config(str(config_path))
+        self._refresh_all()
 
     def _on_position_stage_load(self, payload, stage: str) -> None:
-        """Click a row's rail dot → load that stage's output(s) into the viewer."""
+        """Click a row's rail dot → load that stage's output(s) into the viewer.
+
+        The contacts stage has no raw-image output, so its dot instead opens the
+        contact-analysis overlays for the row's position — the same action as the
+        "Visualize Contact Analysis" button. It first retargets the detail pane to
+        that position so the contact widget's context points at it.
+        """
         if not payload or not payload.get("position_path"):
             return
-        load_stage(self.viewer, Path(payload["position_path"]), stage)
+        pos = Path(payload["position_path"])
+        if stage == STAGE_CONTACTS:
+            def action() -> None:
+                if self._pos_dir != pos:
+                    self._retarget_to_position(pos)
+                self.contact_analysis_widget._on_visualize(overwrite=False)
+
+            self._change_context(action)
+            return
+        load_stage(self.viewer, pos, stage)
 
     def get_state(self) -> dict:
         """Return the current UI state as a dictionary."""
@@ -661,7 +680,7 @@ class CellFlowMainWidget(QWidget):
         images. Those are the *committed* outputs — ``cell_labels.tif`` /
         ``nucleus_labels.tif`` (what the finalize/"commit" button writes; see
         ``NucleusArtifactPaths.cell_labels`` / ``.nucleus_labels``) and the
-        canonical ``4_contact_analysis/contact_analysis.h5`` — not the pre-commit
+        canonical ``contact_analysis.h5`` (beside those labels) — not the pre-commit
         working paths under ``2_nucleus`` / ``3_cell``. Fill their defaults here
         (whether or not the folder has been processed yet).
         """
@@ -765,7 +784,7 @@ class CellFlowMainWidget(QWidget):
             merged = merge_catalog_records(self._positions_panel.records(), loaded)
             entries = [
                 {
-                    "key": str(rec.get("position_path") or rec["id"]),
+                    "key": str(rec.get("position_path") or rec.get("contact_analysis_path") or ""),
                     "columns": dict(rec.get("columns") or {}),
                     "payload": {"position_path": Path(rec["position_path"])}
                     if rec.get("position_path")
@@ -850,9 +869,13 @@ class CellFlowMainWidget(QWidget):
             # The contact piece is position-agnostic; the orchestrator maps the
             # staged layout onto its explicit working context.
             if pos_dir is not None:
+                # Consume the *committed* labels in the position base folder
+                # (what finalize/"commit" writes), not the pre-commit working
+                # ``3_cell`` / ``2_nucleus`` tracked labels — matching the paths
+                # the aggregate catalog stamps (see ``_catalog_record_for_position``).
                 self.contact_analysis_widget.set_context(
-                    cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
-                    nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
+                    cell_labels=pos_dir / _CELL_LABELS_RELPATH,
+                    nucleus_labels=pos_dir / _NUCLEUS_LABELS_RELPATH,
                     out_path=pos_dir / CONTACT_ANALYSIS_RELPATH,
                     status_root=pos_dir,
                 )

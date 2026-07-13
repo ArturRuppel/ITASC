@@ -9,7 +9,6 @@ def test_round_trip_minimal(tmp_path):
     write_config(path, catalog="catalog.csv", quantities=["contacts"])
     cfg = load_config(path)
     assert cfg.catalog == (tmp_path / "catalog.csv").resolve()
-    assert cfg.curation == (tmp_path / "curation.csv").resolve()
     assert cfg.quantities == ("contacts",)
     assert cfg.out_dir is None
 

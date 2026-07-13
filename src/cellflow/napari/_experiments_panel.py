@@ -31,7 +31,7 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from qtpy.QtCore import Qt, Signal
-from qtpy.QtGui import QDoubleValidator
+from qtpy.QtGui import QColor, QDoubleValidator, QPainter
 from qtpy.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -41,6 +41,7 @@ from qtpy.QtWidgets import (
     QLabel,
     QLineEdit,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTextBrowser,
     QToolButton,
@@ -83,6 +84,10 @@ _INPUT_DECIMALS = 6
 _SELBAR_W = 3
 _RAIL_W = 60
 _CHIP_W = 56
+
+#: The rows-list resize grip: its thickness, and the floor the list can't drag below.
+_GRIP_H = 11
+_MIN_ROWS_HEIGHT = 80
 
 #: Overall-status word → chip text (kept short so the chip column stays narrow).
 _CHIP_TEXT = {"run": "run", "done": "done", "queued": "queued"}
@@ -262,6 +267,82 @@ class ExperimentRow(QWidget):
         super().mousePressEvent(event)
 
 
+def _event_global_y(event) -> int:
+    """The event's global y, across the Qt5 (``globalPos``) / Qt6 split."""
+    if hasattr(event, "globalPosition"):  # Qt6
+        return int(event.globalPosition().toPoint().y())
+    return int(event.globalPos().y())  # Qt5
+
+
+class _RowsResizeGrip(QWidget):
+    """A thin handle under the rows list; drag it vertically to resize the list.
+
+    Emits ``pressed`` at grab (the panel snapshots the current height), then the
+    signed pixel delta since that press on every move — so the panel can size
+    the list live. A double-click emits ``reset`` to drop back to auto-fit.
+    Purely a controller: it owns no size state of its own.
+    """
+
+    pressed = Signal()
+    dragged = Signal(int)  # pixels moved since press (down positive)
+    reset = Signal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("experiments_rows_grip")
+        self.setFixedHeight(_GRIP_H)
+        self.setCursor(Qt.SizeVerCursor)
+        self.setToolTip("Drag to resize the list — double-click to auto-fit")
+        self._press_y: int | None = None
+        self._hover = False
+
+    def enterEvent(self, event) -> None:
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, event) -> None:
+        # A faint strip carrying a centred grab-bar — a recognisable drag handle
+        # (brighter on hover) rather than an invisible hit-zone.
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        width, height = self.width(), self.height()
+        strip_a = 26 if self._hover else 16
+        painter.setBrush(QColor(128, 128, 128, strip_a))
+        painter.drawRect(0, 0, width, height)
+        bar_w, bar_h = 44, 4
+        bar_x = (width - bar_w) // 2
+        bar_y = (height - bar_h) // 2
+        bar_a = 200 if self._hover else 130
+        painter.setBrush(QColor(128, 128, 128, bar_a))
+        painter.drawRoundedRect(bar_x, bar_y, bar_w, bar_h, bar_h // 2, bar_h // 2)
+
+    def mousePressEvent(self, event) -> None:
+        self._press_y = _event_global_y(event)
+        self.pressed.emit()
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._press_y is None:
+            return
+        self.dragged.emit(_event_global_y(event) - self._press_y)
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._press_y = None
+        event.accept()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        self.reset.emit()
+        event.accept()
+
+
 class ExperimentsPanel(QWidget):
     """Setup + an additive Find + an editable-column list of data-folder rows.
 
@@ -295,6 +376,7 @@ class ExperimentsPanel(QWidget):
         show_calibration: bool = True,
         show_output_dir: bool = False,
         show_run: bool = True,
+        max_rows_height: int = 480,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -305,6 +387,12 @@ class ExperimentsPanel(QWidget):
         self._show_calibration = show_calibration
         self._show_output_dir = show_output_dir
         self._show_run = show_run
+        self._max_rows_height = max_rows_height
+        # None → auto-fit (flush to rows, capped at max); an int → the user has
+        # dragged the grip to an explicit height. _grip_base is the drag anchor.
+        self._rows_height_override: int | None = None
+        self._grip_base: int | None = None
+        self._applied_rows_h: int = max_rows_height
 
         # Committed rows: ordered keys + per-key {columns, payload}; the shared,
         # editable column names line up over the value cells.
@@ -348,11 +436,26 @@ class ExperimentsPanel(QWidget):
         self._rows_scroll = QScrollArea()
         self._rows_scroll.setObjectName("experiments_rows_scroll")
         self._rows_scroll.setWidgetResizable(True)
-        self._rows_scroll.setMinimumHeight(220)
-        self._rows_scroll.setMaximumHeight(480)
+        # Height tracks content (see _fit_rows_height): grows flush to the rows,
+        # clamped to max_rows_height, above which the list scrolls internally.
+        # Fixed vertical policy (not the QScrollArea default Expanding) so the
+        # pinned height is honoured verbatim — otherwise the panel reads as
+        # expandable and soaks up its host's spare space, ballooning the labels.
+        self._rows_container = rows_container
+        self._rows_scroll.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed
+        )
         self._rows_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._rows_scroll.setWidget(rows_container)
         layout.addWidget(self._rows_scroll)
+
+        # A drag handle flush under the list to resize it by hand; double-click
+        # to return to auto-fit. Hidden alongside the list when there are no rows.
+        self._rows_grip = _RowsResizeGrip()
+        self._rows_grip.pressed.connect(self._on_grip_pressed)
+        self._rows_grip.dragged.connect(self._on_grip_dragged)
+        self._rows_grip.reset.connect(self._on_grip_reset)
+        layout.addWidget(self._rows_grip)
 
         layout.addLayout(self._build_list_actions())
         if self._show_run:
@@ -900,8 +1003,69 @@ class ExperimentsPanel(QWidget):
             self._rows_box.addWidget(row)
             self._rows.append(row)
 
-        self._rows_scroll.setVisible(bool(self._paths))
+        has_rows = bool(self._paths)
+        self._rows_scroll.setVisible(has_rows)
+        self._rows_grip.setVisible(has_rows)
+        self._fit_rows_height()
         self.refresh_statuses()
+
+    def _rows_content_height(self) -> int:
+        """The rows' natural stacked height, summed from the child hints.
+
+        Summing the children is deterministic right after a bulk rebuild, where
+        the container's own aggregate size hint is momentarily stale (0) until
+        the event loop lays the new rows out.
+        """
+        box = self._rows_box
+        margins = box.contentsMargins()
+        total = margins.top() + margins.bottom()
+        count = box.count()
+        for i in range(count):
+            widget = box.itemAt(i).widget()
+            if widget is not None:
+                total += widget.sizeHint().height()
+        if count > 1:
+            total += box.spacing() * (count - 1)
+        return total
+
+    def _fit_rows_height(self) -> None:
+        """Size the scroll region, honouring a dragged override else auto-fitting.
+
+        Auto-fit grows the list flush to the number of rows instead of reserving
+        a fixed slab, capped at ``max_rows_height``; past the cap it scrolls
+        internally. A grip drag pins an explicit height instead, bounded to
+        ``[_MIN_ROWS_HEIGHT, max(content, max_rows_height)]``.
+        """
+        # Add the frame both sides so the viewport fits content exactly — else a
+        # 1-2px shortfall triggers a spurious scrollbar on a list that fits.
+        natural = self._rows_content_height() + 2 * self._rows_scroll.frameWidth()
+        if self._rows_height_override is None:
+            height = min(natural, self._max_rows_height)
+        else:
+            upper = max(natural, self._max_rows_height)
+            height = max(_MIN_ROWS_HEIGHT, min(self._rows_height_override, upper))
+        self._rows_scroll.setFixedHeight(height)
+        # Remember what we applied: the grip drags from this, not from live
+        # geometry, which may not have settled between synchronous calls.
+        self._applied_rows_h = height
+
+    # -- resize grip ------------------------------------------------------
+    def _on_grip_pressed(self) -> None:
+        """Anchor the drag to the list's current (last-applied) height."""
+        self._grip_base = self._applied_rows_h
+
+    def _on_grip_dragged(self, delta: int) -> None:
+        """Resize to the anchor height plus the drag delta (clamped in _fit)."""
+        if self._grip_base is None:
+            return
+        self._rows_height_override = self._grip_base + delta
+        self._fit_rows_height()
+
+    def _on_grip_reset(self) -> None:
+        """Double-click: forget the manual size, return to auto-fit."""
+        self._rows_height_override = None
+        self._grip_base = None
+        self._fit_rows_height()
 
     def _refresh_hint(self, message: str | None = None) -> None:
         """The one status line: a transient *message*, else the empty-state CTA."""

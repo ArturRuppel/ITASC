@@ -26,11 +26,14 @@ def _record(
 ) -> dict:
     pdir = tmp / condition / pid
     pdir.mkdir(parents=True, exist_ok=True)
+    # A position's identity is the combination of its classification columns; here
+    # ``position_id`` (unique per folder) keeps each position distinct.
     return {
-        "id": pid,
-        "condition": condition,
-        "date": date,
-        "experiment_id": experiment_id if experiment_id is not None else date,
+        "columns": {
+            "condition": condition,
+            "experiment_id": experiment_id if experiment_id is not None else date,
+            "position_id": pid,
+        },
         "position_path": pdir,
         "cell_tracked_labels_path": pdir / "cells.tif",
         "contact_analysis_path": pdir / "4_contact_analysis" / "contact_analysis.h5",
@@ -87,14 +90,8 @@ def test_experiment_id_broadcast_onto_pooled_rows(tmp_path, monkeypatch):
 def test_free_form_column_broadcast_onto_pooled_rows(tmp_path, monkeypatch):
     """A folder-derived / manual free-form column rides onto every pooled row as
     a constant descriptor, without disturbing the recognized axes."""
-    rec = _record(tmp_path, "a", condition="WT", date="d1", experiment_id="E1")
-    rec["columns"] = {
-        "condition": "WT",
-        "experiment_id": "E1",
-        "date": "d1",
-        "position_id": "a",
-        "replicate": "r2",
-    }
+    rec = _record(tmp_path, "a", condition="WT", experiment_id="E1")
+    rec["columns"]["replicate"] = "r2"
     _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
 
     df = build_table("cell_shape", [rec])
@@ -198,10 +195,10 @@ def test_ids_do_not_collide_across_positions(tmp_path, monkeypatch):
     assert set(rows["position_id"]) == {"a", "b"}
 
 
-def test_pooled_table_has_no_date_column(tmp_path, monkeypatch):
-    """``date`` is a catalog-only descriptor now; it is no longer stamped onto the
-    pooled tables (removed with the catalog's date column)."""
-    rec = _record(tmp_path, "a", date="2026-05-09")
+def test_pooled_columns_are_exactly_the_record_columns(tmp_path, monkeypatch):
+    """Only the record's classification columns are stamped onto pooled rows — no
+    privileged extras, and nothing named ``date`` unless the record defined it."""
+    rec = _record(tmp_path, "a")
     _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
 
     df = build_table("cell_shape", [rec])
@@ -244,6 +241,46 @@ def test_aggregate_writes_csv_and_rewrites_whole(tmp_path, monkeypatch):
     # Re-aggregating a narrower scope rewrites the file whole (b's rows are gone).
     aggregate([rec_a], out_dir)
     assert set(read_table(path)["position_id"]) == {"a"}
+
+
+def test_aggregate_refuses_when_columns_do_not_uniquely_identify(tmp_path, monkeypatch):
+    """Two positions with identical column values would pool their cells under one
+    identity — the aggregator refuses and names them instead of merging silently."""
+    import pytest
+
+    rec_a = _record(tmp_path / "one", "p", condition="ctrl")
+    rec_b = _record(tmp_path / "two", "p", condition="ctrl")  # same columns as rec_a
+    _stub_compute(monkeypatch, CellShapeQuantifier, {"p": _cell_shape_table([1], [0])})
+
+    with pytest.raises(ValueError, match="not uniquely identified"):
+        aggregate([rec_a, rec_b], tmp_path / "catalogue")
+
+
+def test_aggregate_refuses_when_positions_have_no_columns(tmp_path):
+    """No classification columns at all → no identity; >1 such position collides."""
+    import pytest
+
+    rec_a = _record(tmp_path, "a")
+    rec_b = _record(tmp_path, "b")
+    rec_a["columns"] = {}
+    rec_b["columns"] = {}
+
+    with pytest.raises(ValueError, match="not uniquely identified"):
+        aggregate([rec_a, rec_b], tmp_path / "catalogue")
+
+
+def test_aggregate_error_names_the_colliding_positions(tmp_path):
+    """The refusal explains which folders collide, so the user knows what to fix."""
+    import pytest
+
+    rec_a = _record(tmp_path / "one", "p", condition="ctrl")
+    rec_b = _record(tmp_path / "two", "p", condition="ctrl")
+
+    with pytest.raises(ValueError) as excinfo:
+        aggregate([rec_a, rec_b], tmp_path / "catalogue")
+    message = str(excinfo.value)
+    assert str(rec_a["position_path"]) in message
+    assert str(rec_b["position_path"]) in message
 
 
 def test_aggregate_skips_empty_tables(tmp_path):

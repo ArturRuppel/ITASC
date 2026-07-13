@@ -3,7 +3,7 @@
 Boltzmann-inversion of this coordinate yields the effective potential / barrier
 ``ΔE_eff`` of T1 transitions: the energy a junction climbs to reach the
 four-fold vertex. That inversion and the resulting potential-landscape plot are
-downstream concerns owned by Iris / the data repo, not this package — this
+downstream concerns owned by the data repo, not this package — this
 module only computes the signed lengths themselves. It is the CellFlow
 analogue of the reference's ``extract_central_junction_lengths`` /
 ``plot_signed_lengths_neg_log_p_histogram`` (``morphogenesis-on-chip_analysis``),

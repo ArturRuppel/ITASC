@@ -6,13 +6,11 @@ from cellflow.contact_analysis.contacts.build import build_position_contacts
 
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):
+    # The staged fallback consumes the committed base-folder labels.
     pos_dir = tmp_path / "position_0001"
-    cell_dir = pos_dir / "3_cell"
-    nucleus_dir = pos_dir / "2_nucleus"
-    nucleus_dir.mkdir(parents=True)
-    cell_dir.mkdir()
-    tifffile.imwrite(cell_dir / "tracked_labels.tif", cell_stack)
-    tifffile.imwrite(nucleus_dir / "tracked_labels.tif", nucleus_stack)
+    pos_dir.mkdir(parents=True)
+    tifffile.imwrite(pos_dir / "cell_labels.tif", cell_stack)
+    tifffile.imwrite(pos_dir / "nucleus_labels.tif", nucleus_stack)
     return pos_dir
 
 
@@ -31,5 +29,5 @@ def test_read_position_contacts_reconstructs_edges_and_centroids(tmp_path):
     assert set(contact_analysis.edges) >= {"frame", "coord_offset", "coord_count", "kind"}
     assert set(contact_analysis.t1_events) >= {"t1_event_id", "frame", "edge_id"}
 
-    assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "3_cell" / "tracked_labels.tif")
-    assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "2_nucleus" / "tracked_labels.tif")
+    assert contact_analysis.cell_tracked_labels_path == str(pos_dir / "cell_labels.tif")
+    assert contact_analysis.nucleus_tracked_labels_path == str(pos_dir / "nucleus_labels.tif")

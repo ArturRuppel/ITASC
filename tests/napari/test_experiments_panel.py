@@ -236,6 +236,50 @@ def test_empty_state_shows_call_to_action():
     assert panel._hint.text() == ""
 
 
+def test_rows_height_grows_with_entries_and_clamps():
+    panel = _panel(max_rows_height=200)
+    panel.set_records([_entry("a")])
+    one = panel._rows_scroll.height()
+
+    panel.set_records([_entry(k) for k in ("a", "b", "c")])
+    three = panel._rows_scroll.height()
+    # Flush to content: more rows → taller, never exceeding the ceiling.
+    assert three > one
+    assert three <= 200
+
+    panel.set_records([_entry(str(i)) for i in range(40)])
+    assert panel._rows_scroll.height() == 200
+
+
+def test_grip_drag_resizes_list_and_double_click_restores_autofit():
+    from cellflow.napari._experiments_panel import _MIN_ROWS_HEIGHT
+
+    panel = _panel(max_rows_height=300)
+    panel.set_records([_entry(k) for k in ("a", "b", "c")])
+    flush = panel._rows_scroll.height()
+
+    # Drag down grows the list by the delta, up to max_rows_height.
+    panel._on_grip_pressed()
+    panel._on_grip_dragged(80)
+    assert panel._rows_scroll.height() == flush + 80
+
+    # Dragging past the cap clamps; dragging up clamps at the floor.
+    panel._on_grip_pressed()
+    panel._on_grip_dragged(9999)
+    assert panel._rows_scroll.height() == 300
+    panel._on_grip_pressed()
+    panel._on_grip_dragged(-9999)
+    assert panel._rows_scroll.height() == _MIN_ROWS_HEIGHT
+
+    # Double-click forgets the manual size and returns to flush auto-fit.
+    panel._on_grip_reset()
+    assert panel._rows_scroll.height() == flush
+
+    # The grip hides with the list when there are no rows.
+    panel.set_records([])
+    assert not panel._rows_grip.isVisible()
+
+
 def test_run_requested_emits_selection_and_workers():
     panel = _panel()
     panel.set_records([_entry("a"), _entry("b")])

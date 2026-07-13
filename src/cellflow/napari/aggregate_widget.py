@@ -4,7 +4,7 @@ The main app's project-level bookend to the per-position sections. Reads the sam
 catalog records the ``ExperimentsPanel`` builds, and drives the headless engine
 (``author_config`` then ``pipeline.run``). Pool-only: it aggregates positions
 whose ``contacts.h5`` already exists and never builds missing ones, so ``run`` is
-load-and-pool with no per-position recompute. Plots live in Iris.
+load-and-pool with no per-position recompute. Plotting is a downstream concern.
 """
 from __future__ import annotations
 
@@ -324,7 +324,7 @@ class AggregateWidget(QWidget):
         self.progress.setVisible(False)
         for name, path in sorted(result["tables"].items()):
             self.results.addItem(f"{name}: {path}")
-        message = f"Pooled into {result['project_dir']}. Plots live in Iris."
+        message = f"Pooled into {result['project_dir']}."
         if result["skipped"]:
             message += f" Skipped (not analyzed): {', '.join(result['skipped'])}."
         self.status.setText(message)

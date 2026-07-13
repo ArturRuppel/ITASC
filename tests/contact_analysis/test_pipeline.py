@@ -94,9 +94,9 @@ def _record(tmp: Path, pid: str, *, with_cell: bool = True) -> dict:
     pdir = tmp / pid
     pdir.mkdir(parents=True, exist_ok=True)
     rec = {
-        "id": pid,
-        "condition": "ctrl",
-        "date": "d1",
+        # A position's identity is the combination of its classification columns;
+        # ``position_id`` (unique per folder) keeps each position distinct.
+        "columns": {"condition": "ctrl", "position_id": pid},
         "position_path": pdir,
         "cell_tracked_labels_path": (pdir / "cells.tif") if with_cell else None,
         # Pixel size is a global build param stamped on the record (the studio's
@@ -213,11 +213,13 @@ def test_build_quantities_defaults_to_registered_quantifiers(tmp_path):
     pipeline.build_quantities([rec], params={"pixel_size_um": 0.25})
 
     position_dir = Path(rec["position_path"])
-    output_dir = position_dir / OUTPUT_SUBDIR
-    assert (output_dir / "contact_analysis.h5").is_file()
+    # The producer's h5 lands in the position base folder, beside the label input.
+    assert (position_dir / "contact_analysis.h5").is_file()
     # Only the producer's h5 lands per position; the cheap quantities (cell_shape,
-    # cell_density, …) are pooled in memory and never written per-position.
-    assert [p.name for p in output_dir.iterdir()] == ["contact_analysis.h5"]
+    # cell_density, …) are pooled in memory and never written per-position — so the
+    # stage-numbered output folder is never even created.
+    assert not (position_dir / OUTPUT_SUBDIR).exists()
+    assert {p.name for p in position_dir.iterdir()} == {"cells.tif", "contact_analysis.h5"}
 
 
 # ------------------------------------------------------------ build_catalog
@@ -237,7 +239,9 @@ def test_build_catalog_discovers_and_writes_skeleton(tmp_path):
     assert out_csv.is_file()
     from cellflow.contact_analysis.catalog import load_catalog
 
-    assert [r["id"] for r in load_catalog(out_csv)] == ["pos1"]
+    # The discovered per-folder id persists as a ``position_id`` classification
+    # column (``id`` is reserved for the pooled row-id downstream).
+    assert [r["columns"]["position_id"] for r in load_catalog(out_csv)] == ["pos1"]
 
 
 # -------------------------------------------------------------- end to end
@@ -392,8 +396,11 @@ def test_run_persists_only_contacts_per_position(tmp_path):
 
     for rec in records:
         pos = Path(rec["position_path"])
-        assert (pos / "4_contact_analysis" / "contact_analysis.h5").exists()
-        assert not (pos / "4_contact_analysis" / "cell_shape.csv").exists()
+        # contact_analysis.h5 lands in the position base folder; the cheap
+        # quantities (cell_shape, …) are pooled in memory, never written per-position.
+        assert (pos / "contact_analysis.h5").exists()
+        assert not (pos / "cell_shape.csv").exists()
+        assert not (pos / "4_contact_analysis").exists()
     assert "cell_shape" in tables
     assert "cell_shape.area_um2" in pd.read_csv(tables["cell_shape"]).columns
 

@@ -13,9 +13,9 @@ def _record(pos_dir: Path, *, ready: bool) -> dict:
     """A main_widget-shaped catalog record (see ``_catalog_record_for_position``).
 
     Identity lives in the ``columns`` bag under the seed level names
-    (``condition`` / ``experiment_id`` / ``position_id``), which is what
-    ``save_catalog`` reads via its ``_BAG_TO_CSV`` mapping. ``ready`` controls
-    whether the per-position ``contacts.h5`` exists on disk.
+    (``condition`` / ``experiment_id`` / ``position_id``); ``save_catalog`` writes
+    those columns verbatim, and their combination is the position's identity.
+    ``ready`` controls whether the per-position ``contacts.h5`` exists on disk.
     """
     h5 = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     if ready:

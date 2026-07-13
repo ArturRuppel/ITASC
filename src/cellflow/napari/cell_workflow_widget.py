@@ -155,7 +155,7 @@ def _make_progress() -> QProgressBar:
 # Canonical input/output paths (kept as literals so the file-contract test and
 # the PipelineFilesWidget stay in sync):
 #   1_cellpose/cell_contours.tif, 1_cellpose/cell_foreground.tif,
-#   2_nucleus/tracked_labels.tif → 3_cell/tracked_labels.tif
+#   nucleus_labels.tif (committed) → 3_cell/tracked_labels.tif
 
 
 class CellWorkflowWidget(StandalonePathsMixin, QWidget):
@@ -285,7 +285,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
                 ("Inputs", [
                     ("1_cellpose/cell_contours.tif", "Cell contours (divergence)"),
                     ("1_cellpose/cell_foreground.tif", "Cell foreground (sigmoid)"),
-                    ("2_nucleus/tracked_labels.tif", "Nucleus tracked labels"),
+                    ("nucleus_labels.tif", "Nucleus labels (committed)"),
                 ]),
                 ("Output", [
                     ("3_cell/tracked_labels.tif", "Cell tracked labels"),
@@ -648,7 +648,17 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         return self._sa_foreground if self._standalone else self._p("1_cellpose", "cell_foreground.tif")
 
     def _nuc_path(self):
-        return self._sa_nucleus if self._standalone else self._p("2_nucleus", "tracked_labels.tif")
+        # Staged: consume the *committed* nucleus labels in the position base
+        # folder, not the pre-commit 2_nucleus working labels (the commit gate
+        # means cell segmentation runs off the validated nucleus tracking).
+        return self._sa_nucleus if self._standalone else self._p("nucleus_labels.tif")
+
+    def _nuc_missing_msg(self) -> str:
+        if self._standalone:
+            return "Nucleus labels not found."
+        # Staged use reads the committed base-folder labels, so the fix is to
+        # commit the nucleus stage rather than just re-run its tracking.
+        return "Committed nucleus_labels.tif not found — commit the nucleus stage first."
 
     def _output_path(self):
         if self._standalone:
@@ -1006,7 +1016,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             return None
         nuc_path = self._nuc_path()
         if nuc_path is None or not nuc_path.exists():
-            self._set_status("Nucleus tracked_labels.tif not found.")
+            self._set_status(self._nuc_missing_msg())
             return None
         shape = self._map_shape()
         if shape is None:
@@ -1291,7 +1301,7 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             return
         nuc_path = self._nuc_path()
         if nuc_path is None or not nuc_path.exists():
-            self._set_status("Nucleus tracked_labels.tif not found.")
+            self._set_status(self._nuc_missing_msg())
             return
 
         params = self._params()
