@@ -16,16 +16,16 @@ contributions:
     - id: cellflow.nucleus_tracking_widget
       title: "Ultrack Segment + Track"
       python_name: cellflow.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
-    # In a full install this single Contact Analysis entry resolves to the
-    # merged studio (catalog + per-position view + analysis plugins); the standalone
-    # cellflow-aggregate wheel resolves the same factory to the bare per-position
-    # widget. Analysis plugins are NOT registered here — they are hosted
-    # inside the Contact Analysis widget, not exposed as top-level dock
-    # widgets, and register in-process by subclassing
-    # cellflow.napari.contact_analysis.plugins.AnalysisPlugin.
+    # The CellFlow Aggregate app: the full catalog UI restricted to the
+    # Contact Analysis stage + Aggregate capstone (three-dot rail: cell labels,
+    # nucleus labels, contact analysis). Both the full install and the standalone
+    # cellflow-aggregate wheel resolve this same factory; the standalone simply
+    # lacks the upstream segmentation/tracking distributions, so it always comes
+    # up contact-only. In the full install this is the slim aggregate-focused
+    # entry alongside the complete CellFlow widget above.
     - id: cellflow.contact_analysis_widget
-      title: "Contact Analysis"
-      python_name: cellflow.napari.contact_analysis_widget:make_contact_analysis_widget
+      title: "CellFlow Aggregate"
+      python_name: cellflow.napari.main_widget:make_aggregate_app_widget
     # The cellflow-cellpose distribution's *standalone* surface — native-mask
     # segment + laptrack track + embedded basic correction. It is not part of the
     # integrated pipeline (the pipeline uses the Cellpose widget above); it is
@@ -39,6 +39,6 @@ contributions:
     - command: cellflow.nucleus_tracking_widget
       display_name: "Ultrack Segment + Track"
     - command: cellflow.contact_analysis_widget
-      display_name: "Contact Analysis"
+      display_name: "CellFlow Aggregate"
     - command: cellflow.cellpose_segment_track_widget
       display_name: "Cellpose Segment + Track"

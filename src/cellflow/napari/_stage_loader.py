@@ -25,9 +25,11 @@ from pathlib import Path
 from cellflow.napari._paths import NucleusArtifactPaths
 from cellflow.napari._stage_status import (
     STAGE_CELL,
+    STAGE_CELL_LABELS,
     STAGE_CELLPOSE,
     STAGE_CONTACTS,
     STAGE_NUCLEUS,
+    STAGE_NUCLEUS_LABELS,
 )
 
 
@@ -64,6 +66,12 @@ def stage_load_targets(pos_dir: Path | str, stage: str) -> list[LoadTarget]:
         committed = paths.cell_labels
         chosen = committed if committed.is_file() else paths.cell_tracked
         return [LoadTarget(chosen, as_labels=True)]
+    # The contact-analysis-only app's label stages load the committed label
+    # images directly (they are its inputs, not a working/committed pair).
+    if stage == STAGE_CELL_LABELS:
+        return [LoadTarget(paths.cell_labels, as_labels=True)]
+    if stage == STAGE_NUCLEUS_LABELS:
+        return [LoadTarget(paths.nucleus_labels, as_labels=True)]
     if stage == STAGE_CONTACTS:
         return []
     return []

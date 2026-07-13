@@ -41,3 +41,17 @@ bypass-selection = true
 "../../src/cellflow/contact_analysis" = "cellflow/contact_analysis"
 "../../src/cellflow/napari/contact_analysis_widget.py" = "cellflow/napari/contact_analysis_widget.py"
 "../../src/cellflow/napari/contact_visualization.py" = "cellflow/napari/contact_visualization.py"
+# The catalog app shell. The standalone aggregate app is the full CellFlow
+# main widget restricted to the Contact Analysis stage (make_aggregate_app_widget
+# passes upstream_stages=False); its upstream imports are guarded, so shipping
+# main_widget here does not pull in cellflow-cellpose / cellflow-tracking. These
+# napari modules are not owned by cellflow-core (the rail/status/panel cluster is
+# coupled to contact_analysis.catalog) and no sibling wheel ships them, so the
+# aggregate wheel owns them without collision.
+"../../src/cellflow/napari/main_widget.py" = "cellflow/napari/main_widget.py"
+"../../src/cellflow/napari/aggregate_widget.py" = "cellflow/napari/aggregate_widget.py"
+"../../src/cellflow/napari/_experiments_panel.py" = "cellflow/napari/_experiments_panel.py"
+"../../src/cellflow/napari/_status_rail.py" = "cellflow/napari/_status_rail.py"
+"../../src/cellflow/napari/_stage_status.py" = "cellflow/napari/_stage_status.py"
+"../../src/cellflow/napari/_stage_loader.py" = "cellflow/napari/_stage_loader.py"
+"../../src/cellflow/napari/_icons.py" = "cellflow/napari/_icons.py"

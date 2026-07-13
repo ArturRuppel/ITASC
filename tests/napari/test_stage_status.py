@@ -5,15 +5,19 @@ import os
 from pathlib import Path
 
 from cellflow.napari._stage_status import (
+    CONTACT_STAGES,
     DONE,
     MISSING,
     STAGE_CELL,
+    STAGE_CELL_LABELS,
     STAGE_CELLPOSE,
     STAGE_CONTACTS,
     STAGE_NUCLEUS,
+    STAGE_NUCLEUS_LABELS,
     STALE,
     UNKNOWN,
     WORKING,
+    position_contact_status,
     position_stage_status,
 )
 
@@ -91,3 +95,38 @@ def test_stages_are_independent(tmp_path: Path) -> None:
     assert status[STAGE_CELL] == MISSING
     assert status[STAGE_CONTACTS] == MISSING
     assert status[STAGE_CELLPOSE] == MISSING
+
+
+# -- contact-analysis-only vocabulary (the standalone cellflow-aggregate app) ----
+
+
+def test_contact_status_none_position_all_unknown() -> None:
+    status = position_contact_status(None)
+    assert set(status.values()) == {UNKNOWN}
+    assert set(status) == set(CONTACT_STAGES)
+
+
+def test_contact_status_empty_position_all_missing(tmp_path: Path) -> None:
+    assert position_contact_status(tmp_path) == {
+        STAGE_CELL_LABELS: MISSING,
+        STAGE_NUCLEUS_LABELS: MISSING,
+        STAGE_CONTACTS: MISSING,
+    }
+
+
+def test_contact_status_reports_input_labels_as_present(tmp_path: Path) -> None:
+    # Labels are inputs here — present/missing, no working-vs-committed split.
+    _touch(tmp_path / "cell_labels.tif")
+    status = position_contact_status(tmp_path)
+    assert status[STAGE_CELL_LABELS] == DONE
+    assert status[STAGE_NUCLEUS_LABELS] == MISSING
+    assert status[STAGE_CONTACTS] == MISSING
+
+    _touch(tmp_path / "nucleus_labels.tif")
+    _touch(tmp_path / "contact_analysis.h5")
+    status = position_contact_status(tmp_path)
+    assert status == {
+        STAGE_CELL_LABELS: DONE,
+        STAGE_NUCLEUS_LABELS: DONE,
+        STAGE_CONTACTS: DONE,
+    }

@@ -105,6 +105,38 @@ def test_contact_registers_its_own_napari_manifest() -> None:
     )
     text = manifest.read_text(encoding="utf-8")
     assert "name: cellflow-aggregate" in text
-    assert (
-        "cellflow.napari.contact_analysis_widget:make_contact_analysis_widget" in text
+    # The standalone widget is the CellFlow Aggregate app: the full catalog UI
+    # restricted to the Contact Analysis stage (upstream stages omitted).
+    assert "cellflow.napari.main_widget:make_aggregate_app_widget" in text
+
+
+def test_aggregate_wheel_ships_the_catalog_app_shell_without_upstream_widgets() -> None:
+    # The standalone aggregate app is the main widget in contact-only mode, so the
+    # wheel must ship the app shell (main widget, the Data-folders panel, the
+    # status rail/status/loader cluster, the aggregate capstone, icons). It must
+    # NOT ship the upstream stage widgets (their distributions supply those) nor
+    # any core-owned module (that would collide with cellflow-core at install).
+    targets = set(
+        _load("cellflow-aggregate")["tool"]["hatch"]["build"]["targets"]["wheel"][
+            "force-include"
+        ].values()
     )
+    for shipped in (
+        "cellflow/napari/main_widget.py",
+        "cellflow/napari/aggregate_widget.py",
+        "cellflow/napari/_experiments_panel.py",
+        "cellflow/napari/_status_rail.py",
+        "cellflow/napari/_stage_status.py",
+        "cellflow/napari/_stage_loader.py",
+        "cellflow/napari/_icons.py",
+    ):
+        assert shipped in targets
+    for not_shipped in (
+        "cellflow/napari/cellpose_widget.py",
+        "cellflow/napari/nucleus_workflow_widget.py",
+        "cellflow/napari/cell_workflow_widget.py",
+        "cellflow/napari/widgets.py",  # core
+        "cellflow/napari/_paths.py",  # core
+        "cellflow/napari/ui_style.py",  # core
+    ):
+        assert not_shipped not in targets

@@ -31,6 +31,18 @@ STAGE_CELL = "cell"
 STAGE_CONTACTS = "contacts"
 STAGES: tuple[str, ...] = (STAGE_CELLPOSE, STAGE_NUCLEUS, STAGE_CELL, STAGE_CONTACTS)
 
+# The contact-analysis-only vocabulary (the standalone ``cellflow-aggregate`` app,
+# which does not run segmentation/tracking). Here the committed label images are
+# *inputs*, not stages this app produces, so the rail reports only their presence:
+# cell labels → nucleus labels → contact analysis.
+STAGE_CELL_LABELS = "cell_labels"
+STAGE_NUCLEUS_LABELS = "nucleus_labels"
+CONTACT_STAGES: tuple[str, ...] = (
+    STAGE_CELL_LABELS,
+    STAGE_NUCLEUS_LABELS,
+    STAGE_CONTACTS,
+)
+
 # State vocabulary. The widget maps each onto a dot glyph:
 MISSING = "missing"  # empty ring — nothing on disk yet
 WORKING = "working"  # hollow — working file present, not committed (3-state only)
@@ -72,4 +84,27 @@ def position_stage_status(pos_dir: Path | str | None) -> dict[str, str]:
         STAGE_NUCLEUS: nucleus,
         STAGE_CELL: cell,
         STAGE_CONTACTS: contacts,
+    }
+
+
+def position_contact_status(pos_dir: Path | str | None) -> dict[str, str]:
+    """Return the contact-analysis-only stage status for one position directory.
+
+    The standalone aggregate app does not run segmentation/tracking: it consumes
+    the committed ``cell_labels.tif`` (required) and ``nucleus_labels.tif``
+    (optional) as *inputs* and produces the contact-analysis ``.h5``. Each of the
+    three :data:`CONTACT_STAGES` is therefore a plain present/missing check (no
+    working-vs-committed split). ``pos_dir`` of ``None`` yields ``unknown`` for
+    every stage (a hand-authored catalog row with no canonical root).
+    """
+    if pos_dir is None:
+        return {stage: UNKNOWN for stage in CONTACT_STAGES}
+
+    paths = NucleusArtifactPaths(Path(pos_dir))
+    return {
+        STAGE_CELL_LABELS: DONE if paths.cell_labels.is_file() else MISSING,
+        STAGE_NUCLEUS_LABELS: DONE if paths.nucleus_labels.is_file() else MISSING,
+        STAGE_CONTACTS: (
+            DONE if (paths.pos_dir / CONTACT_ANALYSIS_RELPATH).is_file() else MISSING
+        ),
     }

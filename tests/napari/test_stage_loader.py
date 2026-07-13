@@ -12,9 +12,11 @@ from cellflow.napari._stage_loader import (
 )
 from cellflow.napari._stage_status import (
     STAGE_CELL,
+    STAGE_CELL_LABELS,
     STAGE_CELLPOSE,
     STAGE_CONTACTS,
     STAGE_NUCLEUS,
+    STAGE_NUCLEUS_LABELS,
 )
 
 
@@ -85,6 +87,25 @@ def test_cell_prefers_committed_over_working(tmp_path: Path):
 
 def test_contacts_has_no_raw_load_target(tmp_path: Path):
     assert stage_load_targets(tmp_path, STAGE_CONTACTS) == []
+
+
+def test_contact_label_stages_load_the_committed_label_images(tmp_path: Path):
+    # In the contact-only app the label images are inputs, loaded directly.
+    (cell,) = stage_load_targets(tmp_path, STAGE_CELL_LABELS)
+    assert cell.path == tmp_path / "cell_labels.tif"
+    assert cell.as_labels
+
+    (nucleus,) = stage_load_targets(tmp_path, STAGE_NUCLEUS_LABELS)
+    assert nucleus.path == tmp_path / "nucleus_labels.tif"
+    assert nucleus.as_labels
+
+
+def test_load_stage_loads_a_cell_labels_stage(tmp_path: Path):
+    _write(tmp_path / "cell_labels.tif")
+    viewer = _StubViewer()
+    loaded = load_stage(viewer, tmp_path, STAGE_CELL_LABELS)
+    assert loaded == [f"{tmp_path.name}:cell_labels"]
+    assert viewer.labels_calls == [f"{tmp_path.name}:cell_labels"]
 
 
 def test_load_stage_adds_labels_layer(tmp_path: Path):

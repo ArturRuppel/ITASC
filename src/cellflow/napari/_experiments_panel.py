@@ -27,7 +27,7 @@ untouched, plus a ``columns`` dict keyed by the shared, editable column names.
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 
 from qtpy.QtCore import Qt, Signal
@@ -190,6 +190,7 @@ class ExperimentRow(QWidget):
         key: str,
         values: list[str] | None = None,
         *,
+        stages: Sequence[str] = STAGES,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -215,7 +216,7 @@ class ExperimentRow(QWidget):
             layout.addWidget(label, 1)
             self._value_labels.append(label)
 
-        self.rail = StatusRail()
+        self.rail = StatusRail(stages)
         self.rail.setFixedWidth(_RAIL_W)
         self.rail.dotClicked.connect(
             lambda stage: self.dot_clicked.emit(self._key, stage)
@@ -373,6 +374,7 @@ class ExperimentsPanel(QWidget):
         input_fields: Iterable[tuple[str, str, str]] = (),
         discover_fn: Callable[[str, dict[str, str]], list[dict]] | None = None,
         status_fn: Callable[[dict], dict[str, str]] | None = None,
+        stages: Sequence[str] = STAGES,
         show_calibration: bool = True,
         show_output_dir: bool = False,
         show_run: bool = True,
@@ -384,6 +386,7 @@ class ExperimentsPanel(QWidget):
         self._input_fields = list(input_fields)
         self._discover_fn = discover_fn
         self._status_fn = status_fn
+        self._stages = tuple(stages)
         self._show_calibration = show_calibration
         self._show_output_dir = show_output_dir
         self._show_run = show_run
@@ -926,7 +929,7 @@ class ExperimentsPanel(QWidget):
             try:
                 status = self._status_fn(payload)
             except Exception:
-                status = {stage: UNKNOWN for stage in STAGES}
+                status = {stage: UNKNOWN for stage in self._stages}
             row.set_status(status)
 
     def _on_row_dot_clicked(self, key: str, stage: str) -> None:
@@ -996,7 +999,7 @@ class ExperimentsPanel(QWidget):
         for key in self._paths:
             cols = self._records[key]["columns"]
             values = [cols.get(name, "") for name in self._column_names]
-            row = ExperimentRow(key, values or None)
+            row = ExperimentRow(key, values or None, stages=self._stages)
             row.clicked.connect(self._on_row_clicked)
             row.dot_clicked.connect(self._on_row_dot_clicked)
             row.set_selected(key in self._selected_paths)

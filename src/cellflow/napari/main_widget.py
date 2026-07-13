@@ -32,11 +32,14 @@ from cellflow.napari._experiments_panel import ExperimentsPanel
 from cellflow.napari._icons import stage_action_icon
 from cellflow.napari.aggregate_widget import AggregateWidget
 from cellflow.napari._stage_loader import load_stage
-from cellflow.napari._stage_status import STAGE_CONTACTS, position_stage_status
-from cellflow.napari.cellpose_widget import CellposeWidget
+from cellflow.napari._stage_status import (
+    CONTACT_STAGES,
+    STAGE_CONTACTS,
+    STAGES,
+    position_contact_status,
+    position_stage_status,
+)
 from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
-from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
-from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
 from cellflow.napari.widgets import (
     CollapsibleSection,
     PipelineFilesWidget,
@@ -154,8 +157,40 @@ def _discover_positions(root: str, input_names: dict[str, str]) -> list[dict]:
     return entries
 
 
+def _import_upstream_stage_widgets():
+    """The three upstream (segmentation/tracking) stage-widget classes, or ``None``.
+
+    Returns ``(CellposeWidget, NucleusWorkflowWidget, CellWorkflowWidget)`` when
+    their distributions (``cellflow-cellpose`` / ``cellflow-tracking``) are
+    installed — the full app. The standalone ``cellflow-aggregate`` wheel ships
+    neither, so the imports fail and this returns ``None``, driving the widget
+    into contact-analysis-only mode. Import is deferred to call time so importing
+    this module never pulls the heavy segmentation/tracking stack.
+    """
+    try:
+        from cellflow.napari.cellpose_widget import CellposeWidget
+        from cellflow.napari.cell_workflow_widget import CellWorkflowWidget
+        from cellflow.napari.nucleus_workflow_widget import NucleusWorkflowWidget
+    except ImportError:
+        return None
+    return CellposeWidget, NucleusWorkflowWidget, CellWorkflowWidget
+
+
 class CellFlowMainWidget(QWidget):
-    """The unified workflow-based UI for CellFlow."""
+    """The unified workflow-based UI for CellFlow.
+
+    Runs in one of two modes, set at construction:
+
+    * **full** (``upstream_stages=True``, the default) — the whole pipeline:
+      Cellpose → Nucleus → Cell → Contact Analysis stages plus the Aggregate
+      capstone, and a four-dot per-position status rail.
+    * **contact-only** (``upstream_stages=False``, or whenever the upstream
+      stage distributions are not installed) — only the Contact Analysis stage
+      and the Aggregate capstone. The committed ``cell_labels.tif`` /
+      ``nucleus_labels.tif`` are treated as *inputs*, so the rail shows three
+      dots (cell labels → nucleus labels → contact analysis). This is the
+      standalone ``cellflow-aggregate`` app.
+    """
 
     refresh_requested = Signal(object)  # emits pos_dir: Path | None
 
@@ -168,9 +203,22 @@ class CellFlowMainWidget(QWidget):
         hint = super().sizeHint()
         return QSize(max(hint.width(), self._PREFERRED_WIDTH), hint.height())
 
-    def __init__(self, napari_viewer: napari.Viewer, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        napari_viewer: napari.Viewer,
+        parent: QWidget | None = None,
+        *,
+        upstream_stages: bool = True,
+    ) -> None:
         super().__init__(parent)
         self.viewer = napari_viewer
+
+        # Which pipeline stages this app runs. The upstream segmentation/tracking
+        # stages appear only when requested *and* their distributions are
+        # installed; the standalone aggregate wheel ships neither, so it always
+        # comes up contact-analysis-only. See ``_import_upstream_stage_widgets``.
+        upstream = _import_upstream_stage_widgets() if upstream_stages else None
+        self._has_upstream = upstream is not None
 
         # The selected position folder — the unit of work. ``None`` until the
         # user picks one. This folder *is* ``pos_dir``; there is no separate
@@ -204,34 +252,37 @@ class CellFlowMainWidget(QWidget):
 
         main_layout.addWidget(self.scroll)
 
-        # Add sections
-        self._cellpose_widget = CellposeWidget(self.viewer, gate=self.gate)
-        self.cellpose_section = CollapsibleSection(
-            "Cellpose",
-            self._cellpose_widget,
-            expanded=False,
+        # Add sections. The three upstream (segmentation/tracking) stages appear
+        # only in full mode; contact-only omits them (and their widgets).
+        if self._has_upstream:
+            CellposeWidget, NucleusWorkflowWidget, CellWorkflowWidget = upstream
+            self._cellpose_widget = CellposeWidget(self.viewer, gate=self.gate)
+            self.cellpose_section = CollapsibleSection(
+                "Cellpose",
+                self._cellpose_widget,
+                expanded=False,
 
-            accent_color=stage_accent("cellpose"),
-        )
+                accent_color=stage_accent("cellpose"),
+            )
 
-        self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer, gate=self.gate)
-        self.nucleus_section = CollapsibleSection(
-            "Nucleus Segmentation & Tracking",
-            self.nucleus_workflow_widget,
-            expanded=False,
+            self.nucleus_workflow_widget = NucleusWorkflowWidget(self.viewer, gate=self.gate)
+            self.nucleus_section = CollapsibleSection(
+                "Nucleus Segmentation & Tracking",
+                self.nucleus_workflow_widget,
+                expanded=False,
 
-            accent_color=stage_accent("nucleus"),
-        )
+                accent_color=stage_accent("nucleus"),
+            )
 
-        self.cell_workflow_widget = CellWorkflowWidget(self.viewer, gate=self.gate)
-        self.cell_section = CollapsibleSection(
-            "Cell Segmentation",
-            self.cell_workflow_widget,
-            expanded=False,
+            self.cell_workflow_widget = CellWorkflowWidget(self.viewer, gate=self.gate)
+            self.cell_section = CollapsibleSection(
+                "Cell Segmentation",
+                self.cell_workflow_widget,
+                expanded=False,
 
-            accent_color=stage_accent("cell"),
-        )
-        self._connect_label_selection_sync()
+                accent_color=stage_accent("cell"),
+            )
+            self._connect_label_selection_sync()
 
         self.contact_analysis_widget = ContactAnalysisWidget(self.viewer, gate=self.gate)
         self.contact_analysis_section = CollapsibleSection(
@@ -259,18 +310,33 @@ class CellFlowMainWidget(QWidget):
 
         # Positions panel (napariTFM ExperimentsList parity): discover a study
         # root, add its position folders to a list, and select one to drive the
-        # detail sections below. The five stage sections ARE the selected
-        # position's detail pane — selecting a row sets ``_pos_dir``.
-        self._positions_panel = ExperimentsPanel(
-            title="Data folders",
-            input_fields=[
+        # detail sections below. The stage sections ARE the selected position's
+        # detail pane — selecting a row sets ``_pos_dir``. In full mode discovery
+        # keys off the raw input images and the rail shows the four pipeline
+        # stages; in contact-only mode it keys off the committed label images (the
+        # app's actual inputs) and the rail shows the three contact stages.
+        if self._has_upstream:
+            input_fields = [
                 ("nucleus", "Nucleus image", "0_input/nucleus.tif"),
                 ("cell", "Cell image", "0_input/cell.tif"),
-            ],
+            ]
+            status_fn = position_stage_status
+            stages = STAGES
+        else:
+            input_fields = [
+                ("cell_labels", "Cell labels", _CELL_LABELS_RELPATH),
+                ("nucleus_labels", "Nucleus labels", _NUCLEUS_LABELS_RELPATH),
+            ]
+            status_fn = position_contact_status
+            stages = CONTACT_STAGES
+        self._positions_panel = ExperimentsPanel(
+            title="Data folders",
+            input_fields=input_fields,
             discover_fn=_discover_positions,
-            status_fn=lambda payload: position_stage_status(
+            status_fn=lambda payload, _fn=status_fn: _fn(
                 payload.get("position_path") if payload else None
             ),
+            stages=stages,
             show_calibration=True,  # pixel size / frame length live in Setup
             show_run=False,  # batch Run selected is a later (stage-spine) pass
         )
@@ -301,22 +367,27 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.viewer_activity_banner)
 
         self.scroll_layout.addWidget(self._positions_panel)
-        self.scroll_layout.addWidget(self.cellpose_section)
-        self.scroll_layout.addWidget(self.nucleus_section)
-        self.scroll_layout.addWidget(self.cell_section)
+        if self._has_upstream:
+            self.scroll_layout.addWidget(self.cellpose_section)
+            self.scroll_layout.addWidget(self.nucleus_section)
+            self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
         self.scroll_layout.addWidget(self.aggregate_scope_band)
         self.scroll_layout.addWidget(self.aggregate_section)
 
-        # The five stage sections ARE the selected-position detail pane: they
-        # stay hidden until a position is active (progressive disclosure — an
-        # empty workspace shows only the toolbar + the positions panel).
-        self._stage_sections = (
-            self.cellpose_section,
-            self.nucleus_section,
-            self.cell_section,
-            self.contact_analysis_section,
-        )
+        # The stage sections ARE the selected-position detail pane: they stay
+        # hidden until a position is active (progressive disclosure — an empty
+        # workspace shows only the toolbar + the positions panel). Contact-only
+        # mode has just the one stage section.
+        if self._has_upstream:
+            self._stage_sections = (
+                self.cellpose_section,
+                self.nucleus_section,
+                self.cell_section,
+                self.contact_analysis_section,
+            )
+        else:
+            self._stage_sections = (self.contact_analysis_section,)
         for section in self._stage_sections:
             section.set_status("not_started")
 
@@ -341,17 +412,19 @@ class CellFlowMainWidget(QWidget):
         self.refresh_btn.clicked.connect(lambda: self._refresh_all())
 
         # Config travels with the folder: snapshot params into the folder on every
-        # run. The stage widgets' run buttons are the trigger (cancel re-clicks
-        # re-save the same config, which is harmless).
-        for widget_obj, attr in (
-            (self._cellpose_widget, "nucleus_run_btn"),
-            (self._cellpose_widget, "cell_run_btn"),
-            (self.nucleus_workflow_widget, "seg_run_btn"),
-            (self.nucleus_workflow_widget, "db_run_btn"),
-            (self.nucleus_workflow_widget, "solve_run_btn"),
-            (self.cell_workflow_widget, "run_btn"),
-        ):
-            getattr(widget_obj, attr).clicked.connect(self._autosave_config)
+        # run. The upstream stage widgets' run buttons are the trigger (cancel
+        # re-clicks re-save the same config, which is harmless). Contact-only mode
+        # has no upstream run buttons and no per-folder params to autosave.
+        if self._has_upstream:
+            for widget_obj, attr in (
+                (self._cellpose_widget, "nucleus_run_btn"),
+                (self._cellpose_widget, "cell_run_btn"),
+                (self.nucleus_workflow_widget, "seg_run_btn"),
+                (self.nucleus_workflow_widget, "db_run_btn"),
+                (self.nucleus_workflow_widget, "solve_run_btn"),
+                (self.cell_workflow_widget, "run_btn"),
+            ):
+                getattr(widget_obj, attr).clicked.connect(self._autosave_config)
 
         self._register_gate_controls()
 
@@ -364,8 +437,8 @@ class CellFlowMainWidget(QWidget):
         """Reveal the stage sections only once a position is active.
 
         Empty workspace → only the toolbar and the positions panel show; the
-        five stage sections (the selected-position detail pane) appear the moment
-        a row is selected and hide again when the selection is cleared.
+        stage sections (the selected-position detail pane) appear the moment a
+        row is selected and hide again when the selection is cleared.
         """
         tuning = self._pos_dir is not None
         for section in self._stage_sections:
@@ -452,12 +525,13 @@ class CellFlowMainWidget(QWidget):
         self._sync_theme_menu_state()
 
     def _apply_theme_accents(self) -> None:
-        section_stage_keys = (
-            (self.cellpose_section, "cellpose"),
-            (self.nucleus_section, "nucleus"),
-            (self.cell_section, "cell"),
-            (self.contact_analysis_section, "contact_analysis"),
-        )
+        section_stage_keys = [(self.contact_analysis_section, "contact_analysis")]
+        if self._has_upstream:
+            section_stage_keys[:0] = [
+                (self.cellpose_section, "cellpose"),
+                (self.nucleus_section, "nucleus"),
+                (self.cell_section, "cell"),
+            ]
         for section, stage_key in section_stage_keys:
             section.set_accent_color(stage_accent(stage_key))
         refresh_stage_header_labels(self)
@@ -628,18 +702,24 @@ class CellFlowMainWidget(QWidget):
         load_stage(self.viewer, pos, stage)
 
     def get_state(self) -> dict:
-        """Return the current UI state as a dictionary."""
+        """Return the current UI state as a dictionary.
+
+        Contact-only mode carries just the calibration metadata — it has no
+        upstream stage params.
+        """
         calibration = self._positions_panel.calibration_values()
-        return {
+        state = {
             "metadata": {
                 "pixel_size_um": calibration.get("pixel_size_um", ""),
                 # Panel holds minutes; persist the backend's seconds.
                 "time_interval_s": _min_str_to_s_str(calibration.get("time_interval_min", "")),
             },
-            "cellpose": self._cellpose_widget.get_state(),
-            "nucleus": self.nucleus_workflow_widget.get_state(),
-            "cell": self.cell_workflow_widget.get_state(),
         }
+        if self._has_upstream:
+            state["cellpose"] = self._cellpose_widget.get_state()
+            state["nucleus"] = self.nucleus_workflow_widget.get_state()
+            state["cell"] = self.cell_workflow_widget.get_state()
+        return state
 
     def set_state(self, state: dict) -> None:
         """Update the UI state from a dictionary."""
@@ -656,6 +736,11 @@ class CellFlowMainWidget(QWidget):
             # Legacy ``condition`` / ``position`` keys are intentionally ignored:
             # condition is a folder-derived per-position column, and the selected
             # folder carries position identity.
+
+        if not self._has_upstream:
+            # Contact-only mode has no upstream stage widgets; their config keys
+            # (if present in a full-app config file) are simply ignored.
+            return
 
         if "cellpose" in state:
             self._cellpose_widget.set_state(state["cellpose"])
@@ -858,14 +943,15 @@ class CellFlowMainWidget(QWidget):
 
         self._refreshing_all = True
         try:
-            # The raw-input names are configured once, in the Data-folders panel's
-            # discovery fields, and need not be the canonical 0_input/*.tif.
-            # Hand them to the cellpose stage so its run/preview/status track the
-            # file the user actually pointed discovery at.
-            self._cellpose_widget.set_input_names(self._positions_panel.input_names())
-            self._cellpose_widget.refresh(pos_dir)
-            self.nucleus_workflow_widget.refresh(pos_dir)
-            self.cell_workflow_widget.refresh(pos_dir)
+            if self._has_upstream:
+                # The raw-input names are configured once, in the Data-folders
+                # panel's discovery fields, and need not be the canonical
+                # 0_input/*.tif. Hand them to the cellpose stage so its
+                # run/preview/status track the file discovery pointed at.
+                self._cellpose_widget.set_input_names(self._positions_panel.input_names())
+                self._cellpose_widget.refresh(pos_dir)
+                self.nucleus_workflow_widget.refresh(pos_dir)
+                self.cell_workflow_widget.refresh(pos_dir)
             # The contact piece is position-agnostic; the orchestrator maps the
             # staged layout onto its explicit working context.
             if pos_dir is not None:
@@ -895,6 +981,14 @@ class CellFlowMainWidget(QWidget):
 
     def _update_section_statuses(self) -> None:
         """Refresh stage-status dots from on-disk file presence."""
+        contact = pipeline_status_from_files(
+            self.contact_analysis_widget._files_widget, done_group="Output"
+        )
+        self.contact_analysis_section.set_status(contact)
+
+        if not self._has_upstream:
+            return
+
         # The cellpose stage is "done" once its divergence maps exist (the same
         # done-signal the catalog rail derives from). Its tracker groups are
         # "Inputs" / "Cellpose Outputs" / "Divergence Maps" — there is no
@@ -908,11 +1002,28 @@ class CellFlowMainWidget(QWidget):
         cell = pipeline_status_from_files(
             self.cell_workflow_widget._files_widget, done_group="Output"
         )
-        contact = pipeline_status_from_files(
-            self.contact_analysis_widget._files_widget, done_group="Output"
-        )
 
         self.cellpose_section.set_status(cellpose)
         self.nucleus_section.set_status(nucleus)
         self.cell_section.set_status(cell)
-        self.contact_analysis_section.set_status(contact)
+
+
+def make_aggregate_app_widget(napari_viewer: napari.Viewer | None = None):
+    """napari entry point: the standalone CellFlow Aggregate app.
+
+    The full catalog UI (Data folders → Contact Analysis → Aggregate capstone)
+    restricted to the contact-analysis stage, with a three-dot per-position rail
+    (cell labels → nucleus labels → contact analysis). The upstream
+    segmentation/tracking stages are omitted, so the ``cellflow-cellpose`` /
+    ``cellflow-tracking`` distributions need not be installed. Runs the napari
+    layer-delegate patch (normally done by the orchestrator package).
+    """
+    try:
+        from cellflow.napari._napari_compat import patch_napari_layer_delegate
+
+        patch_napari_layer_delegate()
+    except Exception:  # pragma: no cover - patch is best-effort
+        pass
+    if napari_viewer is None:
+        napari_viewer = napari.current_viewer()
+    return CellFlowMainWidget(napari_viewer, upstream_stages=False)

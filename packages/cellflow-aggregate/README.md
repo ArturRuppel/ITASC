@@ -18,21 +18,23 @@ or not the full CellFlow orchestrator is present.
 
 ## Use
 
-The widget is **discovery-first**: you give it a top folder and the names of the
-three files (cell labels, optional nucleus labels, output `.h5`); it lists every
-discovered **position** and you pick which to view. The `.h5` is a derived
-artifact, computed on demand only when missing.
+The napari plugin is the full CellFlow catalog app restricted to the contact
+step: it does not run segmentation or tracking, so it treats the committed
+`cell_labels.tif` (required) and `nucleus_labels.tif` (optional) as *inputs* and
+produces the contact-analysis `.h5`.
 
-- **napari plugin:** add the *Aggregate Quantification* widget and set the **Top folder**
-  plus the three file names. Each **position** — a top-level subfolder of that
-  folder — appears as a row showing whether a nucleus was paired and whether its
-  `.h5` is built. The named files are discovered recursively within a position, so
-  the cell and nucleus may live in different subfolders (e.g. `pos01/3_cell/` and
-  `pos01/2_nucleus/`); the nucleus is associated only when exactly one is found
-  (zero or several → cell-only). **Double-click a row** to visualize it (its `.h5`
-  is computed first if missing); **Recompute** forces a rebuild of the selection.
-- **Process all:** computes every discovered `.h5` at once (skip existing unless
-  **Overwrite**), headlessly, with progress.
+- **napari plugin:** add the *CellFlow Aggregate* widget.
+  - **Data folders** — point *Find* at a parent directory to discover every
+    **position** (a folder containing `cell_labels.tif`) beneath it; the columns
+    are derived from each position's nesting under that directory. Each row carries
+    a three-dot **status rail** — cell labels, nucleus labels, contact analysis —
+    that shows, at a glance, which inputs are present and whether the `.h5` is
+    built. Click a rail dot to load that input into the viewer (or, for the
+    contact dot, open the overlays).
+  - **Contact Analysis** — select a row to retarget the stage to that position;
+    run or re-run its contact analysis and visualize the result.
+  - **Aggregate** — the project-level capstone pools across the whole catalog,
+    grouped by your columns, once positions have been added.
 - **Headless / scripting:**
 
   ```python

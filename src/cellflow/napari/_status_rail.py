@@ -1,12 +1,16 @@
-"""The per-position status rail: four dots, one per pipeline stage.
+"""The per-position status rail: one dot per pipeline stage.
 
 Each :class:`StatusDot` renders one stage's :mod:`cellflow.napari._stage_status`
 state as a small coloured circle with a plain-language tooltip; :class:`StatusRail`
-lays the four out left→right (Cellpose → Nucleus → Cell → Contacts) and repaints
-them from a status dict on refresh. Rendering only — the clickable "load this
-stage" behaviour is added in a later step.
+lays them out left→right and repaints them from a status dict on refresh. The
+stage set is configurable: the full app passes the four-stage default
+(Cellpose → Nucleus → Cell → Contacts); the standalone aggregate app passes the
+three-stage :data:`~cellflow.napari._stage_status.CONTACT_STAGES`
+(cell labels → nucleus labels → contact analysis). Rendering only.
 """
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import QHBoxLayout, QLabel, QWidget
@@ -15,9 +19,11 @@ from cellflow.napari._stage_status import (
     DONE,
     MISSING,
     STAGE_CELL,
+    STAGE_CELL_LABELS,
     STAGE_CELLPOSE,
     STAGE_CONTACTS,
     STAGE_NUCLEUS,
+    STAGE_NUCLEUS_LABELS,
     STAGES,
     STALE,
     UNKNOWN,
@@ -30,6 +36,8 @@ _STAGE_LABELS: dict[str, str] = {
     STAGE_NUCLEUS: "Nucleus tracking",
     STAGE_CELL: "Cell workflow",
     STAGE_CONTACTS: "Contact analysis",
+    STAGE_CELL_LABELS: "Cell labels",
+    STAGE_NUCLEUS_LABELS: "Nucleus labels",
 }
 
 #: Human-facing state names for tooltips.
@@ -90,19 +98,25 @@ class StatusDot(QLabel):
 
 
 class StatusRail(QWidget):
-    """Four :class:`StatusDot`s, one per pipeline stage, in canonical order.
+    """One :class:`StatusDot` per stage in *stages*, in the given order.
 
+    Defaults to the four-stage pipeline :data:`STAGES`; pass an explicit stage
+    list (e.g. :data:`CONTACT_STAGES`) for a different app's rail.
     :attr:`dotClicked` re-emits any dot's click with its stage name.
     """
 
     dotClicked = Signal(str)  # stage name
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        stages: Sequence[str] = STAGES,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(3)
-        self.dots: list[StatusDot] = [StatusDot(stage) for stage in STAGES]
+        self.dots: list[StatusDot] = [StatusDot(stage) for stage in stages]
         for dot in self.dots:
             dot.clicked.connect(self.dotClicked)
             layout.addWidget(dot)
