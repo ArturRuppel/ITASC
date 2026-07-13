@@ -225,7 +225,8 @@ class NucleusAtomExtractionMixin:
 
     Host must provide: ``self.viewer``, ``self._current_t()``,
     ``self._atom_fg_path()``, ``self._atom_contour_path()``,
-    ``self._atom_output_path()``.
+    ``self._atom_output_path()``. Optionally ``self._files_widget`` +
+    ``self._pos_dir`` — a run refreshes them so the atoms.tif status repaints.
     """
 
     def _init_atom_extraction_state(self) -> None:
@@ -632,6 +633,12 @@ class NucleusAtomExtractionMixin:
         self._set_atom_image_stack(_ATOM_FG_RESIDUAL_LAYER, residual_foreground)
         self._set_atom_image_stack(_ATOM_CONTOUR_RESIDUAL_LAYER, residual_contour)
         self._set_atom_status(f"Wrote {atoms.shape[0]} frames → atoms.tif.")
+        # atoms.tif is a tracked intermediate; refresh the host's Pipeline Files
+        # so the section dot + catalog rail pick it up (see the host's
+        # PipelineFilesWidget). Guarded because the mixin's host contract is loose.
+        files_widget = getattr(self, "_files_widget", None)
+        if files_widget is not None:
+            files_widget.refresh(getattr(self, "_pos_dir", None))
 
     def _set_atom_image_stack(self, name: str, data: np.ndarray) -> None:
         layer = self.viewer.layers[name]

@@ -221,6 +221,70 @@ def test_atom_compute_checkboxes_gate_which_layers_compute(viewer, tmp_path, mon
         assert name not in layers
 
 
+def test_atom_run_refreshes_pipeline_files(viewer, tmp_path):
+    """Running atom extraction writes atoms.tif and refreshes the files panel.
+
+    Regression: the run wrote ``2_nucleus/atoms.tif`` but never refreshed the
+    tracker, so its ``refreshed`` signal never fired and the section dot /
+    catalog rail stayed stale until a manual Refresh.
+    """
+    import numpy as np
+    import tifffile
+
+    cellpose = tmp_path / "1_cellpose"
+    cellpose.mkdir()
+    rng = np.random.default_rng(0)
+    fg = np.clip(rng.normal(0.6, 0.1, (2, 16, 16)), 0, 1).astype(np.float32)
+    contours = np.abs(rng.normal(0, 1, (2, 16, 16))).astype(np.float32)
+    tifffile.imwrite(cellpose / "nucleus_foreground.tif", fg)
+    tifffile.imwrite(cellpose / "nucleus_contours.tif", contours)
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    # The run adds atom layers; swap in a headless viewer (see the compute-
+    # checkbox test for why a live canvas can't start on CI).
+    widget.viewer = _HeadlessViewer()
+
+    atoms_row = widget._files_widget._rows_by_group["Intermediates"][0]
+    assert atoms_row._full_path is None  # atoms.tif absent to start
+
+    widget._run_atom_extraction()
+
+    atoms = tmp_path / "2_nucleus" / "atoms.tif"
+    assert atoms.is_file()
+    # The tracker refreshed, so the intermediate row now sees the file on disk.
+    assert atoms_row._full_path == atoms
+
+
+def test_correction_save_refreshes_pipeline_files(viewer, tmp_path):
+    """Saving corrected nucleus labels refreshes the host's Pipeline Files.
+
+    The working ``tracked_labels.tif`` changes on save; without a refresh the
+    section dot / catalog rail stay stale. The cell correction widget already
+    refreshed on save — the nucleus one was never wired.
+    """
+    import numpy as np
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)  # staged workspace at <tmp>/2_nucleus
+    widget.viewer = _HeadlessViewer()
+    cw = widget.nucleus_correction_widget
+    cw.viewer = widget.viewer
+    cw.viewer.add_labels(
+        np.zeros((2, 4, 4), dtype=np.uint32), name="Tracked: Nucleus"
+    )
+
+    out_row = widget._files_widget._rows_by_group["Output"][0]
+    assert out_row._full_path is None  # tracked_labels.tif absent to start
+
+    cw._on_save_tracked()
+
+    tracked = tmp_path / "2_nucleus" / "tracked_labels.tif"
+    assert tracked.is_file()
+    # The host callback refreshed the tracker, surfacing the saved file.
+    assert out_row._full_path == tracked
+
+
 def test_standalone_widget_is_top_anchored(viewer):
     # Standalone docks the widget directly (no AlignTop scroll wrapper), so it
     # must fill the dock vertically and pin its content to the top — otherwise

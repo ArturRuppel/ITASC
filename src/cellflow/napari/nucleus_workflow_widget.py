@@ -347,6 +347,7 @@ class NucleusWorkflowWidget(
             workspace_provider=lambda: self._workspace,
             ultrack_config_provider=lambda: self._ultrack_config_from_controls(),
             focus_takeover_callback=self._set_correction_focus_takeover,
+            files_widget_refresh_callback=lambda: self._files_widget.refresh(self._pos_dir),
             finalize_btn=self.finalize_btn,
             finalize_header_btn=self.finalize_header_btn,
             parent=self,

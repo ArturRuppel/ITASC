@@ -201,6 +201,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         ultrack_config_provider: Callable[[], TrackingConfig] | None = None,
         dependencies: dict[str, Callable] | None = None,
         focus_takeover_callback: Callable[[bool], None] | None = None,
+        files_widget_refresh_callback: Callable[[], None] | None = None,
         finalize_btn: QWidget | None = None,
         finalize_header_btn: QWidget | None = None,
         parent: QWidget | None = None,
@@ -223,6 +224,10 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # deactivate, so the host can hide its other workflow sections for a
         # full-window focus mode (the widget deliberately holds no sibling refs).
         self._focus_takeover = focus_takeover_callback or (lambda _on: None)
+        # Called after the working tracked_labels.tif is written (save or commit)
+        # so the host repaints the section dot + catalog rail (mirrors the cell
+        # correction widget). No-op when the host wires nothing.
+        self._files_widget_refresh = files_widget_refresh_callback or (lambda: None)
         self._local_workspace: NucleusWorkspace | None = None
         self._dependencies = {**_DEFAULT_DEPENDENCIES, **(dependencies or {})}
         self._edit_callback = edit_callback or self._on_cells_edited
@@ -506,6 +511,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         write_full_tracked_stack(tracked_path, np.asarray(layer.data))
         self._correction_dirty = False
         self._correction_status(f"Saved {n} frame(s) to {tracked_path.name}.")
+        self._files_widget_refresh()
 
     def _refresh_tracked_layer_from_disk(self) -> None:
         """Overwrite the 'Tracked: Nucleus' layer data from the saved TIFF.
@@ -1263,6 +1269,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             f"Committed {result.n_cells} cell(s); removed {result.changed_pixels} px in "
             f"{result.changed_frames} frame(s); saved to {tracked_path.name}."
         )
+        self._files_widget_refresh()
 
     def _on_correction_worker_error(self, exc: Exception) -> None:
         self._correction_status(f"Error: {exc}")

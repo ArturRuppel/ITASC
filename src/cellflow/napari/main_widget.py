@@ -872,8 +872,12 @@ class CellFlowMainWidget(QWidget):
 
     def _update_section_statuses(self) -> None:
         """Refresh stage-status dots from on-disk file presence."""
+        # The cellpose stage is "done" once its divergence maps exist (the same
+        # done-signal the catalog rail derives from). Its tracker groups are
+        # "Inputs" / "Cellpose Outputs" / "Divergence Maps" — there is no
+        # "Outputs" group, so the old key never matched and the dot never lit.
         cellpose = pipeline_status_from_files(
-            self._cellpose_widget.output_files_tracker, done_group="Outputs"
+            self._cellpose_widget.output_files_tracker, done_group="Divergence Maps"
         )
         nucleus = pipeline_status_from_files(
             self.nucleus_workflow_widget._files_widget, done_group="Output"

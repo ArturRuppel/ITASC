@@ -51,8 +51,8 @@ layer's concern, keyed off the project CSV's metadata columns.
 
 ## Dimensionality Support
 
-- [ ] Check that the nucleus divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
-- [ ] Check that the cell divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
+- [x] Check that the nucleus divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
+- [x] Check that the cell divergence map path works on 2D, 2Dt, 3D, and 3Dt inputs.
 
 ## Aggregate Quantification (quantifier seam)
 

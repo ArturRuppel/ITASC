@@ -297,6 +297,22 @@ def test_set_running_stage_disables_other_row(_mock_cellpose, monkeypatch):
     w.deleteLater()
 
 
+def test_non_cancellable_stage_shows_no_cancel_button(_mock_cellpose, monkeypatch):
+    # Previews can't be interrupted, so the running row shows no ✕ and its
+    # run button is disabled rather than masquerading as a cancel control.
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+    w._set_running_stage("nucleus", cancellable=False)
+    assert w.nucleus_run_btn.text() == "▶"
+    assert not w.nucleus_run_btn.isEnabled()
+    assert not w.cell_run_btn.isEnabled()
+    assert not w.cell_preview_btn.isEnabled()
+    w._set_running_stage(None)
+    assert w.nucleus_run_btn.isEnabled()
+    w.deleteLater()
+
+
 def test_exposes_output_files_tracker(_mock_cellpose, monkeypatch):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)

@@ -405,6 +405,72 @@ def test_catalog_rail_updates_when_a_stage_output_appears(tmp_path):
     w.deleteLater()
 
 
+def test_catalog_rail_updates_when_divergence_maps_built(tmp_path):
+    """Building divergence maps repaints the rail's cellpose dot without a Refresh.
+
+    The embedded divergence widget carries no Pipeline Files panel of its own
+    (show_pipeline_files=False), so its completion has to reach the cellpose
+    widget to trigger a refresh. Its output — the foreground/contour maps — is
+    the cellpose stage's on-disk done-signal, so the circle must light once they
+    land.
+    """
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+
+    pos = tmp_path / "WT" / "p1"
+    (pos / "0_input").mkdir(parents=True)
+    (pos / "0_input" / "nucleus.tif").touch()
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.discover(str(tmp_path))
+    w._positions_panel.set_active(str(pos))
+    (row,) = w._positions_panel._rows
+    # Cellpose is the first rail dot; nothing on disk yet → not done.
+    assert row.rail.dots[0].state != "done"
+
+    cp = pos / "1_cellpose"
+    cp.mkdir(parents=True)
+    (cp / "nucleus_foreground.tif").touch()
+    (cp / "nucleus_contours.tif").touch()
+    # The real completion path: the embedded widget signals it wrote its maps.
+    w._cellpose_widget.divergence_maps_widget.maps_built.emit()
+
+    assert row.rail.dots[0].state == "done"
+    w.deleteLater()
+
+
+def test_cellpose_section_dot_reaches_done_from_divergence_maps(tmp_path):
+    """The cellpose section dot lights once its divergence maps exist.
+
+    Regression: ``_update_section_statuses`` asked ``pipeline_status_from_files``
+    for a ``done_group="Outputs"`` that the cellpose tracker never defines (its
+    groups are "Inputs" / "Cellpose Outputs" / "Divergence Maps"), so the dot
+    could never reach "done" no matter how many maps were written.
+    """
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+
+    pos = tmp_path / "WT" / "p1"
+    (pos / "0_input").mkdir(parents=True)
+    (pos / "0_input" / "nucleus.tif").touch()
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.discover(str(tmp_path))
+    w._positions_panel.set_active(str(pos))
+    assert w.cellpose_section.status != "done"
+
+    cp = pos / "1_cellpose"
+    cp.mkdir(parents=True)
+    for stem in ("nucleus_foreground", "nucleus_contours", "cell_foreground", "cell_contours"):
+        (cp / f"{stem}.tif").touch()
+    # Refresh the cellpose tracker (as a divergence run does) → the section dot
+    # recomputes through the refreshed-signal chain.
+    w._cellpose_widget._refresh_files(pos)
+
+    assert w.cellpose_section.status == "done"
+    w.deleteLater()
+
+
 def test_catalog_rail_updates_when_contact_analysis_completes(tmp_path):
     """A finished contact-analysis run repaints the rail (not just position switch).
 

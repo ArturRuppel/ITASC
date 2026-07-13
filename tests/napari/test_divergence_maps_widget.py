@@ -452,6 +452,49 @@ def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypat
     w.deleteLater()
 
 
+def test_completed_run_emits_maps_built(tmp_path, monkeypatch):
+    """A finished run emits ``maps_built`` even with no Pipeline Files panel.
+
+    Embedded in Cellpose the widget carries no tracker of its own
+    (show_pipeline_files=False), so this signal is the only way the host learns
+    the maps — the cellpose stage's done-signal — were written and can refresh.
+    """
+    _qapp()
+    mod = _load_widget(monkeypatch)
+    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
+    import tifffile
+
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos = tmp_path / "pos00"
+    cellpose = pos / "1_cellpose"
+    cellpose.mkdir(parents=True)
+    tifffile.imwrite(cellpose / "nucleus_prob.tif", np.zeros((1, 1, 2, 2), dtype=np.float32))
+    tifffile.imwrite(cellpose / "nucleus_dp.tif", np.zeros((1, 1, 2, 2, 2), dtype=np.float32))
+
+    def _fake_build(prob_path, dp_path, contours_out, foreground_out, **_kw):
+        return DivergenceMapsReport(
+            frames=1,
+            foreground_z_reduction="mean",
+            contour_z_reduction="mean",
+            smoothing_sigma=0.0,
+            median_radius=0,
+            contours_path=contours_out,
+            foreground_path=foreground_out,
+        )
+
+    monkeypatch.setattr(mod, "build_divergence_maps", _fake_build)
+
+    w = mod.DivergenceMapsWidget(_FakeViewer(), show_pipeline_files=False)
+    w.refresh(pos)
+    built: list[bool] = []
+    w.maps_built.connect(lambda: built.append(True))
+    w._start_worker("nucleus")
+
+    assert built == [True]
+    w.deleteLater()
+
+
 # ── Live preview ─────────────────────────────────────────────────────────
 
 class _PreviewLayer:

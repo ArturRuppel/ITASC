@@ -135,6 +135,10 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         self._sa_cell: Path | None = None
         self._sa_output_dir: Path | None = None
         self._running_stage: str | None = None
+        #: Whether the in-flight job can be cancelled. Full runs iterate frames
+        #: and poll ``_cancel_requested``; previews are a single blocking frame
+        #: with no cancellation point, so they show no ✕ and disable the row.
+        self._running_cancellable = True
         self._worker = None
         self._cancel_requested = False
 
@@ -276,6 +280,10 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             show_pipeline_files=False,
             gate=self.gate,
         )
+        # The divergence widget owns no Pipeline Files panel here, yet its output
+        # (the foreground/contour maps) is the cellpose stage's done-signal.
+        # Refresh ours when it finishes so the section dot + catalog rail repaint.
+        self.divergence_maps_widget.maps_built.connect(self._on_divergence_maps_built)
         root.addWidget(self.divergence_maps_widget)
 
     def _build_nucleus_params_section(self) -> CollapsibleSection:
@@ -659,7 +667,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         )
         layout = self._channel_layout(channel)
         self._cancel_requested = False
-        self._set_running_stage(channel)
+        self._set_running_stage(channel, cancellable=False)
         self._progress(0, 0, f"Loading {channel} reference stack for preview...")
         try:
             stack = cellpose_runner.to_tzyx(
@@ -840,6 +848,16 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             self._autoselect_layout("nucleus")
             self._autoselect_layout("cell")
 
+    def _on_divergence_maps_built(self) -> None:
+        """Repaint Pipeline Files after the embedded divergence widget writes maps.
+
+        The maps are this stage's tracked output but the divergence widget has no
+        Pipeline Files panel of its own, so refresh ours against the active root
+        (standalone output dir or the staged position dir).
+        """
+        root = self._sa_output_dir if self._standalone else self._pos_dir
+        self._refresh_files(root)
+
     def _refresh_divergence(self, pos_dir: Path | None) -> None:
         """Point the embedded divergence widget at the active maps location.
 
@@ -939,28 +957,37 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             ("nucleus", self.nucleus_params_btn, self.nucleus_preview_btn, self.nucleus_run_btn),
             ("cell", self.cell_params_btn, self.cell_preview_btn, self.cell_run_btn),
         ):
-            own = lambda c=channel: self._running_stage in (None, c)
+            # The run/✕ button stays live on its own row only while a
+            # cancellable job (a full run) is in flight; a preview disables it.
+            own = lambda c=channel: self._running_stage is None or (
+                self._running_stage == c and self._running_cancellable
+            )
             # ⚙ params just toggle a parameter panel — always available.
             g.register(params_btn, ControlClass.HARMLESS)
             g.register(preview_btn, ControlClass.RUN_VIEWER, when=idle)
             g.register(run_btn, ControlClass.RUN_VIEWER, when=own)
         g.recompute()
 
-    def _set_running_stage(self, stage_key: str | None) -> None:
+    def _set_running_stage(self, stage_key: str | None, *, cancellable: bool = True) -> None:
         """Swap the active row's ▶/✕ glyph; enablement is owned by the gate.
 
         ``None`` means idle; ``'nucleus'`` or ``'cell'`` claims that row. The
         gate's ``when`` predicates read ``self._running_stage`` to disable the
         other row and the active row's preview while a job is in flight.
+
+        ``cancellable`` is ``True`` for full runs (the ✕ cancels them); previews
+        pass ``False`` — they can't be interrupted, so the glyph stays ▶ and the
+        gate disables the whole row until the frame returns.
         """
         self._running_stage = stage_key
+        self._running_cancellable = cancellable
         if stage_key is None:
             self.nucleus_run_btn.setText("▶")
             self.nucleus_run_btn.setToolTip("Run nucleus Cellpose on all frames.")
             self.cell_run_btn.setText("▶")
             self.cell_run_btn.setToolTip("Run cell Cellpose on all frames.")
             self._cancel_requested = False
-        else:
+        elif cancellable:
             run_btn = self.nucleus_run_btn if stage_key == "nucleus" else self.cell_run_btn
             run_btn.setText("✕")
             run_btn.setToolTip("Cancel.")

@@ -104,6 +104,10 @@ class DivergenceMapsWidget(QWidget):
     """Build per-channel foreground & contour maps from Cellpose prob/dp."""
 
     _progress_signal = Signal(int, int, str)
+    #: Emitted after a channel's maps are written to disk. The embedded (Cellpose)
+    #: use passes ``show_pipeline_files=False`` and so has no own Pipeline Files
+    #: panel to refresh; the host connects this to repaint the cellpose status.
+    maps_built = Signal()
 
     def __init__(
         self,
@@ -390,6 +394,10 @@ class DivergenceMapsWidget(QWidget):
             )
             if self._files_widget is not None:
                 self._files_widget.refresh(self._pos_dir)
+            # The maps are the cellpose stage's done-signal; tell the host so it
+            # refreshes even when this widget has no Pipeline Files panel of its
+            # own (the embedded, show_pipeline_files=False case).
+            self.maps_built.emit()
 
         @thread_worker(
             connect={
