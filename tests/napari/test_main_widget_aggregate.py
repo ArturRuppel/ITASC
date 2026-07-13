@@ -85,6 +85,27 @@ def test_catalog_records_omit_blank_calibration(tmp_path):
     assert "time_interval_s" not in records[0]
 
 
+def test_aggregate_scope_band_tracks_section_visibility(tmp_path):
+    """The 'All positions' scope band re-parents Aggregate to the catalog scope.
+    It exists, starts hidden with the section, and appears alongside it once
+    positions are added — so Aggregate never reads as a fifth per-position stage."""
+    get_qapp()
+    w = CellFlowMainWidget(_fake_viewer())
+    assert hasattr(w, "aggregate_scope_band")
+    # Hidden until positions exist (mirrors the aggregate section).
+    assert not w.aggregate_scope_band.isVisibleTo(w)
+    # The de-staged Aggregate section carries no explicit stage accent.
+    assert w.aggregate_section._explicit_accent is None
+    w._positions_panel.set_records([
+        {"key": str(tmp_path / "posA"),
+         "columns": {"id": "posA"},
+         "payload": {"position_path": str(tmp_path / "posA"), "id": "posA"}},
+    ])
+    w._refresh_aggregate()
+    assert w.aggregate_scope_band.isVisibleTo(w)
+    assert w.aggregate_section.isVisibleTo(w)
+
+
 def test_calibration_edit_refreshes_aggregate():
     """Editing a calibration field re-stamps the aggregate records, so quantities
     gated on a param filled in *after* folders were added stop being greyed."""

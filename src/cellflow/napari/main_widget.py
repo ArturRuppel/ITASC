@@ -9,6 +9,7 @@ from napari.utils.notifications import show_error, show_info, show_warning
 from qtpy.QtCore import QSize, Qt, Signal
 from qtpy.QtWidgets import (
     QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -242,11 +243,18 @@ class CellFlowMainWidget(QWidget):
         )
 
         self.aggregate_widget = AggregateWidget()
+        # No stage accent: Aggregate is NOT a fifth per-position stage. It pools
+        # across the whole catalog (keyed by the grouping columns), so it belongs
+        # to the Data folders scope, not the active-position detail stack. The
+        # scope band below re-parents it visually; the neutral (accent-less)
+        # section echoes the catalog-scoped folders panel rather than the stages.
+        self.aggregate_scope_band = self._make_scope_band(
+            "All positions", "Pooled across the whole catalog, grouped by your columns."
+        )
         self.aggregate_section = CollapsibleSection(
             "Aggregate",
             self.aggregate_widget,
             expanded=False,
-            accent_color=stage_accent("aggregate"),
         )
 
         # Positions panel (napariTFM ExperimentsList parity): discover a study
@@ -297,6 +305,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.nucleus_section)
         self.scroll_layout.addWidget(self.cell_section)
         self.scroll_layout.addWidget(self.contact_analysis_section)
+        self.scroll_layout.addWidget(self.aggregate_scope_band)
         self.scroll_layout.addWidget(self.aggregate_section)
 
         # The five stage sections ARE the selected-position detail pane: they
@@ -315,6 +324,7 @@ class CellFlowMainWidget(QWidget):
         # pane: it is NOT in ``_stage_sections`` (so ``_update_disclosure``
         # never hides it on selection changes). Seed its own initial state,
         # hidden until the catalog has positions.
+        self.aggregate_scope_band.setVisible(False)
         self.aggregate_section.setVisible(False)
         self.aggregate_section.set_status(self.aggregate_widget.section_status())
 
@@ -534,6 +544,33 @@ class CellFlowMainWidget(QWidget):
         muted_label(label)
         return label
 
+    def _make_scope_band(self, title: str, subtitle: str) -> QWidget:
+        """A captioned divider that resets the reader's scope from the active
+        position to the whole catalog. Everything above it is per-position detail;
+        the section below it pools across all positions. Deliberately neutral (no
+        stage accent) so it reads as a scope break, not another workflow stage."""
+        band = QFrame()
+        band.setObjectName("cellflow_scope_band")
+        band.setStyleSheet(
+            "QFrame#cellflow_scope_band { "
+            "border-top: 1px solid palette(mid); "
+            "margin-top: 8px; padding-top: 8px; }"
+        )
+        layout = QVBoxLayout(band)
+        layout.setContentsMargins(2, 6, 2, 0)
+        layout.setSpacing(0)
+        heading = QLabel(title.upper())
+        heading.setStyleSheet(
+            "font-weight: 700; font-size: 8pt; letter-spacing: 1px; "
+            "color: palette(mid);"
+        )
+        caption = QLabel(subtitle)
+        caption.setWordWrap(True)
+        muted_label(caption)
+        layout.addWidget(heading)
+        layout.addWidget(caption)
+        return band
+
     def _on_discover_positions(self) -> None:
         """Find-data-folders button: pick a parent directory and scan it."""
         path = QFileDialog.getExistingDirectory(
@@ -675,6 +712,7 @@ class CellFlowMainWidget(QWidget):
         """Feed the project-level catalog to the capstone; show it once positions exist."""
         records = self._catalog_records_for_panel(self._positions_panel.records())
         self.aggregate_widget.set_records(records)
+        self.aggregate_scope_band.setVisible(bool(records))
         self.aggregate_section.setVisible(bool(records))
         self.aggregate_section.set_status(self.aggregate_widget.section_status())
 
