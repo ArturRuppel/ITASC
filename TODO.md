@@ -18,23 +18,31 @@ The lean-aggregate-stage spec
 scoped itself to the **headless pipeline**: `run()` persists only `contacts` and pools
 the cheap quantities in memory. These UI/cleanup follow-ons were deferred:
 
-- [ ] **Strip per-position pooled-quantity builds from the interactive studio.**
-  `BuildArea` (`napari/studio_plugins.py`, live in the standalone `cellflow-aggregate`
-  front-end) still shows per-position "built X/N" coverage and can build-and-persist a
-  pooled quantity per position — the exact stray file the lean change removes from the
-  canonical path. Reframe pooled (non-producer) quantities as pooled-only (no
-  per-position build/coverage); only `contacts` keeps a per-position "built" badge.
-  Rides with the "aggregate front-end refocus" item above.
-- [ ] **Delete the now-dead per-position writers/readers** once the studio no longer
-  needs them: the pooled quantifiers' `build` / `read` / `object_table` /
-  `default_output_name`, plus `shape/core.py` `build_object_shape` / `write_table_csv`
-  / `write_provenance`, `quantifiers/_tidy_table.py`, and the
-  `_contacts_derived.persist` / `read_derived_table` re-exports (grep-verify no
-  remaining caller; `contacts`' own writer stays). Blocked on the item above.
-- [ ] **Run-level provenance for the pooled tables.** Per-position provenance sidecars
-  vanish with the per-position files, so the "all quantifiers write provenance JSON"
-  item below is superseded *at the per-position grain*; if provenance is still wanted,
-  emit it once per aggregate run alongside the pooled tables.
+- [x] **Strip per-position pooled-quantity builds from the interactive studio.**
+  (Shipped 2026-07-12.) Resolved by *deletion*, not reframing: the legacy studio was
+  retired 2026-07-12 and the `AggregateWidget` capstone is already strictly pool-only
+  (`run(build=False)`; readiness = `contacts.h5` exists), so `BuildArea`
+  (`napari/studio_plugins.py`) was fully orphaned — deleted with its test. Only
+  `contacts` keeps a per-position "built" badge, as intended.
+- [x] **Delete the now-dead per-position writers/readers.** (Shipped 2026-07-12.)
+  Stripped `build` / `read` / `object_table` / `default_output_name` from the six
+  pooled quantifiers (cell_shape, nucleus_shape, shape_relational, cell_density,
+  neighbor_count, signed_contact_length — they keep only `compute_object_table`);
+  deleted `build_object_shape` / `build_relational` / `read_shape_table` /
+  `read_relational_table` / `read_table_csv` / `write_table_csv` / `write_provenance` /
+  `provenance_path` from `shape/`, deleted `quantifiers/_tidy_table.py`, dropped the
+  `persist` / `read_derived_table` re-exports from `_contacts_derived` (its
+  `load_analysis` stays), and removed the now-dead `records_satisfying`. `contacts`
+  keeps its writer. **Dynamics kept whole** (per Artur): the MSD / collective / store
+  engine stays as the front door for the pending pooled-MSD quantifier + the MSD/DAC
+  SEM-methodology item below, so `cell_dynamics` / `nucleus_dynamics` retain their
+  build/read/object_table.
+- [x] **Run-level provenance for the pooled tables.** (Shipped 2026-07-12.)
+  `aggregate()` now writes one `provenance.json` at the out-dir root (shared params,
+  contributing positions by identity + source paths, each written table's columns +
+  row count, cellflow version, UTC timestamp) whenever it pools ≥1 table. Supersedes
+  the per-position "all quantifiers write provenance JSON" item below at the
+  per-position grain.
 
 Note: `reduce.py` and `plotting.py` were **removed** (2026-07-11, per Artur) — the
 package produces aggregate tidy tables only; reduction and plotting are downstream

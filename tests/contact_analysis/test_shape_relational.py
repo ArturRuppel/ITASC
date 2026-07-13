@@ -1,4 +1,3 @@
-import json
 import math
 
 import numpy as np
@@ -6,10 +5,8 @@ import tifffile
 
 from cellflow.contact_analysis.shape.relational import (
     RELATIONAL_COLUMNS,
-    build_relational,
-    read_relational_table,
+    compute_relational_table,
 )
-from cellflow.contact_analysis.shape.core import provenance_path
 
 
 def _paired_frames():
@@ -29,18 +26,21 @@ def _paired_frames():
     return cell, nucleus
 
 
-def test_build_relational_ratios_and_offset(tmp_path):
+def _write_frames(tmp_path):
     cell, nucleus = _paired_frames()
     cell_path = tmp_path / "cells.tif"
     nuc_path = tmp_path / "nuclei.tif"
     tifffile.imwrite(cell_path, cell)
     tifffile.imwrite(nuc_path, nucleus)
-    out = tmp_path / "shape_relational.csv"
+    return cell_path, nuc_path
 
-    build_relational(cell_path, nuc_path, out, pixel_size_um=1.0)
-    table = read_relational_table(out)
 
-    # Only the shared id 1 survives the inner join.
+def test_compute_relational_ratios_and_offset(tmp_path):
+    cell_path, nuc_path = _write_frames(tmp_path)
+
+    table = compute_relational_table(cell_path, nuc_path, pixel_size_um=1.0)
+
+    # Only the shared id 1 survives the inner join (unpaired ids dropped).
     assert table["frame"].tolist() == [0]
     assert table["cell_id"].tolist() == [1]
     assert math.isclose(table["nc_area_ratio"][0], 100 / 400)
@@ -55,88 +55,23 @@ def test_build_relational_ratios_and_offset(tmp_path):
     assert np.isfinite(table["nc_major_axis_ratio"][0])
 
 
-def test_build_relational_columns_and_keys(tmp_path):
-    cell, nucleus = _paired_frames()
-    cell_path = tmp_path / "cells.tif"
-    nuc_path = tmp_path / "nuclei.tif"
-    tifffile.imwrite(cell_path, cell)
-    tifffile.imwrite(nuc_path, nucleus)
-    out = tmp_path / "shape_relational.csv"
+def test_compute_relational_columns_and_keys(tmp_path):
+    cell_path, nuc_path = _write_frames(tmp_path)
 
-    import pandas as pd
+    table = compute_relational_table(cell_path, nuc_path, pixel_size_um=1.0)
 
-    build_relational(cell_path, nuc_path, out, pixel_size_um=1.0)
-    df = pd.read_csv(out)
-    assert list(df.columns) == ["frame", "cell_id", *RELATIONAL_COLUMNS]
+    assert list(table) == ["frame", "cell_id", *RELATIONAL_COLUMNS]
+    assert table["frame"].dtype == np.int64
+    assert table["cell_id"].dtype == np.int64
 
 
-def test_build_relational_reports_dropped_unpaired(tmp_path):
-    cell, nucleus = _paired_frames()
-    cell_path = tmp_path / "cells.tif"
-    nuc_path = tmp_path / "nuclei.tif"
-    tifffile.imwrite(cell_path, cell)
-    tifffile.imwrite(nuc_path, nucleus)
-    out = tmp_path / "shape_relational.csv"
-    progress = []
+def test_compute_relational_scales_offset_with_pixel_size(tmp_path):
+    cell_path, nuc_path = _write_frames(tmp_path)
 
-    build_relational(
-        cell_path,
-        nuc_path,
-        out,
-        pixel_size_um=1.0,
-        quantity_id="shape_relational",
-        progress_cb=lambda *a: progress.append(a),
-    )
-
-    # One unpaired cell + one unpaired nucleus = 2 dropped, surfaced in the join
-    # progress message and recorded in the provenance sidecar.
-    join_msgs = [msg for _, _, msg in progress if "paired" in msg]
-    assert join_msgs == ["join (1 paired, 2 unpaired dropped)"]
-    prov = json.loads(provenance_path(out).read_text())
-    assert prov["params"]["unpaired_dropped"] == 2
-    assert prov["quantity_id"] == "shape_relational"
-
-
-def test_build_relational_scales_offset_with_pixel_size(tmp_path):
-    cell, nucleus = _paired_frames()
-    cell_path = tmp_path / "cells.tif"
-    nuc_path = tmp_path / "nuclei.tif"
-    tifffile.imwrite(cell_path, cell)
-    tifffile.imwrite(nuc_path, nucleus)
-
-    unit = read_relational_table(
-        build_relational(cell_path, nuc_path, tmp_path / "u.csv", pixel_size_um=1.0)
-    )
-    scaled = read_relational_table(
-        build_relational(cell_path, nuc_path, tmp_path / "s.csv", pixel_size_um=0.5)
-    )
+    unit = compute_relational_table(cell_path, nuc_path, pixel_size_um=1.0)
+    scaled = compute_relational_table(cell_path, nuc_path, pixel_size_um=0.5)
 
     # Offset is a length (scales by s); the ratio is dimensionless (invariant).
     assert np.allclose(scaled["centroid_offset_um"], unit["centroid_offset_um"] * 0.5)
     assert np.allclose(scaled["nc_area_ratio"], unit["nc_area_ratio"])
     assert np.allclose(scaled["centroid_offset_norm"], unit["centroid_offset_norm"])
-
-
-def test_relational_compute_matches_build(tmp_path):
-    import numpy as np, tifffile
-    from cellflow.contact_analysis.quantifier import PositionInputs
-    from cellflow.contact_analysis.quantifiers.shape_relational import ShapeRelationalQuantifier
-
-    cell = np.zeros((12, 12), dtype=np.uint16); cell[1:6, 1:6] = 1
-    nuc = np.zeros((12, 12), dtype=np.uint16); nuc[2:5, 2:5] = 1
-    cp = tmp_path / "cells.tif"; np_path = tmp_path / "nuclei.tif"
-    tifffile.imwrite(cp, cell[np.newaxis, ...]); tifffile.imwrite(np_path, nuc[np.newaxis, ...])
-
-    q = ShapeRelationalQuantifier()
-    inputs = PositionInputs(
-        position_dir=tmp_path, cell_labels_path=cp, nucleus_labels_path=np_path, pixel_size_um=0.5
-    )
-    out = q.default_output(inputs)
-    q.build(inputs, out)
-    expected = q.object_table(out)
-
-    got = q.compute_object_table(inputs)
-
-    assert set(got) == set(expected)
-    for key in expected:
-        np.testing.assert_allclose(np.asarray(got[key], float), np.asarray(expected[key], float))

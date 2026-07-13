@@ -1,34 +1,24 @@
-"""Build / read the relational nucleus-vs-cell shape table.
+"""Compute the relational nucleus-vs-cell shape table.
 
 One row per ``(frame, cell_id)`` present in **both** the cell and nucleus label
 stacks. Because cells are nucleus-seeded, a nucleus carries the same label id as
 its cell, so pairing is a direct ``(frame, id)`` inner join — no geometry. Ids
-present in only one source are dropped from the join; the dropped count is
-surfaced via *progress_cb* so silent loss is visible.
+present in only one source are dropped from the join.
 
 The emitted columns are *relational* quantities — ratios and offsets between the
-paired nucleus and cell — listed in :data:`RELATIONAL_COLUMNS`. Persistence is a
-flat tidy CSV plus a ``<name>.provenance.json`` sidecar, the same format the
-per-object shape tables use (see :mod:`cellflow.contact_analysis.shape.core`). Backend-only (no Qt / napari).
+paired nucleus and cell — listed in :data:`RELATIONAL_COLUMNS`. The table is
+computed in memory (:func:`compute_relational_table`) and pooled by the aggregate
+stage; nothing is persisted per position. Backend-only (no Qt / napari).
 """
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 from skimage.measure import regionprops
 
-from .core import (
-    read_label_stack,
-    read_table_csv,
-    write_provenance,
-    write_table_csv,
-)
-from cellflow.contact_analysis._provenance import (
-    report_progress as _report_progress,
-)
+from .core import read_label_stack
 
 #: The measured relational columns (everything but the tidy keys) — the value
 #: axis a plot/export chooses from. Kept explicit so the on-disk order is stable.
@@ -47,64 +37,6 @@ _KEY_COLUMNS = ("frame", "cell_id")
 _COLUMN_ORDER = (*_KEY_COLUMNS, *RELATIONAL_COLUMNS)
 
 
-def build_relational(
-    cell_labels_path: str | Path,
-    nucleus_labels_path: str | Path,
-    output_path: str | Path,
-    *,
-    pixel_size_um: float,
-    source_path: str | Path | None = None,
-    params: dict | None = None,
-    quantity_id: str = "",
-    progress_cb: Callable[[int, int, str], None] | None = None,
-) -> Path:
-    """Pair each nucleus with its cell (shared ``(frame, id)``) and measure the
-    relational shape quantities of :data:`RELATIONAL_COLUMNS`.
-
-    Reads both tracked-label TIFFs, runs ``regionprops`` per frame on each,
-    inner-joins on ``(frame, id)``, and writes a tidy CSV plus provenance sidecar
-    to *output_path*. Dimensional inputs are scaled by *pixel_size_um*. Ids found
-    in only one stack are dropped; the dropped count is reported via
-    *progress_cb*.
-    """
-    pixel_size_um = float(pixel_size_um)
-    if not pixel_size_um > 0:
-        raise ValueError(f"pixel_size_um must be positive, got {pixel_size_um!r}")
-    total = 4
-    cell_labels_path = Path(cell_labels_path)
-    nucleus_labels_path = Path(nucleus_labels_path)
-    output_path = Path(output_path)
-    params = dict(params or {})
-
-    cell_stack = read_label_stack(cell_labels_path)
-    nucleus_stack = read_label_stack(nucleus_labels_path)
-    _report_progress(progress_cb, 1, total, "read labels")
-
-    cell_props = _object_props(cell_stack, pixel_size_um)
-    nucleus_props = _object_props(nucleus_stack, pixel_size_um)
-    _report_progress(progress_cb, 2, total, "extract shape")
-
-    rows, dropped = _join_rows(cell_props, nucleus_props)
-    _report_progress(
-        progress_cb, 3, total, f"join ({len(rows)} paired, {dropped} unpaired dropped)"
-    )
-
-    columns = _columns_from_rows(rows)
-    write_table_csv(output_path, columns, _COLUMN_ORDER)
-    write_provenance(
-        output_path,
-        quantity_id=quantity_id,
-        source_path=source_path,
-        cell_labels_path=cell_labels_path,
-        nucleus_labels_path=nucleus_labels_path,
-        pixel_size_um=pixel_size_um,
-        params={**params, "unpaired_dropped": dropped},
-        columns=_COLUMN_ORDER,
-    )
-    _report_progress(progress_cb, 4, total, "write CSV")
-    return output_path
-
-
 def compute_relational_table(
     cell_labels_path: str | Path,
     nucleus_labels_path: str | Path,
@@ -121,11 +53,6 @@ def compute_relational_table(
     nucleus_props = _object_props(nucleus_stack, pixel_size_um)
     rows, _dropped = _join_rows(cell_props, nucleus_props)
     return _columns_from_rows(rows)
-
-
-def read_relational_table(path: str | Path) -> dict[str, np.ndarray]:
-    """Return the relational CSV as a column-major dict of 1-D arrays."""
-    return read_table_csv(path)
 
 
 def _object_props(

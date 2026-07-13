@@ -1,11 +1,11 @@
-"""The contacts-derived quantifiers: build → persist → object_table round-trips.
+"""The contacts-derived quantifiers pool via compute_object_table.
 
 These label-agnostic quantities (neighbor count / signed contact length) read a
-position's ``contact_analysis.h5`` and persist a tidy CSV its plot later pools. The
-compute itself is covered by ``test_neighborhood.py`` /
-``test_signed_contact_length.py``; here we assert the quantifier wrapper persists
-and reads back the right columns/dtypes and honours its build params. Backend-only
-— no Qt.
+position's ``contact_analysis.h5`` and return a tidy table the aggregate stage
+pools in memory (no per-position artifact). The compute itself is covered by
+``test_neighborhood.py`` / ``test_signed_contact_length.py``; here we assert the
+quantifier wrapper returns the right columns/dtypes and raises on a missing
+artifact. Backend-only — no Qt.
 """
 from __future__ import annotations
 
@@ -59,69 +59,29 @@ def _inputs(tmp_path: Path) -> PositionInputs:
     )
 
 
-def _build(quantity_id: str, inputs: PositionInputs, params: dict | None = None):
-    q = _quantifier(quantity_id)
-    out = q.default_output(inputs)
-    q.build(inputs, out, params=params)
-    return q.object_table(out)
+def _compute(quantity_id: str, inputs: PositionInputs, params: dict | None = None):
+    return _quantifier(quantity_id).compute_object_table(inputs, params=params)
 
 
 @pytest.mark.parametrize("quantity_id", _DERIVED)
-def test_derived_quantifier_persists_and_reads_back(quantity_id, tmp_path):
-    table = _build(quantity_id, _inputs(tmp_path))
-    # frame / *_id keys round-trip as integers; the read survives string columns.
+def test_derived_quantifier_computes_integer_keyed_table(quantity_id, tmp_path):
+    table = _compute(quantity_id, _inputs(tmp_path))
     assert "frame" in table
-    assert table["frame"].dtype.kind == "i"
+    assert np.asarray(table["frame"]).dtype.kind == "i"
 
 
 def test_neighbor_count_columns_and_degree(tmp_path):
-    table = _build("neighbor_count", _inputs(tmp_path))
+    table = _compute("neighbor_count", _inputs(tmp_path))
     assert {"frame", "cell_id", "n_neighbors"} <= set(table)
     # Each of the 4 cells has exactly one neighbor in the fixture.
-    assert table["n_neighbors"].tolist() == [1, 1, 1, 1]
+    assert list(table["n_neighbors"]) == [1, 1, 1, 1]
 
 
 def test_signed_contact_length_empty_without_t1(tmp_path):
     # The fixture carries no T1 events → an empty (but valid) length table.
-    table = _build("signed_contact_length", _inputs(tmp_path))
+    table = _compute("signed_contact_length", _inputs(tmp_path))
     assert "signed_length" in table
     assert len(table["signed_length"]) == 0
-
-
-def test_neighbor_count_compute_matches_build(tmp_path):
-    from cellflow.contact_analysis.quantifiers.neighbor_count import (
-        NeighborCountQuantifier,
-    )
-
-    inputs = _inputs(tmp_path)
-    q = NeighborCountQuantifier()
-    out = q.default_output(inputs)
-    q.build(inputs, out)
-    expected = q.object_table(out)
-
-    got = q.compute_object_table(inputs)
-
-    assert set(got) == set(expected)
-    for key in expected:
-        np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(expected[key]))
-
-
-def test_signed_contact_length_compute_matches_build(tmp_path):
-    from cellflow.contact_analysis.quantifiers.signed_contact_length import (
-        SignedContactLengthQuantifier,
-    )
-
-    inputs = _inputs(tmp_path)
-    q = SignedContactLengthQuantifier()
-    out = q.default_output(inputs)
-    q.build(inputs, out)
-    expected = q.object_table(out)
-
-    got = q.compute_object_table(inputs)
-
-    assert set(got) == set(expected)
-    for key in expected:
-        np.testing.assert_array_equal(np.asarray(got[key]), np.asarray(expected[key]))
 
 
 def test_missing_contacts_artifact_raises(tmp_path):
@@ -130,4 +90,4 @@ def test_missing_contacts_artifact_raises(tmp_path):
         position_dir=tmp_path, contact_analysis_path=tmp_path / "missing.h5"
     )
     with pytest.raises(FileNotFoundError):
-        q.build(inputs, q.default_output(inputs))
+        q.compute_object_table(inputs)

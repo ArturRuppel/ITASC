@@ -6,24 +6,22 @@ The studio carries positions as normalized catalogue ``record`` dicts (see
 builds from — and resolving where that quantifier's artifact lives — is pure path
 logic with no Qt. It lives here (rather than in the napari studio layer) so the
 headless aggregation backend (:mod:`.shape_tables`) and the standalone
-``cellflow-aggregate`` wheel can resolve the same paths the studio does.
-
-The napari ``studio_plugins`` module re-exports these for backwards compatibility.
+``cellflow-aggregate`` wheel can resolve the same paths the pipeline does.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import fields as _dataclass_fields
 from pathlib import Path
 
-from .quantifier import PositionInputs, Quantifier
+from .quantifier import PositionInputs, Quantifier, available_quantifiers
 
 __all__ = [
     "position_inputs_from_record",
     "output_for_record",
-    "records_satisfying",
     "available_fields",
     "record_build_params",
+    "supported_quantities",
 ]
 
 
@@ -79,19 +77,6 @@ def output_for_record(quantifier: Quantifier, record: dict) -> Path:
     return quantifier.default_output(position_inputs_from_record(record))
 
 
-def records_satisfying(requires: Iterable[str], records: Iterable[dict]) -> list[dict]:
-    """The records whose inputs supply every field in *requires*."""
-    needed = tuple(requires)
-    if not needed:
-        return list(records)
-    out = []
-    for record in records:
-        inputs = position_inputs_from_record(record)
-        if all(getattr(inputs, name, None) is not None for name in needed):
-            out.append(record)
-    return out
-
-
 def available_fields(inputs: PositionInputs) -> set[str]:
     """The populated (non-``None``) ``PositionInputs`` field names — the satisfied
     prerequisites a quantifier's ``requires`` is checked against."""
@@ -114,3 +99,31 @@ def record_build_params(
         if value is not None:
             merged[key] = value
     return merged
+
+
+def supported_quantities(
+    records: Sequence[dict], *, params: Mapping[str, object] | None = None
+) -> set[str]:
+    """``quantity_id``\\ s of the pooled quantifiers *records* can actually produce.
+
+    A pooled quantifier (one declaring ``table_keys``) is *supported* when at least
+    one record satisfies **both** gates :func:`shape_tables.build_table` applies per
+    position: its ``requires`` inputs are present (:meth:`Quantifier.can_build`) and
+    its ``required_build_params`` are satisfied (pixel size, FOV area, …). That makes
+    "supported" ⟺ "this table would pool at least one non-empty row" — the exact
+    predicate the Aggregate UI greys its checkboxes against, so an enabled box never
+    promises a table the run would silently skip. Producers (no ``table_keys``, e.g.
+    ``contacts``) are never pooled and so never reported.
+    """
+    supported: set[str] = set()
+    for quantifier in (cls() for cls in available_quantifiers()):
+        if not quantifier.table_keys:
+            continue
+        for record in records:
+            inputs = position_inputs_from_record(record)
+            if quantifier.can_build(inputs) and not quantifier.missing_build_params(
+                record_build_params(quantifier, record, params)
+            ):
+                supported.add(quantifier.quantity_id)
+                break
+    return supported

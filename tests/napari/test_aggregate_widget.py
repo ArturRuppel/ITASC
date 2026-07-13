@@ -114,3 +114,66 @@ def test_aggregate_stage_accent_resolves():
 
     accent = stage_accent("aggregate")
     assert isinstance(accent, str) and accent.startswith("#")
+
+
+# ------------------------------------------------------ quantity checkbox list
+
+
+def test_widget_has_checkbox_per_pooled_quantifier():
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget, pooled_quantifiers
+
+    w = AggregateWidget()
+    expected = {cls.quantity_id for cls in pooled_quantifiers()}
+    assert set(w._checks) == expected
+    assert "contacts" not in w._checks  # a producer — never pooled
+
+
+def test_widget_greys_unsupported_quantities(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    # The bare _record has cell+nucleus labels and an existing contacts.h5, but no
+    # pixel size / FOV area — so contacts-derived quantities are supported and the
+    # pixel-size-gated shape quantities are not.
+    w = AggregateWidget()
+    w.set_records([_record(tmp_path / "posA", ready=True)])
+    assert w._checks["neighbor_count"].isEnabled()
+    assert w._checks["neighbor_count"].isChecked()
+    assert not w._checks["cell_shape"].isEnabled()
+    assert not w._checks["cell_shape"].isChecked()
+
+    # Stamping a pixel size lifts cell_shape into support (enabled + re-checked).
+    rec = _record(tmp_path / "posB", ready=True)
+    rec["pixel_size_um"] = 0.5
+    w.set_records([rec])
+    assert w._checks["cell_shape"].isEnabled()
+    assert w._checks["cell_shape"].isChecked()
+
+
+def test_selected_quantities_collapses_and_respects_unchecks(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.set_records([_record(tmp_path / "posA", ready=True)])
+    # All supported boxes checked → collapse to () (= write every available table).
+    assert w._selected_quantities() == ()
+    # Unchecking a supported box yields the explicit checked subset.
+    w._checks["neighbor_count"].setChecked(False)
+    assert w._selected_quantities() == ("signed_contact_length",)
+
+
+def test_pool_positions_authors_selected_quantities(tmp_path, monkeypatch):
+    ready = [_record(tmp_path / "study" / "posA", ready=True)]
+    seen = {}
+
+    def _fake_run(config_path, *, build=True):
+        seen["config_path"] = Path(config_path)
+        return {}
+
+    monkeypatch.setattr(aw, "run", _fake_run)
+    aw.pool_positions(ready, skipped_names=[], quantities=("cell_shape",))
+
+    config_text = (seen["config_path"]).read_text()
+    assert 'quantities = ["cell_shape"]' in config_text

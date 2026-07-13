@@ -256,6 +256,42 @@ def test_aggregate_skips_empty_tables(tmp_path):
     assert written == {}
 
 
+def test_aggregate_writes_run_level_provenance(tmp_path, monkeypatch):
+    import json
+
+    from cellflow.contact_analysis.shape_tables import PROVENANCE_NAME
+
+    rec_a = _record(tmp_path, "a", experiment_id="exp1")
+    rec_b = _record(tmp_path, "b", experiment_id="exp1")
+    _stub_compute(monkeypatch, CellShapeQuantifier, {
+        "a": _cell_shape_table([1, 2], [0]),
+        "b": _cell_shape_table([1], [0]),
+    })
+    out_dir = tmp_path / "catalogue"
+
+    aggregate([rec_a, rec_b], out_dir, params={"pixel_size_um": 0.5})
+
+    prov = json.loads((out_dir / PROVENANCE_NAME).read_text())
+    assert prov["params"] == {"pixel_size_um": 0.5}
+    assert "created_at" in prov and "cellflow_version" in prov
+    # Every contributing position is recorded by identity + source paths.
+    assert {p["position_id"] for p in prov["positions"]} == {"a", "b"}
+    assert {p["experiment_id"] for p in prov["positions"]} == {"exp1"}
+    # Each written table records its columns + row count (a=2 rows, b=1 → 3).
+    assert prov["tables"]["cell_shape"]["rows"] == 3
+    assert "cell_shape.area_um2" in prov["tables"]["cell_shape"]["columns"]
+
+
+def test_aggregate_writes_no_provenance_when_nothing_pooled(tmp_path):
+    from cellflow.contact_analysis.shape_tables import PROVENANCE_NAME
+
+    rec = _record(tmp_path, "a")
+    del rec["cell_tracked_labels_path"]  # no inputs → no tables → no provenance
+    out_dir = tmp_path / "catalogue"
+    assert aggregate([rec], out_dir) == {}
+    assert not (out_dir / PROVENANCE_NAME).exists()
+
+
 def test_read_table_restores_integer_keys(tmp_path, monkeypatch):
     rec = _record(tmp_path, "a")
     _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0, 1])})
@@ -286,3 +322,32 @@ def test_catalogue_root_is_common_ancestor(tmp_path):
     root = catalogue_root([rec_a, rec_b])
     assert Path(rec_a["position_path"]).is_relative_to(root)
     assert Path(rec_b["position_path"]).is_relative_to(root)
+
+
+# ----------------------------------------------------- quantities-filtered write
+
+
+def test_aggregate_quantities_filter_writes_only_selected(tmp_path, monkeypatch):
+    """``aggregate(quantities=[...])`` writes only the named tables, even when other
+    quantities would pool non-empty rows for the same records."""
+    rec = _record(tmp_path, "a", experiment_id="EXP-01")
+    _mark_contacts_built(rec)
+    _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
+    _stub_compute(monkeypatch, NeighborCountQuantifier, {"a": _neighbor_count_table([1, 2], [0])})
+
+    # neighbor_count pools non-empty when selected...
+    both = aggregate([rec], tmp_path / "both", quantities=["cell_shape", "neighbor_count"])
+    assert set(both) == {"cell_shape", "neighbor_count"}
+
+    # ...but is omitted when the filter names only cell_shape.
+    written = aggregate([rec], tmp_path / "sel", quantities=["cell_shape"])
+    assert set(written) == {"cell_shape"}
+    assert not (tmp_path / "sel" / "neighbor_count.csv").exists()
+
+
+def test_aggregate_empty_quantities_writes_nothing(tmp_path, monkeypatch):
+    """An empty ``quantities`` sequence is an explicit "no tables", distinct from
+    ``None`` (= all)."""
+    rec = _record(tmp_path, "a", experiment_id="EXP-01")
+    _stub_compute(monkeypatch, CellShapeQuantifier, {"a": _cell_shape_table([1, 2], [0])})
+    assert aggregate([rec], tmp_path / "none", quantities=[]) == {}

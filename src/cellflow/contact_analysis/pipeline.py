@@ -217,6 +217,7 @@ def aggregate(
     out_dir: Path | str | None = None,
     *,
     params: Mapping[str, object] | None = None,
+    quantities: Sequence[str] | None = None,
 ) -> dict[str, Path]:
     """Pool every built product across *catalog* into the index-keyed tables.
 
@@ -227,9 +228,10 @@ def aggregate(
     (the common ancestor of the positions). *params* carries the shared build
     knobs (pixel size, frame interval, FOV area, …) so a param-gated cheap
     quantity (e.g. cell shape needing ``pixel_size_um``) pools with the same
-    knobs a normal build would have used.
+    knobs a normal build would have used. *quantities* restricts which tables are
+    written (``None`` = all); see :func:`shape_tables.aggregate`.
     """
-    return shape_tables.aggregate(catalog, out_dir, params=params)
+    return shape_tables.aggregate(catalog, out_dir, params=params, quantities=quantities)
 
 
 def author_config(
@@ -274,7 +276,9 @@ def run(
     selected *quantities* — of which only producers (``contacts``) actually
     persist a per-position artifact, see :func:`build_quantities` — and aggregate
     into the flat measurement tables under the config's ``out_dir`` (default: the
-    catalogue root), where the cheap quantities are computed in memory. Returns
+    catalogue root), where the cheap quantities are computed in memory. The same
+    ``quantities`` selection restricts which tables ``aggregate`` writes (empty =
+    all), so a pool-only run honors the choice too. Returns
     the table name → written CSV path map. The optional *progress_cb* is
     forwarded to the build stage.
 
@@ -304,4 +308,6 @@ def run(
             params=cfg.params or None,
             progress_cb=progress_cb,
         )
-    return aggregate(catalog, cfg.out_dir, params=cfg.params or None)
+    return aggregate(
+        catalog, cfg.out_dir, params=cfg.params or None, quantities=cfg.quantities or None
+    )

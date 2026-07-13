@@ -31,14 +31,17 @@ wheel use it unchanged.
 """
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from ._provenance import cellflow_version as _cellflow_version
 from .quantifier import Quantifier, available_quantifiers
 from .records import available_fields, position_inputs_from_record, record_build_params
 
@@ -51,8 +54,15 @@ __all__ = [
     "aggregate",
     "table_path",
     "catalogue_root",
+    "PROVENANCE_NAME",
     "METADATA_COLUMNS",
 ]
+
+#: The single run-level provenance sidecar written beside the pooled tables. The
+#: cheap quantities are computed in memory and never persisted per-position, so
+#: their old per-position ``.provenance.json`` sidecars are gone; this one file
+#: records how a whole aggregate run was produced instead.
+PROVENANCE_NAME = "provenance.json"
 
 #: The catalogue-metadata axes stamped (bare) onto every pooled row, in order.
 METADATA_COLUMNS = ("condition", "experiment_id", "position_id")
@@ -245,6 +255,7 @@ def aggregate(
     out_dir: Path | str | None = None,
     *,
     params: Mapping[str, object] | None = None,
+    quantities: Sequence[str] | None = None,
 ) -> dict[str, Path]:
     """Regenerate every aggregated table for the in-scope *records*; return the
     table name → written CSV path map.
@@ -255,10 +266,19 @@ def aggregate(
     skipped (no empty file). *out_dir* defaults to :func:`catalogue_root`. *params*
     is forwarded to :func:`build_table` (the shared build knobs the param-gated
     quantifiers need to compute at all).
+
+    *quantities* restricts which tables are written: ``None`` (the default) writes
+    every registered table; a sequence writes only those whose ``quantity_id`` it
+    names (unknown / non-tabular ids — e.g. the ``contacts`` producer — are simply
+    absent from the table registry and ignored). An empty sequence writes nothing.
     """
     root = Path(out_dir) if out_dir is not None else catalogue_root(records)
+    selected = None if quantities is None else set(quantities)
     written: dict[str, Path] = {}
+    table_meta: dict[str, dict[str, object]] = {}
     for name in shape_table_registry():
+        if selected is not None and name not in selected:
+            continue
         df = build_table(name, records, params=params)
         if df.empty:
             continue
@@ -266,7 +286,49 @@ def aggregate(
         path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False)
         written[name] = path
+        table_meta[name] = {"rows": int(len(df)), "columns": list(df.columns)}
+    if written:
+        _write_run_provenance(root, records, table_meta, params)
     return written
+
+
+def _write_run_provenance(
+    root: Path,
+    records: Sequence[dict],
+    table_meta: Mapping[str, dict[str, object]],
+    params: Mapping[str, object] | None,
+) -> Path:
+    """Write the run-level ``provenance.json`` beside the pooled tables.
+
+    One file per aggregate run (not per position — the cheap quantities are
+    computed in memory, so there are no per-position artifacts to sidecar). It
+    records the shared build params, the contributing positions (identity +
+    their source paths), and every written table's columns and row count, plus
+    the cellflow version and a UTC timestamp — enough to reconstruct how the
+    tables were produced.
+    """
+    record = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "cellflow_version": _cellflow_version(),
+        "params": dict(params or {}),
+        "positions": [_provenance_position(r) for r in records],
+        "tables": {name: dict(meta) for name, meta in table_meta.items()},
+    }
+    path = Path(root) / PROVENANCE_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, sort_keys=True))
+    return path
+
+
+def _provenance_position(record: dict) -> dict[str, str]:
+    """Identity + source paths for one contributing position, for provenance."""
+    return {
+        "position_id": str(record.get("id", "")),
+        "experiment_id": str(record.get("experiment_id", "")),
+        "condition": str(record.get("condition", "")),
+        "position_path": str(record.get("position_path", "")),
+        "contact_analysis_path": str(record.get("contact_analysis_path", "")),
+    }
 
 
 def read_table(path: Path | str) -> pd.DataFrame:

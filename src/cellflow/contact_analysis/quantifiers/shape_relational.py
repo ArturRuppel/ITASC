@@ -1,26 +1,17 @@
 """Relational shape quantifier — nucleus-vs-cell paired morphology.
 
-Wraps :func:`cellflow.contact_analysis.shape.build_relational`, which
+Wraps :func:`cellflow.contact_analysis.shape.compute_relational_table`, which
 pairs each nucleus with its cell on the shared ``(frame, id)`` key and emits
 relational quantities (nuclear:cell area ratio, centroid offset, orientation
-delta, …). Needs **both** label stacks plus a pixel size; persists
-``4_contact_analysis/shape_relational.csv``. The object-key column is ``cell_id``,
-so the relational table pools and plots through the same path as the per-source
-shape tables.
+delta, …). Needs **both** label stacks plus a pixel size. A **pooled** quantity:
+:meth:`compute_object_table` builds the tidy table in memory (no per-position
+artifact). The object-key column is ``cell_id``, so the relational table pools
+through the same path as the per-source shape tables.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
-from pathlib import Path
-
-import numpy as np
-
-from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
-from cellflow.contact_analysis.shape import (
-    build_relational,
-    compute_relational_table,
-    read_relational_table,
-)
+from cellflow.contact_analysis.quantifier import Quantifier
+from cellflow.contact_analysis.shape import compute_relational_table
 
 
 class ShapeRelationalQuantifier(Quantifier):
@@ -32,35 +23,8 @@ class ShapeRelationalQuantifier(Quantifier):
     # global build param set in the Parameters panel.
     requires = ("cell_labels_path", "nucleus_labels_path")
     required_build_params = {"pixel_size_um": "pixel size (µm/px)"}
-
-    default_output_name = "shape_relational.csv"
     # Per-cell nucleus↔cell relational descriptors, keyed (frame, cell_id).
     table_keys = ("frame", "cell_id")
-
-    def build(
-        self,
-        inputs: PositionInputs,
-        output_path: Path,
-        *,
-        params: dict | None = None,
-        progress_cb: Callable[[int, int, str], None] | None = None,
-    ) -> Path:
-        return build_relational(
-            inputs.cell_labels_path,
-            inputs.nucleus_labels_path,
-            output_path,
-            pixel_size_um=inputs.pixel_size_um,
-            source_path=inputs.position_dir,
-            params=params,
-            quantity_id=self.quantity_id,
-            progress_cb=progress_cb,
-        )
-
-    def read(self, output_path: Path) -> dict[str, np.ndarray]:
-        return read_relational_table(output_path)
-
-    def object_table(self, output_path: Path) -> Mapping[str, np.ndarray]:
-        return read_relational_table(output_path)
 
     def compute_object_table(self, inputs, *, params=None):
         return compute_relational_table(

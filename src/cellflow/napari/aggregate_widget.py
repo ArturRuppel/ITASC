@@ -13,6 +13,7 @@ from pathlib import Path
 from napari.qt.threading import thread_worker
 from napari.utils.notifications import show_error, show_info
 from qtpy.QtWidgets import (
+    QCheckBox,
     QLabel,
     QListWidget,
     QProgressBar,
@@ -22,7 +23,19 @@ from qtpy.QtWidgets import (
 )
 
 from cellflow.contact_analysis import author_config, run
+from cellflow.contact_analysis.quantifier import available_quantifiers
+from cellflow.contact_analysis.records import supported_quantities
 from cellflow.contact_analysis.shape_tables import catalogue_root
+
+
+def pooled_quantifiers():
+    """The registered quantifiers that pool into a project table, in display order.
+
+    Only quantifiers declaring ``table_keys`` produce an aggregated CSV; producers
+    (e.g. ``contacts``) are excluded. :func:`available_quantifiers` already returns
+    them sorted by ``display_name``, which is the order the checkbox list shows.
+    """
+    return [cls for cls in available_quantifiers() if cls.table_keys]
 
 
 def partition_ready(records):
@@ -45,16 +58,19 @@ def _position_name(record) -> str:
     return Path(path).name if path else "(unknown)"
 
 
-def pool_positions(ready_records, skipped_names):
+def pool_positions(ready_records, skipped_names, quantities=()):
     """Author the project artifacts for *ready_records* and run the engine.
 
     Writes ``catalog.csv`` + ``config.toml`` into the ready positions' common
     ancestor (:func:`catalogue_root`), then ``run``s the pipeline over them.
-    Returns a result dict for the UI: the ``name -> path`` table map, the
-    ``skipped`` position names, and the ``project_dir`` the tables landed under.
+    *quantities* is the checked subset of pooled quantities to write (empty = every
+    available table); it is authored into the config and restricts which tables the
+    pool-only run emits. Returns a result dict for the UI: the ``name -> path``
+    table map, the ``skipped`` position names, and the ``project_dir`` the tables
+    landed under.
     """
     project_dir = catalogue_root(ready_records)
-    config_path = author_config(project_dir, ready_records, quantities=())
+    config_path = author_config(project_dir, ready_records, quantities=tuple(quantities))
     # Pool-only: read each position's existing contacts.h5 and pool it (plus the
     # in-memory cheap quantities). build=False skips the producer's unconditional
     # rebuild, so ready positions are loaded, never recomputed.
@@ -87,6 +103,18 @@ class AggregateWidget(QWidget):
         self.subtitle.setWordWrap(True)
         self.readout = QLabel("No data folders yet.")
         self.readout.setWordWrap(True)
+        self.quantities_label = QLabel("Quantities to pool:")
+        # One checkbox per pooled quantity, all on by default. A box is greyed out
+        # (disabled + unchecked) when no ready position carries the inputs/params it
+        # needs, so the list also reads as "what this stage computes" — and an
+        # enabled box never promises a table the run would skip. See
+        # :func:`~cellflow.contact_analysis.records.supported_quantities`.
+        self._checks: dict[str, QCheckBox] = {}
+        for cls in pooled_quantifiers():
+            box = QCheckBox(cls.display_name)
+            box.setChecked(True)
+            box.setToolTip(cls.quantity_id)
+            self._checks[cls.quantity_id] = box
         self.run_btn = QPushButton("Pool ready positions")
         self.run_btn.clicked.connect(self._on_run)
         self.progress = QProgressBar()
@@ -94,14 +122,11 @@ class AggregateWidget(QWidget):
         self.results = QListWidget()
         self.status = QLabel("")
         self.status.setWordWrap(True)
-        for widget in (
-            self.subtitle,
-            self.readout,
-            self.run_btn,
-            self.progress,
-            self.results,
-            self.status,
-        ):
+        for widget in (self.subtitle, self.readout, self.quantities_label):
+            layout.addWidget(widget)
+        for box in self._checks.values():
+            layout.addWidget(box)
+        for widget in (self.run_btn, self.progress, self.results, self.status):
             layout.addWidget(widget)
         self._refresh_readout()
 
@@ -130,7 +155,40 @@ class AggregateWidget(QWidget):
                 names = ", ".join(_position_name(r) for r in not_ready)
                 message += f" — not yet ready: {names}"
             self.readout.setText(message)
+        self._refresh_quantities(ready)
         self.run_btn.setEnabled(bool(ready) and self._worker is None)
+
+    def _refresh_quantities(self, ready) -> None:
+        """Enable a quantity's checkbox iff a ready position can produce its table.
+
+        Greys out (disables + unchecks) any quantity whose required inputs/params
+        are absent from every ready position; re-enables and re-checks one that
+        becomes supported again. A deliberate uncheck of a *supported* quantity is
+        preserved — only the supported⟷unsupported transition touches the check.
+        """
+        supported = supported_quantities(ready)
+        for qid, box in self._checks.items():
+            was_enabled = box.isEnabled()
+            now = qid in supported
+            box.setEnabled(now)
+            box.setToolTip(
+                qid if now else f"{qid} — required inputs not present in any ready position"
+            )
+            if not now:
+                box.setChecked(False)
+            elif not was_enabled:
+                box.setChecked(True)
+
+    def _selected_quantities(self) -> tuple[str, ...]:
+        """The checked quantities to author into the config.
+
+        Collapses to ``()`` (= write every available table) when the user has left
+        every *supported* quantity checked, so a default run writes a clean config;
+        any deliberate uncheck yields the explicit checked subset instead.
+        """
+        checked = {qid for qid, box in self._checks.items() if box.isChecked()}
+        supported = {qid for qid, box in self._checks.items() if box.isEnabled()}
+        return () if checked == supported else tuple(sorted(checked))
 
     # --------------------------------------------------------------------- run
     def _on_run(self) -> None:
@@ -139,6 +197,7 @@ class AggregateWidget(QWidget):
             show_info("No analyzed positions to pool.")
             return
         skipped = [_position_name(r) for r in not_ready]
+        quantities = self._selected_quantities()
         self.results.clear()
         self.status.setText("Pooling…")
         self.progress.setVisible(True)
@@ -149,7 +208,7 @@ class AggregateWidget(QWidget):
             connect={"returned": self._on_done, "errored": self._on_error}
         )
         def _work():
-            return pool_positions(ready, skipped)
+            return pool_positions(ready, skipped, quantities)
 
         self._worker = _work()
 

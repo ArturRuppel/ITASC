@@ -29,19 +29,6 @@ def test_available_quantifiers_discovers_shape_trio():
     assert {"cell_shape", "nucleus_shape", "shape_relational"} <= ids
 
 
-def test_shape_quantifiers_nest_outputs_under_4_contact_analysis(tmp_path):
-    inputs = PositionInputs(position_dir=tmp_path)
-    assert CellShapeQuantifier().default_output(inputs) == (
-        tmp_path / "4_contact_analysis" / "cell_shape.csv"
-    )
-    assert NucleusShapeQuantifier().default_output(inputs) == (
-        tmp_path / "4_contact_analysis" / "nucleus_shape.csv"
-    )
-    assert ShapeRelationalQuantifier().default_output(inputs) == (
-        tmp_path / "4_contact_analysis" / "shape_relational.csv"
-    )
-
-
 def test_nucleus_shape_quantifier_requires_and_reads_nucleus_labels(tmp_path):
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
@@ -60,12 +47,9 @@ def test_nucleus_shape_quantifier_requires_and_reads_nucleus_labels(tmp_path):
     inputs = PositionInputs(
         position_dir=tmp_path, nucleus_labels_path=nuc_path, pixel_size_um=1.0
     )
-    out = q.default_output(inputs)
     assert q.can_build(inputs) is True
-
-    written = q.build(inputs, out)
-    assert written == out and out.name == "nucleus_shape.csv" and q.is_built(out)
-    assert q.object_table(out)["cell_id"].tolist() == [1, 2, 1, 2]
+    # Pooled quantity: it computes its tidy table in memory (no artifact written).
+    assert q.compute_object_table(inputs)["cell_id"].tolist() == [1, 2, 1, 2]
 
 
 def test_shape_relational_quantifier_requires_both_labels(tmp_path):
@@ -85,12 +69,7 @@ def test_shape_relational_quantifier_requires_both_labels(tmp_path):
     assert q.can_build(both) is True
 
 
-def test_cell_shape_quantifier_default_output_name(tmp_path):
-    q = CellShapeQuantifier()
-    assert q.default_output(PositionInputs(position_dir=tmp_path)).name == "cell_shape.csv"
-
-
-def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
+def test_cell_shape_quantifier_computes_tidy_table(tmp_path):
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
     frame[:, 4:] = 2
@@ -101,29 +80,22 @@ def test_cell_shape_quantifier_build_read_and_object_table(tmp_path):
     inputs = PositionInputs(
         position_dir=tmp_path, cell_labels_path=cell_path, pixel_size_um=0.25
     )
-    out = q.default_output(inputs)
 
     assert q.can_build(inputs) is True
     # No cell labels -> not buildable.
     assert q.can_build(PositionInputs(position_dir=tmp_path)) is False
-    # Cell labels alone now satisfy the per-position file gate; pixel size is a
-    # global build param the studio checks via required_build_params, not can_build.
+    # Cell labels alone satisfy the per-position file gate; pixel size is a global
+    # build param checked via required_build_params, not can_build.
     assert (
         q.can_build(PositionInputs(position_dir=tmp_path, cell_labels_path=cell_path))
         is True
     )
-    assert q.is_built(out) is False
 
-    written = q.build(inputs, out)
-    assert written == out and q.is_built(out) is True
-
-    table = q.read(out)
+    # Pooled quantity: compute_object_table returns the tidy table in memory.
+    table = q.compute_object_table(inputs)
     assert table["cell_id"].tolist() == [1, 2, 1, 2]
-    # object_table exposes the same tidy table to the plotting backend.
-    object_table = q.object_table(out)
-    assert object_table.keys() == table.keys()
-    assert "circularity" in object_table
-    assert "area_um2" in object_table
+    assert "circularity" in table
+    assert "area_um2" in table
 
 
 def test_subclassing_registers_quantifier():
@@ -202,3 +174,30 @@ def test_output_subdir_is_stage_numbered():
     from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
     assert OUTPUT_SUBDIR == "4_contact_analysis"
     assert CONTACT_ANALYSIS_RELPATH == "4_contact_analysis/contact_analysis.h5"
+
+
+# --------------------------------------------------------- supported_quantities
+
+
+def test_supported_quantities_gates_on_inputs_and_params(tmp_path):
+    """A pooled quantity is 'supported' only when a record satisfies both its
+    ``requires`` inputs and its ``required_build_params`` — the same gate
+    ``build_table`` applies, so an enabled checkbox never promises an empty table."""
+    from cellflow.contact_analysis.records import supported_quantities
+
+    # Cell labels + pixel size, but no nucleus, no FOV area, no contacts file.
+    rec = {
+        "position_path": tmp_path / "posA",
+        "cell_tracked_labels_path": tmp_path / "cells.tif",
+        "pixel_size_um": 0.5,
+    }
+    supported = supported_quantities([rec])
+    assert "cell_shape" in supported          # cell labels + pixel size present
+    assert "nucleus_shape" not in supported   # no nucleus labels
+    assert "shape_relational" not in supported  # needs both label sets
+    assert "cell_density" not in supported    # no fov_area_mm2 param
+    assert "neighbor_count" not in supported  # contacts.h5 does not exist
+    assert "contacts" not in supported        # a producer — never pooled
+
+    # Supplying the FOV area lifts cell_density into support.
+    assert "cell_density" in supported_quantities([rec], params={"fov_area_mm2": 1.0})

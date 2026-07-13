@@ -1,16 +1,13 @@
-import json
 import math
 
 import numpy as np
-import pandas as pd
+import pytest
 import tifffile
 from skimage.draw import disk
 
 from cellflow.contact_analysis.shape.core import (
     DESCRIPTOR_COLUMNS,
-    build_object_shape,
-    provenance_path,
-    read_shape_table,
+    compute_object_shape,
 )
 
 
@@ -23,61 +20,35 @@ def _disk_and_bar_frame() -> np.ndarray:
     return frame
 
 
-def test_build_object_shape_writes_tidy_csv_per_frame(tmp_path):
+def test_compute_object_shape_returns_tidy_table_per_frame(tmp_path):
     frame = _disk_and_bar_frame()
     stack = np.stack([frame, frame])  # 2 frames
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, stack)
-    out = tmp_path / "sub" / "cell_shape.csv"
 
-    result = build_object_shape(
-        cell_path,
-        out,
-        pixel_size_um=0.5,
-        object_key="cell_id",
-        source_path=tmp_path,
-        quantity_id="cell_shape",
-    )
+    table = compute_object_shape(cell_path, pixel_size_um=0.5, object_key="cell_id")
 
-    assert result == out and out.exists()
-    df = pd.read_csv(out)
-    assert list(df.columns) == ["frame", "cell_id", *DESCRIPTOR_COLUMNS]
-    assert df["frame"].tolist() == [0, 0, 1, 1]
-    assert df["cell_id"].tolist() == [1, 2, 1, 2]
+    assert list(table) == ["frame", "cell_id", *DESCRIPTOR_COLUMNS]
+    assert table["frame"].tolist() == [0, 0, 1, 1]
+    assert table["cell_id"].tolist() == [1, 2, 1, 2]
 
 
-def test_build_object_shape_writes_provenance_sidecar(tmp_path):
+def test_compute_object_shape_keys_are_int(tmp_path):
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
-    out = tmp_path / "cell_shape.csv"
 
-    build_object_shape(
-        cell_path,
-        out,
-        pixel_size_um=0.5,
-        object_key="cell_id",
-        source_path=tmp_path,
-        quantity_id="cell_shape",
-    )
+    table = compute_object_shape(cell_path, pixel_size_um=1.0)
 
-    sidecar = provenance_path(out)
-    assert sidecar == tmp_path / "cell_shape.provenance.json" and sidecar.exists()
-    prov = json.loads(sidecar.read_text())
-    assert prov["quantity_id"] == "cell_shape"
-    assert prov["pixel_size_um"] == 0.5
-    assert prov["source_position_path"] == str(tmp_path)
-    assert prov["label_path"] == str(cell_path)
-    assert prov["columns"] == ["frame", "cell_id", *DESCRIPTOR_COLUMNS]
-    assert "created_at" in prov and "cellflow_version" in prov
+    assert table["frame"].dtype == np.int64
+    assert table["cell_id"].dtype == np.int64
+    assert table["area_um2"].dtype == float
 
 
-def test_build_object_shape_descriptor_values(tmp_path):
+def test_compute_object_shape_descriptor_values(tmp_path):
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
-    out = tmp_path / "cell_shape.csv"
 
-    build_object_shape(cell_path, out, pixel_size_um=1.0, object_key="cell_id")
-    table = read_shape_table(out)
+    table = compute_object_shape(cell_path, pixel_size_um=1.0, object_key="cell_id")
 
     # Row 0 is the disk, row 1 the elongated bar.
     disk_circ, bar_circ = table["circularity"][0], table["circularity"][1]
@@ -93,16 +64,12 @@ def test_build_object_shape_descriptor_values(tmp_path):
     assert abs(table["area_um2"][0] - math.pi * 14 ** 2) / (math.pi * 14 ** 2) < 0.1
 
 
-def test_build_object_shape_scales_to_physical_units(tmp_path):
+def test_compute_object_shape_scales_to_physical_units(tmp_path):
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
 
-    unit = read_shape_table(
-        build_object_shape(cell_path, tmp_path / "unit.csv", pixel_size_um=1.0)
-    )
-    scaled = read_shape_table(
-        build_object_shape(cell_path, tmp_path / "scaled.csv", pixel_size_um=0.5)
-    )
+    unit = compute_object_shape(cell_path, pixel_size_um=1.0)
+    scaled = compute_object_shape(cell_path, pixel_size_um=0.5)
 
     # Lengths scale by s, area by s^2; dimensionless ratios are invariant.
     assert np.allclose(scaled["perimeter_um"], unit["perimeter_um"] * 0.5)
@@ -113,82 +80,24 @@ def test_build_object_shape_scales_to_physical_units(tmp_path):
     assert np.allclose(scaled["circularity"], unit["circularity"], equal_nan=True)
 
 
-def test_read_shape_table_round_trips_keys_as_int(tmp_path):
-    cell_path = tmp_path / "cells.tif"
-    tifffile.imwrite(cell_path, _disk_and_bar_frame())
-    table = read_shape_table(
-        build_object_shape(cell_path, tmp_path / "s.csv", pixel_size_um=1.0)
-    )
-    assert table["frame"].dtype == np.int64
-    assert table["cell_id"].dtype == np.int64
-    assert table["area_um2"].dtype == float
-
-
-def test_build_object_shape_rejects_nonpositive_pixel_size(tmp_path):
+def test_compute_object_shape_rejects_nonpositive_pixel_size(tmp_path):
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, _disk_and_bar_frame())
 
     for bad in (0.0, -1.0):
-        try:
-            build_object_shape(cell_path, tmp_path / "out.csv", pixel_size_um=bad)
-        except ValueError:
-            continue
-        raise AssertionError(f"expected ValueError for pixel_size_um={bad}")
+        with pytest.raises(ValueError):
+            compute_object_shape(cell_path, pixel_size_um=bad)
 
 
-def test_build_object_shape_guards_degenerate_region(tmp_path):
+def test_compute_object_shape_guards_degenerate_region(tmp_path):
     frame = np.zeros((6, 6), dtype=np.uint16)
     frame[2, 3] = 1  # single pixel: zero perimeter and zero minor axis
     cell_path = tmp_path / "cells.tif"
     tifffile.imwrite(cell_path, frame)
-    out = tmp_path / "cell_shape.csv"
 
-    build_object_shape(cell_path, out, pixel_size_um=1.0)
-    table = read_shape_table(out)
+    table = compute_object_shape(cell_path, pixel_size_um=1.0)
 
     assert table["cell_id"].tolist() == [1]
     assert math.isnan(table["aspect_ratio"][0])
     assert math.isnan(table["circularity"][0])
     assert table["area_um2"][0] == 1.0
-
-
-def test_compute_object_shape_matches_build_roundtrip(tmp_path):
-    from cellflow.contact_analysis.shape.core import (
-        build_object_shape,
-        compute_object_shape,
-        read_shape_table,
-    )
-    frame = np.zeros((10, 10), dtype=np.uint16)
-    frame[1:5, 1:5] = 1
-    frame[5:9, 5:9] = 2
-    labels = tmp_path / "cells.tif"
-    tifffile.imwrite(labels, frame[np.newaxis, ...])
-
-    out = tmp_path / "cell_shape.csv"
-    build_object_shape(labels, out, pixel_size_um=0.5, object_key="cell_id")
-    expected = read_shape_table(out)
-
-    got = compute_object_shape(labels, pixel_size_um=0.5, object_key="cell_id")
-
-    assert set(got) == set(expected)
-    for key in expected:
-        np.testing.assert_allclose(np.asarray(got[key], float), np.asarray(expected[key], float))
-
-
-def test_build_object_shape_reports_progress_in_order(tmp_path):
-    cell_path = tmp_path / "cells.tif"
-    tifffile.imwrite(cell_path, _disk_and_bar_frame())
-    progress = []
-
-    build_object_shape(
-        cell_path,
-        tmp_path / "cell_shape.csv",
-        pixel_size_um=1.0,
-        progress_cb=lambda *a: progress.append(a),
-    )
-
-    assert progress == [
-        (1, 3, "read labels"),
-        (2, 3, "extract shape"),
-        (3, 3, "write CSV"),
-    ]

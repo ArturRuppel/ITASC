@@ -18,7 +18,7 @@ import pandas as pd
 import tifffile
 
 from cellflow.contact_analysis import pipeline
-from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
+from cellflow.contact_analysis.quantifier import Quantifier
 from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
 
 
@@ -213,11 +213,11 @@ def test_build_quantities_defaults_to_registered_quantifiers(tmp_path):
     pipeline.build_quantities([rec], params={"pixel_size_um": 0.25})
 
     position_dir = Path(rec["position_path"])
-    assert (position_dir / OUTPUT_SUBDIR / "contact_analysis.h5").is_file()
-    shape_out = CellShapeQuantifier().default_output(
-        PositionInputs(position_dir=position_dir)
-    )
-    assert not shape_out.is_file()  # cell_shape is a non-producer: pooled only
+    output_dir = position_dir / OUTPUT_SUBDIR
+    assert (output_dir / "contact_analysis.h5").is_file()
+    # Only the producer's h5 lands per position; the cheap quantities (cell_shape,
+    # cell_density, …) are pooled in memory and never written per-position.
+    assert [p.name for p in output_dir.iterdir()] == ["contact_analysis.h5"]
 
 
 # ------------------------------------------------------------ build_catalog

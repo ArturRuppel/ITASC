@@ -3,7 +3,8 @@
 Cell density counts unique non-zero labels per frame straight from the tracked
 cell-label TIFF, so it needs no ``contact_analysis.h5``. The field-of-view area is
 a required build param (no silent image-area fallback). One ``all`` total row per
-frame (label-agnostic). Backend-only — no Qt.
+frame (label-agnostic). A pooled quantity: it computes in memory via
+``compute_object_table`` (no per-position artifact). Backend-only — no Qt.
 """
 from __future__ import annotations
 
@@ -41,11 +42,8 @@ def _inputs(tmp_path: Path) -> PositionInputs:
     return PositionInputs(position_dir=pos, cell_labels_path=cell_path)
 
 
-def _build(inputs: PositionInputs, params: dict | None = None):
-    q = _quantifier()
-    out = q.default_output(inputs)
-    q.build(inputs, out, params=params)
-    return q.object_table(out)
+def _compute(inputs: PositionInputs, params: dict | None = None):
+    return _quantifier().compute_object_table(inputs, params=params)
 
 
 def test_requires_cell_labels_not_contacts():
@@ -54,41 +52,19 @@ def test_requires_cell_labels_not_contacts():
 
 
 def test_counts_cells_from_labels_over_fov(tmp_path):
-    table = _build(_inputs(tmp_path), params={"fov_area_mm2": 2.0})
-    rows = dict(zip(table["label"].tolist(), table["density"].tolist()))
-    counts = dict(zip(table["label"].tolist(), table["n_cells"].tolist()))
+    table = _compute(_inputs(tmp_path), params={"fov_area_mm2": 2.0})
+    rows = dict(zip(list(table["label"]), list(table["density"])))
+    counts = dict(zip(list(table["label"]), list(table["n_cells"])))
     # 4 cell labels over a 2 mm² field of view → 2 cells/mm².
     assert counts["all"] == 4
     assert rows["all"] == 2.0
 
 
 def test_all_row_only_label_agnostic(tmp_path):
-    table = _build(_inputs(tmp_path), params={"fov_area_mm2": 1.0})
-    assert table["label"].tolist() == ["all"]
+    table = _compute(_inputs(tmp_path), params={"fov_area_mm2": 1.0})
+    assert list(table["label"]) == ["all"]
 
 
 def test_missing_fov_raises_clear_error(tmp_path):
-    q = _quantifier()
-    inputs = _inputs(tmp_path)
     with pytest.raises(ValueError, match="field-of-view"):
-        q.build(inputs, q.default_output(inputs), params={})
-
-
-def test_cell_density_compute_matches_build(tmp_path):
-    q = _quantifier()
-    inputs = _inputs(tmp_path)
-    out = q.default_output(inputs)
-    q.build(inputs, out, params={"fov_area_mm2": 2.0})
-    expected = q.object_table(out)
-
-    got = q.compute_object_table(inputs, params={"fov_area_mm2": 2.0})
-
-    assert set(got) == set(expected)
-    assert dict(zip(got["label"].tolist(), got["n_cells"].tolist()))["all"] == 4
-
-
-def test_cell_density_compute_missing_fov_raises(tmp_path):
-    import pytest
-    q = _quantifier()
-    with pytest.raises(ValueError, match="field-of-view"):
-        q.compute_object_table(_inputs(tmp_path), params={})
+        _compute(_inputs(tmp_path), params={})
