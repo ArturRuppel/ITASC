@@ -433,8 +433,8 @@ def test_build_divergence_maps_preserves_frames_across_layouts(
         tmp_path, "nucleus",
     )
     report = build_divergence_maps(
-        tmp_path / "nucleus_prob_3dt.tif",
-        tmp_path / "nucleus_dp_3dt.tif",
+        tmp_path / "nucleus_prob.tif",
+        tmp_path / "nucleus_dp.tif",
         tmp_path / "nucleus_contours.tif",
         tmp_path / "nucleus_foreground.tif",
         foreground_z_reduction="mean",

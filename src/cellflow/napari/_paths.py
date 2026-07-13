@@ -3,8 +3,8 @@
 Canonical file layout under ``<pos_dir>/``:
 
     0_input/              — cell_zavg.tif, nucleus_zavg.tif, NLS_zavg.tif
-    1_cellpose/           — nucleus_prob_3dt.tif, nucleus_dp_3dt.tif,
-                            cell_prob_3dt.tif, cell_dp_3dt.tif,
+    1_cellpose/           — nucleus_prob.tif, nucleus_dp.tif,
+                            cell_prob.tif, cell_dp.tif,
                             nucleus_contours.tif, nucleus_foreground.tif,
                             cell_contours.tif, cell_foreground.tif
     2_nucleus/            — contour_sources.tif, foreground_sources.tif,
@@ -49,19 +49,19 @@ class NucleusArtifactPaths:
     # 1_cellpose — Cellpose outputs
     @property
     def prob(self) -> Path:
-        return self.pos_dir / "1_cellpose" / "nucleus_prob_3dt.tif"
+        return self.pos_dir / "1_cellpose" / "nucleus_prob.tif"
 
     @property
     def cell_prob(self) -> Path:
-        return self.pos_dir / "1_cellpose" / "cell_prob_3dt.tif"
+        return self.pos_dir / "1_cellpose" / "cell_prob.tif"
 
     @property
     def dp(self) -> Path:
-        return self.pos_dir / "1_cellpose" / "nucleus_dp_3dt.tif"
+        return self.pos_dir / "1_cellpose" / "nucleus_dp.tif"
 
     @property
     def cell_dp(self) -> Path:
-        return self.pos_dir / "1_cellpose" / "cell_dp_3dt.tif"
+        return self.pos_dir / "1_cellpose" / "cell_dp.tif"
 
     # 1_cellpose — Divergence-map outputs (per channel)
     @property

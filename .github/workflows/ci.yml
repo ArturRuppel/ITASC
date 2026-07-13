@@ -108,8 +108,8 @@ jobs:
           cp_dir = tempfile.mkdtemp()
           prob = np.zeros((2, 2, 10, 10), dtype="float32")          # (T, Z, Y, X)
           dp = np.zeros((2, 2, 2, 10, 10), dtype="float32")         # (T, Z, 2, Y, X)
-          prob_p = os.path.join(cp_dir, "nucleus_prob_3dt.tif")
-          dp_p = os.path.join(cp_dir, "nucleus_dp_3dt.tif")
+          prob_p = os.path.join(cp_dir, "nucleus_prob.tif")
+          dp_p = os.path.join(cp_dir, "nucleus_dp.tif")
           tifffile.imwrite(prob_p, prob)
           tifffile.imwrite(dp_p, dp)
           report = build_divergence_maps(

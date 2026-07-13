@@ -311,7 +311,7 @@ def write_outputs(
 ) -> None:
     """Write the two canonical TIFFs under output_dir.
 
-    Writes ``{channel}_prob_3dt.tif`` and ``{channel}_dp_3dt.tif``. Axis labels
+    Writes ``{channel}_prob.tif`` and ``{channel}_dp.tif``. Axis labels
     are recorded as metadata so singleton ``T``/``Z`` axes (2D / 2D+t / single
     3D-stack inputs) survive the TIFF round-trip and are not misread downstream.
     """
@@ -321,8 +321,8 @@ def write_outputs(
         raise ValueError(f"prob_3dt must be (T, Z, Y, X), got {prob_3dt.shape}")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    prob_path = output_dir / f"{channel}_prob_3dt.tif"
-    dp_path = output_dir / f"{channel}_dp_3dt.tif"
+    prob_path = output_dir / f"{channel}_prob.tif"
+    dp_path = output_dir / f"{channel}_dp.tif"
     imwrite_grayscale(
         prob_path, prob_3dt.astype(np.float32),
         compression="zlib", metadata={"axes": "TZYX"},

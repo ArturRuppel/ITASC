@@ -46,16 +46,24 @@ from cellflow.cellpose import cellpose_runner
 logger = logging.getLogger(__name__)
 
 
+# Canonical declared rel-paths for the two configurable inputs. The actual
+# location is resolved live in ``_input_path`` (a relative override under the
+# position dir, an absolute path, or a standalone pick) and need not sit under
+# ``0_input`` — see ``_input_overrides``, which feeds the real paths to the
+# Pipeline Files panel so its status tracks the file the stage will read.
+_INPUT_NUCLEUS_REL = "0_input/nucleus.tif"
+_INPUT_CELL_REL = "0_input/cell.tif"
+
 _PIPELINE_FILES = [
     ("Inputs", [
-        ("0_input/nucleus_3dt.tif", "Nucleus 3D+t"),
-        ("0_input/cell_3dt.tif", "Cell 3D+t"),
+        (_INPUT_NUCLEUS_REL, "Nucleus 3D+t"),
+        (_INPUT_CELL_REL, "Cell 3D+t"),
     ]),
     ("Cellpose Outputs", [
-        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-        ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-        ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+        ("1_cellpose/nucleus_prob.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/cell_prob.tif", "Cell prob 3D+t"),
+        ("1_cellpose/cell_dp.tif", "Cell dp 3D+t"),
     ]),
     ("Divergence Maps", [
         ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
@@ -148,7 +156,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
 
         # ── Input pickers (both modes) + standalone output dir ─────────
         # In the full app every path is fixed by the project structure
-        # (inputs at <pos_dir>/0_input/*_3dt.tif, maps at <pos_dir>/1_cellpose/),
+        # (inputs at <pos_dir>/0_input/*.tif, maps at <pos_dir>/1_cellpose/),
         # so none of these pickers are shown — see the container visibility gate
         # below. Standalone: the two inputs are explicit and required, and the
         # output-dir picker chooses where the maps are written.
@@ -159,7 +167,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             paths_col,
             "Nucleus channel",
             ("raw nucleus stack (.tif)" if self._standalone
-             else "default: 0_input/nucleus_3dt.tif — or pick any .tif"),
+             else "default: 0_input/nucleus.tif — or pick any .tif"),
             self._on_browse_nucleus,
             self._on_input_paths_changed,
         )
@@ -167,7 +175,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             paths_col,
             "Cell channel",
             ("raw cell stack (.tif)" if self._standalone
-             else "default: 0_input/cell_3dt.tif — or pick any .tif"),
+             else "default: 0_input/cell.tif — or pick any .tif"),
             self._on_browse_cell,
             self._on_input_paths_changed,
         )
@@ -384,7 +392,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         # field falls back to the canonical name; a relative override resolves
         # under the position dir, an absolute one is used verbatim.
         edit = self._nucleus_edit if channel == "nucleus" else self._cell_edit
-        default_name = "nucleus_3dt.tif" if channel == "nucleus" else "cell_3dt.tif"
+        default_name = "nucleus.tif" if channel == "nucleus" else "cell.tif"
         text = edit.text().strip()
         if text:
             override = Path(text)
@@ -395,6 +403,22 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         if self._standalone:
             return self._sa_output_dir
         return None if self._pos_dir is None else self._pos_dir / "1_cellpose"
+
+    def _input_overrides(self) -> dict[str, Path | None]:
+        """Live locations for the two configurable Pipeline-Files input rows.
+
+        The rows are declared with the canonical ``0_input/*.tif`` names, but
+        the real input is configurable and need not sit under ``0_input``. Resolve
+        it via :meth:`_input_path` so the panel checks the file the stage reads.
+        """
+        return {
+            _INPUT_NUCLEUS_REL: self._input_path("nucleus"),
+            _INPUT_CELL_REL: self._input_path("cell"),
+        }
+
+    def _refresh_files(self, pos_dir: Path | None) -> None:
+        """Refresh the Pipeline Files panel with the live input overrides."""
+        self._files_widget.refresh(pos_dir, overrides=self._input_overrides())
 
     # ── Standalone helpers ─────────────────────────────────────────────
     # Row building / browse plumbing / QSettings come from StandalonePathsMixin;
@@ -411,7 +435,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         # The existing _pos_dir-based guards and the pipeline-files panel expect a
         # real directory; the output dir doubles as the staged-file root here.
         self._pos_dir = self._sa_output_dir
-        self._files_widget.refresh(self._sa_output_dir)
+        self._refresh_files(self._sa_output_dir)
         self.divergence_maps_widget.set_maps_dir(self._sa_output_dir)
         self.gate.recompute()
 
@@ -431,7 +455,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         if self._standalone:
             self._apply_standalone_paths()
         else:
-            self._files_widget.refresh(self._pos_dir)
+            self._refresh_files(self._pos_dir)
             self.gate.recompute()
 
     def _on_nucleus_selected(self) -> None:
@@ -535,10 +559,10 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             self._worker = None
             self._set_running_stage(None)
             self._clear_progress()
-            self._files_widget.refresh(pos_dir)
+            self._refresh_files(pos_dir)
             self._refresh_divergence(pos_dir)
             label = "Nucleus" if channel == "nucleus" else "Cell"
-            self._status(f"{label} Cellpose complete — wrote {channel}_*_3dt.tif")
+            self._status(f"{label} Cellpose complete — wrote {channel}_*.tif")
 
         def _error(exc):
             self._worker = None
@@ -792,9 +816,25 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    def set_input_names(self, names: dict[str, str]) -> None:
+        """Adopt the host's configured raw-input names (integrated mode only).
+
+        The full app configures the input names once, in the Data-folders panel's
+        discovery fields, and they need not be the canonical ``0_input/*.tif``.
+        Mirror them into the (hidden) per-channel input fields so ``_input_path``
+        — and thus run, preview, and Pipeline Files status — track the file the
+        stage will actually read. Standalone owns its own explicit pickers.
+        """
+        if self._standalone:
+            return
+        self._nucleus_edit.setText(names.get("nucleus", ""))
+        self._cell_edit.setText(names.get("cell", ""))
+        # editingFinished does not fire on programmatic setText — refresh by hand.
+        self._on_input_paths_changed()
+
     def refresh(self, pos_dir: Path | None) -> None:
         self._pos_dir = pos_dir
-        self._files_widget.refresh(pos_dir)
+        self._refresh_files(pos_dir)
         self._refresh_divergence(pos_dir)
         if pos_dir is not None:
             self._autoselect_layout("nucleus")

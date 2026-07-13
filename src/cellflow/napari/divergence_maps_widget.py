@@ -69,10 +69,10 @@ _PREVIEW_LAYER_NAMES = {
 
 _PIPELINE_FILES = [
     ("Inputs", [
-        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
-        ("1_cellpose/cell_prob_3dt.tif", "Cell prob 3D+t"),
-        ("1_cellpose/cell_dp_3dt.tif", "Cell dp 3D+t"),
+        ("1_cellpose/nucleus_prob.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/cell_prob.tif", "Cell prob 3D+t"),
+        ("1_cellpose/cell_dp.tif", "Cell dp 3D+t"),
     ]),
     ("Outputs", [
         ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
@@ -451,8 +451,8 @@ class DivergenceMapsWidget(QWidget):
         if d is None:
             return None, None, None, None
         return (
-            d / f"{channel}_prob_3dt.tif",
-            d / f"{channel}_dp_3dt.tif",
+            d / f"{channel}_prob.tif",
+            d / f"{channel}_dp.tif",
             d / f"{channel}_contours.tif",
             d / f"{channel}_foreground.tif",
         )

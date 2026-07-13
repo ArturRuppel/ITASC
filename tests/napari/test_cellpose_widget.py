@@ -326,12 +326,12 @@ def test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_pane
     assert not hasattr(w, "zavg_viz_widget")
     assert all("prob_zavg" not in row._rel_path for row in w._files_widget._rows)
     assert {row._rel_path for row in w._files_widget._rows} >= {
-        "1_cellpose/nucleus_prob_3dt.tif",
-        "1_cellpose/nucleus_dp_3dt.tif",
+        "1_cellpose/nucleus_prob.tif",
+        "1_cellpose/nucleus_dp.tif",
         "1_cellpose/nucleus_contours.tif",
         "1_cellpose/nucleus_foreground.tif",
-        "1_cellpose/cell_prob_3dt.tif",
-        "1_cellpose/cell_dp_3dt.tif",
+        "1_cellpose/cell_prob.tif",
+        "1_cellpose/cell_dp.tif",
         "1_cellpose/cell_contours.tif",
         "1_cellpose/cell_foreground.tif",
     }
@@ -365,11 +365,11 @@ def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch,
     cellpose_dir = pos / "1_cellpose"
     cellpose_dir.mkdir(parents=True)
     tifffile.imwrite(
-        cellpose_dir / "cell_prob_3dt.tif",
+        cellpose_dir / "cell_prob.tif",
         np.zeros((1, 1, 2, 2), dtype=np.float32),
     )
     tifffile.imwrite(
-        cellpose_dir / "cell_dp_3dt.tif",
+        cellpose_dir / "cell_dp.tif",
         np.zeros((1, 1, 2, 2, 2), dtype=np.float32),
     )
     captured = {}
@@ -406,8 +406,8 @@ def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch,
     monkeypatch.setattr(divergence_mod, "build_divergence_maps", _fake_build)
     w.refresh(pos)
     w.divergence_maps_widget._run_blocking("cell")
-    assert captured["prob_path"].endswith("cell_prob_3dt.tif")
-    assert captured["dp_path"].endswith("cell_dp_3dt.tif")
+    assert captured["prob_path"].endswith("cell_prob.tif")
+    assert captured["dp_path"].endswith("cell_dp.tif")
     assert captured["contours_out"].endswith("cell_contours.tif")
     assert captured["foreground_out"].endswith("cell_foreground.tif")
     w.deleteLater()
@@ -463,17 +463,50 @@ def _write_test_stack(path: Path, shape):
     tf.imwrite(str(path), arr)
 
 
+def test_pipeline_files_track_configured_input(monkeypatch, tmp_path):
+    """The Inputs rows must follow the configured input, not the hardcoded name."""
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())  # integrated mode
+
+    nuc_row = w._files_widget._rows_by_group["Inputs"][0]
+
+    # No canonical 0_input/nucleus.tif exists → the row is missing.
+    w.refresh(tmp_path)
+    assert nuc_row._full_path is None
+
+    # Configure a non-canonical, not-behind-0_input input and put the file there.
+    _write_test_stack(tmp_path / "raw" / "nuc.tif", (2, 3, 6, 6))
+    w.set_input_names({"nucleus": "raw/nuc.tif"})
+
+    # The row now tracks the real file — even though 0_input/nucleus.tif was
+    # never created — and its label reflects the resolved location.
+    assert not (tmp_path / "0_input" / "nucleus.tif").exists()
+    assert nuc_row._full_path == tmp_path / "raw" / "nuc.tif"
+    assert nuc_row._name_lbl.text() == "raw/nuc.tif"
+
+    # An absolute input outside the position dir falls back to its basename.
+    elsewhere = tmp_path.parent / "elsewhere" / "nuc_stack.tif"
+    _write_test_stack(elsewhere, (2, 3, 6, 6))
+    w.set_input_names({"nucleus": str(elsewhere)})
+    assert nuc_row._full_path == elsewhere
+    assert nuc_row._name_lbl.text() == "nuc_stack.tif"
+
+    w.deleteLater()
+    app.processEvents()
+
+
 def test_run_nucleus_writes_outputs_and_updates_status(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     w = mod.CellposeWidget(_FakeViewer())
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (2, 3, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (2, 3, 6, 6))
     w.refresh(tmp_path)
     w.nucleus_run_btn.click()
     out = tmp_path / "1_cellpose"
-    assert (out / "nucleus_prob_3dt.tif").exists()
-    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert (out / "nucleus_prob.tif").exists()
+    assert (out / "nucleus_dp.tif").exists()
     assert "complete" in w.status_lbl.text().lower()
     assert w.nucleus_run_btn.text() == "▶"
     w.deleteLater()
@@ -484,12 +517,12 @@ def test_run_cell_writes_outputs(_mock_cellpose, monkeypatch, tmp_path):
     mod = _load_widget(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     w = mod.CellposeWidget(_FakeViewer())
-    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (2, 3, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "cell.tif", (2, 3, 6, 6))
     w.refresh(tmp_path)
     w.cell_run_btn.click()
     out = tmp_path / "1_cellpose"
-    assert (out / "cell_prob_3dt.tif").exists()
-    assert (out / "cell_dp_3dt.tif").exists()
+    assert (out / "cell_prob.tif").exists()
+    assert (out / "cell_dp.tif").exists()
     w.deleteLater()
 
 
@@ -521,7 +554,7 @@ def test_nucleus_preview_2d_creates_layers(_mock_cellpose, monkeypatch, tmp_path
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 2)  # t=1, z=2
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (3, 4, 6, 6))
     w.refresh(tmp_path)
     w.nuc_3d_chk.setChecked(False)
     w.nucleus_preview_btn.click()
@@ -543,7 +576,7 @@ def test_nucleus_preview_2d_keeps_reference_time_and_z_axes(
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 2)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (3, 4, 6, 6))
     w.refresh(tmp_path)
     w.nuc_3d_chk.setChecked(False)
 
@@ -573,7 +606,7 @@ def test_nucleus_preview_3d_creates_volume_layers(_mock_cellpose, monkeypatch, t
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 0)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (3, 4, 6, 6))
     w.refresh(tmp_path)
     w.nuc_3d_chk.setChecked(True)
     w.nucleus_preview_btn.click()
@@ -593,7 +626,7 @@ def test_nucleus_preview_3d_reports_status_before_inference(
     viewer = _FakeViewer()
     viewer.dims.current_step = (1, 0)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (3, 4, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (3, 4, 6, 6))
     w.refresh(tmp_path)
     w.nuc_3d_chk.setChecked(True)
 
@@ -623,7 +656,7 @@ def test_cell_preview_creates_2d_layers(_mock_cellpose, monkeypatch, tmp_path):
     viewer = _FakeViewer()
     viewer.dims.current_step = (2, 1)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (3, 4, 5, 5))
+    _write_test_stack(tmp_path / "0_input" / "cell.tif", (3, 4, 5, 5))
     w.refresh(tmp_path)
     w.cell_preview_btn.click()
     prob = viewer.layers["Preview: Cell prob"].data
@@ -651,7 +684,7 @@ def test_cell_preview_loads_reference_stack_before_selecting_slice(
     viewer = _MiddleSliceViewer()
     viewer.dims.current_step = (0, 0)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (1, 5, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "cell.tif", (1, 5, 6, 6))
     w.refresh(tmp_path)
 
     seen = {}
@@ -682,7 +715,7 @@ def test_cell_preview_keeps_reference_time_and_z_axes(
     viewer = _FakeViewer()
     viewer.dims.current_step = (2, 1)
     w = mod.CellposeWidget(viewer)
-    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (3, 4, 5, 5))
+    _write_test_stack(tmp_path / "0_input" / "cell.tif", (3, 4, 5, 5))
     w.refresh(tmp_path)
 
     monkeypatch.setattr(
@@ -811,14 +844,14 @@ def test_run_accepts_2d_input(_mock_cellpose, monkeypatch, tmp_path):
     mod = _load_widget(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     w = mod.CellposeWidget(_FakeViewer())
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (6, 6))  # 2-D
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (6, 6))  # 2-D
     w.refresh(tmp_path)
     # ndim 2 is unambiguous → layout auto-selected.
     assert w.nuc_layout_combo.currentText() == "2D"
     w.nucleus_run_btn.click()
     out = tmp_path / "1_cellpose"
-    assert (out / "nucleus_prob_3dt.tif").exists()
-    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert (out / "nucleus_prob.tif").exists()
+    assert (out / "nucleus_dp.tif").exists()
     assert "complete" in w.status_lbl.text().lower()
     w.deleteLater()
 
@@ -828,14 +861,14 @@ def test_run_accepts_3d_zstack_with_explicit_layout(_mock_cellpose, monkeypatch,
     mod = _load_widget(monkeypatch)
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     w = mod.CellposeWidget(_FakeViewer())
-    _write_test_stack(tmp_path / "0_input" / "nucleus_3dt.tif", (4, 6, 6))  # 3-D z-stack
+    _write_test_stack(tmp_path / "0_input" / "nucleus.tif", (4, 6, 6))  # 3-D z-stack
     w.refresh(tmp_path)
     # ndim 3 is ambiguous → auto-select leaves the default; user disambiguates.
     w.nuc_layout_combo.setCurrentText("3D")
     w.nucleus_run_btn.click()
     out = tmp_path / "1_cellpose"
-    assert (out / "nucleus_prob_3dt.tif").exists()
-    assert (out / "nucleus_dp_3dt.tif").exists()
+    assert (out / "nucleus_prob.tif").exists()
+    assert (out / "nucleus_dp.tif").exists()
     assert "complete" in w.status_lbl.text().lower()
     w.deleteLater()
 
@@ -846,17 +879,17 @@ def test_channels_run_independently_when_only_one_present(_mock_cellpose, monkey
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
     w = mod.CellposeWidget(_FakeViewer())
     # Only the cell channel is supplied.
-    _write_test_stack(tmp_path / "0_input" / "cell_3dt.tif", (2, 3, 6, 6))
+    _write_test_stack(tmp_path / "0_input" / "cell.tif", (2, 3, 6, 6))
     w.refresh(tmp_path)
 
     # Nucleus has no input → reports missing, writes nothing.
     w.nucleus_run_btn.click()
     assert "missing" in w.status_lbl.text().lower()
-    assert not (tmp_path / "1_cellpose" / "nucleus_prob_3dt.tif").exists()
+    assert not (tmp_path / "1_cellpose" / "nucleus_prob.tif").exists()
 
     # Cell still runs to completion.
     w.cell_run_btn.click()
-    assert (tmp_path / "1_cellpose" / "cell_prob_3dt.tif").exists()
+    assert (tmp_path / "1_cellpose" / "cell_prob.tif").exists()
     assert "complete" in w.status_lbl.text().lower()
     w.deleteLater()
 
@@ -873,8 +906,8 @@ def test_integrated_inputs_are_hidden_and_default_to_0input(monkeypatch, tmp_pat
     w.refresh(tmp_path)
 
     # Blank fields → canonical 0_input defaults.
-    assert w._input_path("nucleus") == tmp_path / "0_input" / "nucleus_3dt.tif"
-    assert w._input_path("cell") == tmp_path / "0_input" / "cell_3dt.tif"
+    assert w._input_path("nucleus") == tmp_path / "0_input" / "nucleus.tif"
+    assert w._input_path("cell") == tmp_path / "0_input" / "cell.tif"
 
     # The resolution logic still honours a set value (used programmatically): a
     # relative one resolves under the position dir, an absolute one verbatim.

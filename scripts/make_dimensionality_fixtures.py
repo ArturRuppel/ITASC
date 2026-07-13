@@ -5,8 +5,8 @@ The divergence-map path runs raw image -> `to_tzyx(arr, layout)` -> cellpose
 "check the nucleus/cell divergence path works on 2D, 2Dt, 3D, 3Dt inputs" needs one
 small raw stack of each layout to feed that path end to end.
 
-Source: `examples/data/full_example/pos00/0_input/{nucleus,cell}_3dt.tif`, real
-(T=10, Z=10, 256, 256) uint16 intensity. We crop to a central 128x128 window and keep
+Source: `examples/data/full_example/pos00/0_input/{nucleus,cell}.tif`, real
+(T=10, Z=4, 256, 256) uint16 intensity. We crop to a central 128x128 window and keep
 T=3, Z=3 so the fixtures are tiny (~0.3 MB/channel) but still contain cells.
 
 Each file is written with explicit `axes` metadata. This matters for the ambiguous
@@ -36,12 +36,12 @@ N_T = 3
 N_Z = 3
 # A mid t / mid z to collapse when a layout drops that axis (in-focus, mid-movie).
 T_PICK = 5
-Z_PICK = 5
+Z_PICK = 2
 
 
 def _load(channel: str) -> np.ndarray:
     """Full source stack for a channel, cropped spatially. Shape (T, Z, Yc, Xc)."""
-    arr = tifffile.imread(SRC / f"{channel}_3dt.tif")
+    arr = tifffile.imread(SRC / f"{channel}.tif")
     if arr.ndim != 4:
         raise ValueError(f"expected (T, Z, Y, X) source, got {arr.shape}")
     return arr[:, :, Y0:Y1, X0:X1]
@@ -64,7 +64,7 @@ def main() -> None:
         # 3D    -> (Z, Y, X)       one t, several z
         _write(OUT / f"{channel}_3d.tif", full[T_PICK, :N_Z], "ZYX")
         # 3D+t  -> (T, Z, Y, X)    several t, several z
-        _write(OUT / f"{channel}_3dt.tif", full[:N_T, :N_Z], "TZYX")
+        _write(OUT / f"{channel}.tif", full[:N_T, :N_Z], "TZYX")
     print(f"\nWrote fixtures to {OUT.relative_to(REPO)}")
 
 

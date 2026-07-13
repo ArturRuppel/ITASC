@@ -58,8 +58,8 @@ _TRACKED_LAYER = "Tracked: Nucleus"
 
 _NUCLEUS_PIPELINE_FILE_GROUPS = [
     ("Inputs", [
-        ("1_cellpose/nucleus_prob_3dt.tif", "Nucleus prob 3D+t"),
-        ("1_cellpose/nucleus_dp_3dt.tif", "Nucleus dp 3D+t"),
+        ("1_cellpose/nucleus_prob.tif", "Nucleus prob 3D+t"),
+        ("1_cellpose/nucleus_dp.tif", "Nucleus dp 3D+t"),
         ("1_cellpose/nucleus_contours.tif", "Nucleus contours"),
         ("1_cellpose/nucleus_foreground.tif", "Nucleus foreground"),
     ]),

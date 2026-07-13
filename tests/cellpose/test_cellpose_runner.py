@@ -344,8 +344,8 @@ def test_write_outputs_nucleus(tmp_path: Path):
     prob = np.random.rand(2, 3, 4, 5).astype(np.float32)
     dp = np.random.rand(2, 3, 3, 4, 5).astype(np.float32)
     r.write_outputs(prob, dp, tmp_path, "nucleus")
-    prob_3dt = tmp_path / "nucleus_prob_3dt.tif"
-    dp_3dt = tmp_path / "nucleus_dp_3dt.tif"
+    prob_3dt = tmp_path / "nucleus_prob.tif"
+    dp_3dt = tmp_path / "nucleus_dp.tif"
     assert prob_3dt.exists() and dp_3dt.exists()
     assert not (tmp_path / "nucleus_prob_zavg.tif").exists()
     written_prob = tifffile.imread(str(prob_3dt))
@@ -357,8 +357,8 @@ def test_write_outputs_cell(tmp_path: Path):
     prob = np.random.rand(2, 3, 4, 5).astype(np.float32)
     dp = np.random.rand(2, 3, 2, 4, 5).astype(np.float32)
     r.write_outputs(prob, dp, tmp_path, "cell")
-    assert (tmp_path / "cell_prob_3dt.tif").exists()
-    assert (tmp_path / "cell_dp_3dt.tif").exists()
+    assert (tmp_path / "cell_prob.tif").exists()
+    assert (tmp_path / "cell_dp.tif").exists()
     assert not (tmp_path / "cell_prob_zavg.tif").exists()
 
 
@@ -368,7 +368,7 @@ def test_write_outputs_creates_missing_dir(tmp_path: Path):
     prob = np.zeros((1, 2, 3, 3), dtype=np.float32)
     dp = np.zeros((1, 2, 3, 2, 3), dtype=np.float32)
     r.write_outputs(prob, dp, target, "cell")
-    assert (target / "cell_prob_3dt.tif").exists()
+    assert (target / "cell_prob.tif").exists()
 
 
 def test_write_outputs_rejects_bad_channel(tmp_path: Path):

@@ -305,11 +305,12 @@ class _PipelineFileRow(QWidget):
         muted_label(self._icon_lbl, size_pt=9)
         lay.addWidget(self._icon_lbl)
 
-        name_lbl = QLabel(rel_path)
-        name_lbl.setFixedWidth(200)
-        status_label(name_lbl)
-        name_lbl.setToolTip(display_name)
-        lay.addWidget(name_lbl)
+        self._display_name = display_name
+        self._name_lbl = QLabel(rel_path)
+        self._name_lbl.setFixedWidth(200)
+        status_label(self._name_lbl)
+        self._name_lbl.setToolTip(display_name)
+        lay.addWidget(self._name_lbl)
 
         self._info_lbl = QLabel("—")
         self._info_lbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -349,6 +350,38 @@ class _PipelineFileRow(QWidget):
         self._full_path = None
         self._load_btn.setEnabled(False)
         self._load_btn.setToolTip(self._load_tooltip(no_project=True))
+
+    def apply_override(self, path: Path | None, pos_dir: Path) -> None:
+        """Point this row at a live-resolved ``path`` instead of ``pos_dir / rel_path``.
+
+        Used for rows whose real location is configurable and need not match the
+        canonical declared rel-path (e.g. a cellpose input the user repointed away
+        from ``0_input/*.tif``). The displayed path label is updated to the
+        resolved location so status and label track the file the stage will read.
+        """
+        if path is None:
+            self._reset_display_path()
+            self.set_missing()
+            return
+        self._name_lbl.setText(self._display_for(path, pos_dir))
+        self._name_lbl.setToolTip(str(path))
+        if path.exists():
+            self._full_path = path
+            self.set_present(_file_info(path))
+        else:
+            self.set_missing()
+
+    def _reset_display_path(self) -> None:
+        self._name_lbl.setText(self._rel_path)
+        self._name_lbl.setToolTip(self._display_name)
+
+    @staticmethod
+    def _display_for(path: Path, pos_dir: Path) -> str:
+        """Path relative to the position dir when nested under it, else the name."""
+        try:
+            return path.relative_to(pos_dir).as_posix()
+        except ValueError:
+            return path.name
 
     def _update_load_button(self) -> None:
         if self._full_path is None or not self._full_path.exists():
@@ -519,14 +552,28 @@ class PipelineFilesWidget(QWidget):
             if group_label:
                 self._rows_by_group[group_label] = group_rows
 
-    def refresh(self, pos_dir: Path | None) -> None:
-        """Update all rows to reflect current on-disk state."""
+    def refresh(
+        self,
+        pos_dir: Path | None,
+        overrides: dict[str, Path | None] | None = None,
+    ) -> None:
+        """Update all rows to reflect current on-disk state.
+
+        ``overrides`` maps a declared rel-path to the live location that row
+        should actually track, for rows whose real path is configurable (a
+        cellpose input the user repointed away from the canonical
+        ``0_input/*.tif``). A ``None`` value marks that row missing.
+        """
+        overrides = overrides or {}
         if pos_dir is None:
             for row in self._rows:
                 row.set_no_project()
             self.refreshed.emit()
             return
         for row in self._rows:
+            if row._rel_path in overrides:
+                row.apply_override(overrides[row._rel_path], pos_dir)
+                continue
             full_path = pos_dir / row._rel_path
             if not full_path.exists() and row._legacy_rel_path is not None:
                 legacy_path = pos_dir / row._legacy_rel_path

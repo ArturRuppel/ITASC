@@ -112,10 +112,10 @@ def _discover_positions(root: str, input_names: dict[str, str]) -> list[dict]:
 
     A *position* is any folder containing at least one named raw input — the
     nucleus and/or cell image (each a bare file name or a path relative to the
-    position folder, e.g. ``0_input/nucleus_3dt.tif``; the ``_3dt`` suffix varies
-    with dimensionality — ``2d`` / ``2dt`` / ``3dt``). Each match becomes a panel
-    entry whose columns are derived from its nesting under *root* (folder-derived
-    columns, seeded with the recognized identity axes)."""
+    position folder, e.g. ``0_input/nucleus.tif``; the name is user-configurable
+    in the discovery fields and need not sit under ``0_input``). Each match
+    becomes a panel entry whose columns are derived from its nesting under *root*
+    (folder-derived columns, seeded with the recognized identity axes)."""
     root_path = Path(root)
     if not root_path.is_dir():
         return []
@@ -264,8 +264,8 @@ class CellFlowMainWidget(QWidget):
         self._positions_panel = ExperimentsPanel(
             title="Data folders",
             input_fields=[
-                ("nucleus", "Nucleus image", "0_input/nucleus_3dt.tif"),
-                ("cell", "Cell image", "0_input/cell_3dt.tif"),
+                ("nucleus", "Nucleus image", "0_input/nucleus.tif"),
+                ("cell", "Cell image", "0_input/cell.tif"),
             ],
             discover_fn=_discover_positions,
             status_fn=lambda payload: position_stage_status(
@@ -839,6 +839,11 @@ class CellFlowMainWidget(QWidget):
 
         self._refreshing_all = True
         try:
+            # The raw-input names are configured once, in the Data-folders panel's
+            # discovery fields, and need not be the canonical 0_input/*.tif.
+            # Hand them to the cellpose stage so its run/preview/status track the
+            # file the user actually pointed discovery at.
+            self._cellpose_widget.set_input_names(self._positions_panel.input_names())
             self._cellpose_widget.refresh(pos_dir)
             self.nucleus_workflow_widget.refresh(pos_dir)
             self.cell_workflow_widget.refresh(pos_dir)

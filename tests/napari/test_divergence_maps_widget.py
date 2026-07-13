@@ -251,8 +251,8 @@ def test_refresh_resolves_maps_under_staged_cellpose_dir(monkeypatch, tmp_path):
 
     w.refresh(tmp_path)
     prob, dp, contours, fg = w._channel_paths("nucleus")
-    assert prob == tmp_path / "1_cellpose" / "nucleus_prob_3dt.tif"
-    assert dp == tmp_path / "1_cellpose" / "nucleus_dp_3dt.tif"
+    assert prob == tmp_path / "1_cellpose" / "nucleus_prob.tif"
+    assert dp == tmp_path / "1_cellpose" / "nucleus_dp.tif"
     assert contours == tmp_path / "1_cellpose" / "nucleus_contours.tif"
     assert fg == tmp_path / "1_cellpose" / "nucleus_foreground.tif"
     w.deleteLater()
@@ -268,8 +268,8 @@ def test_set_maps_dir_resolves_maps_flatly(monkeypatch, tmp_path):
     w.set_maps_dir(tmp_path)
     assert w._pos_dir is None
     prob, dp, contours, fg = w._channel_paths("cell")
-    assert prob == tmp_path / "cell_prob_3dt.tif"
-    assert dp == tmp_path / "cell_dp_3dt.tif"
+    assert prob == tmp_path / "cell_prob.tif"
+    assert dp == tmp_path / "cell_dp.tif"
     assert contours == tmp_path / "cell_contours.tif"
     assert fg == tmp_path / "cell_foreground.tif"
     # Gate enablement keys on resolved maps, not _pos_dir.
@@ -315,8 +315,8 @@ def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
     pos = tmp_path / "pos00"
     cell = pos / "1_cellpose"
     cell.mkdir(parents=True)
-    tifffile.imwrite(cell / "nucleus_prob_3dt.tif", np.zeros((1, 1, 2, 2), dtype=np.float32))
-    tifffile.imwrite(cell / "nucleus_dp_3dt.tif", np.zeros((1, 1, 2, 2, 2), dtype=np.float32))
+    tifffile.imwrite(cell / "nucleus_prob.tif", np.zeros((1, 1, 2, 2), dtype=np.float32))
+    tifffile.imwrite(cell / "nucleus_dp.tif", np.zeros((1, 1, 2, 2, 2), dtype=np.float32))
 
     captured: dict = {}
 
@@ -369,8 +369,8 @@ def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
     w.nuc_fg_median_spin.setValue(2)
     w._run_blocking("nucleus")
 
-    assert captured["prob_path"].endswith("nucleus_prob_3dt.tif")
-    assert captured["dp_path"].endswith("nucleus_dp_3dt.tif")
+    assert captured["prob_path"].endswith("nucleus_prob.tif")
+    assert captured["dp_path"].endswith("nucleus_dp.tif")
     assert captured["contours_out"].endswith("nucleus_contours.tif")
     assert captured["foreground_out"].endswith("nucleus_foreground.tif")
     assert captured["smoothing_sigma"] == 2.0
@@ -396,11 +396,11 @@ def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypat
     cellpose.mkdir(parents=True)
     for channel in ("nucleus", "cell"):
         tifffile.imwrite(
-            cellpose / f"{channel}_prob_3dt.tif",
+            cellpose / f"{channel}_prob.tif",
             np.zeros((2, 1, 2, 2), dtype=np.float32),
         )
         tifffile.imwrite(
-            cellpose / f"{channel}_dp_3dt.tif",
+            cellpose / f"{channel}_dp.tif",
             np.zeros((2, 1, 2, 2, 2), dtype=np.float32),
         )
 
@@ -497,8 +497,8 @@ def _write_prob_dp(pos_dir: Path, channel: str, *, T=2, Z=2, Y=8, X=8) -> None:
     cp.mkdir(parents=True, exist_ok=True)
     prob = rng.normal(0.0, 1.0, (T, Z, Y, X)).astype(np.float32)
     dp = rng.normal(0.0, 1.0, (T, Z, 2, Y, X)).astype(np.float32)
-    tifffile.imwrite(cp / f"{channel}_prob_3dt.tif", prob)
-    tifffile.imwrite(cp / f"{channel}_dp_3dt.tif", dp)
+    tifffile.imwrite(cp / f"{channel}_prob.tif", prob)
+    tifffile.imwrite(cp / f"{channel}_dp.tif", dp)
 
 
 def test_preview_activation_claims_owner_and_creates_layers(monkeypatch, tmp_path):
@@ -595,11 +595,11 @@ def _write_prob_dp_squeezed(pos_dir: Path, channel: str, *, T=3, Y=8, X=8) -> No
     prob = rng.normal(0.0, 1.0, (T, 1, Y, X)).astype(np.float32)
     dp = rng.normal(0.0, 1.0, (T, 1, 2, Y, X)).astype(np.float32)
     imwrite_grayscale(
-        cp / f"{channel}_prob_3dt.tif", prob,
+        cp / f"{channel}_prob.tif", prob,
         compression="zlib", metadata={"axes": "TZYX"},
     )
     imwrite_grayscale(
-        cp / f"{channel}_dp_3dt.tif", dp,
+        cp / f"{channel}_dp.tif", dp,
         compression="zlib", metadata={"axes": "TZCYX"},
     )
 

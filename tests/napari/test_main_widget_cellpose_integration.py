@@ -89,7 +89,7 @@ def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
     for cond, pos in (("WT", "p1"), ("WT", "p2"), ("KO", "p1")):
         raw = tmp_path / cond / pos / "0_input"
         raw.mkdir(parents=True)
-        (raw / "nucleus_3dt.tif").touch()  # the discovery input file
+        (raw / "nucleus.tif").touch()  # the discovery input file
 
     w = main_mod.CellFlowMainWidget(_fake_viewer())
     found = w._positions_panel.discover(str(tmp_path))
@@ -107,20 +107,48 @@ def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
 def test_discover_positions_handles_root_inside_a_position(tmp_path):
     """Picking a position's own ``0_input`` folder finds the position, not a crash.
 
-    The relative input name is ``0_input/nucleus_3dt.tif``, so the derived position
+    The relative input name is ``0_input/nucleus.tif``, so the derived position
     is the parent of the chosen root. It sits above root and has no nesting under
     it: added plainly, identified by its own folder name.
     """
     main_mod = importlib.import_module("cellflow.napari.main_widget")
     pos = tmp_path / "processed" / "pos11"
     (pos / "0_input").mkdir(parents=True)
-    (pos / "0_input" / "nucleus_3dt.tif").touch()
+    (pos / "0_input" / "nucleus.tif").touch()
 
     entries = main_mod._discover_positions(
-        str(pos / "0_input"), {"nucleus": "0_input/nucleus_3dt.tif"}
+        str(pos / "0_input"), {"nucleus": "0_input/nucleus.tif"}
     )
     assert [Path(e["key"]) for e in entries] == [pos]
     assert entries[0]["columns"]["position_id"] == "pos11"
+
+
+def test_configured_input_name_reaches_cellpose_stage(tmp_path):
+    """A non-canonical discovery input name drives the cellpose stage's paths.
+
+    The raw-input name is configured once in the Data-folders panel and need not
+    be ``0_input/nucleus.tif``; activating a position must hand it to the
+    cellpose stage so its run path and Pipeline Files status follow the real file.
+    """
+    app = QApplication.instance() or QApplication([])
+    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    pos = tmp_path / "WT" / "p1"
+    (pos / "raw").mkdir(parents=True)
+    (pos / "raw" / "nuc.tif").touch()  # not behind 0_input, not the canonical name
+
+    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.input_name_fields["nucleus"].setText("raw/nuc.tif")
+    w._positions_panel.discover(str(tmp_path))
+    w._positions_panel.set_active(str(pos))
+
+    cw = w._cellpose_widget
+    assert cw._input_path("nucleus") == pos / "raw" / "nuc.tif"
+    # The Inputs pipeline-file row tracks the real file, though the canonical
+    # 0_input/nucleus.tif was never created.
+    assert not (pos / "0_input" / "nucleus.tif").exists()
+    nuc_row = cw._files_widget._rows_by_group["Inputs"][0]
+    assert nuc_row._full_path == pos / "raw" / "nuc.tif"
+    w.deleteLater()
 
 
 def test_main_widget_constructs_new_cellpose_widget():
@@ -357,7 +385,7 @@ def test_catalog_rail_updates_when_a_stage_output_appears(tmp_path):
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
-    (pos / "0_input" / "nucleus_3dt.tif").touch()
+    (pos / "0_input" / "nucleus.tif").touch()
 
     w = main_mod.CellFlowMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))
@@ -390,7 +418,7 @@ def test_catalog_rail_updates_when_contact_analysis_completes(tmp_path):
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
-    (pos / "0_input" / "nucleus_3dt.tif").touch()
+    (pos / "0_input" / "nucleus.tif").touch()
 
     w = main_mod.CellFlowMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))

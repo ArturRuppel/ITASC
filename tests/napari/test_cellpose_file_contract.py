@@ -8,7 +8,7 @@ def test_cellpose_status_panels_track_cell_flow_vectors():
 
     cellpose_source = (package_root / "cellpose_widget.py").read_text()
 
-    assert "1_cellpose/cell_dp_3dt.tif" in cellpose_source
+    assert "1_cellpose/cell_dp.tif" in cellpose_source
 
 
 def test_cellpose_status_panels_do_not_track_probability_zavgs():

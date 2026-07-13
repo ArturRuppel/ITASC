@@ -106,7 +106,7 @@ so importing the package does not require them.
   import tifffile
   from cellflow.cellpose import cellpose_runner, native_masks, track_laptrack
 
-  stack = cellpose_runner.to_tzyx(tifffile.imread("cell_3dt.tif"), "2D+t")
+  stack = cellpose_runner.to_tzyx(tifffile.imread("cell.tif"), "2D+t")
   params = cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0)
   masks = native_masks.run_cell_masks_stack(stack, params)       # (T, Z, Y, X)
   tracked = track_laptrack.track_masks(masks, max_distance=15.0)  # tracked labels
