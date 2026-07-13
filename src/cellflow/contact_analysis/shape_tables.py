@@ -275,27 +275,32 @@ def aggregate(
     root = Path(out_dir) if out_dir is not None else catalogue_root(records)
     selected = None if quantities is None else set(quantities)
     written: dict[str, Path] = {}
-    table_meta: dict[str, dict[str, object]] = {}
+    quant_meta: dict[str, dict[str, object]] = {}
     for name in shape_table_registry():
         if selected is not None and name not in selected:
             continue
         df = build_table(name, records, params=params)
         if df.empty:
+            # In scope for this run but pooled to no rows. Still recorded in
+            # provenance — uniformly with the tables that did materialize — so
+            # every quantifier the seam attempted is auditable, not just the
+            # ones that happened to write a file. No empty CSV is written.
+            quant_meta[name] = {"rows": 0, "columns": []}
             continue
         path = table_path(root, name)
         path.parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(path, index=False)
         written[name] = path
-        table_meta[name] = {"rows": int(len(df)), "columns": list(df.columns)}
+        quant_meta[name] = {"rows": int(len(df)), "columns": list(df.columns)}
     if written:
-        _write_run_provenance(root, records, table_meta, params)
+        _write_run_provenance(root, records, quant_meta, params)
     return written
 
 
 def _write_run_provenance(
     root: Path,
     records: Sequence[dict],
-    table_meta: Mapping[str, dict[str, object]],
+    quant_meta: Mapping[str, dict[str, object]],
     params: Mapping[str, object] | None,
 ) -> Path:
     """Write the run-level ``provenance.json`` beside the pooled tables.
@@ -303,7 +308,11 @@ def _write_run_provenance(
     One file per aggregate run (not per position — the cheap quantities are
     computed in memory, so there are no per-position artifacts to sidecar). It
     records the shared build params, the contributing positions (identity +
-    their source paths), and every written table's columns and row count, plus
+    their source paths), and — under ``quantifiers`` — **every** in-scope pooled
+    quantifier the run attempted, each with its pooled row count and columns
+    (``rows: 0`` / empty ``columns`` for one that yielded nothing and so wrote no
+    CSV). Provenance is thus a property of the quantifier seam, uniform across
+    quantifiers, rather than a record of only the tables that materialized. Plus
     the cellflow version and a UTC timestamp — enough to reconstruct how the
     tables were produced.
     """
@@ -312,7 +321,7 @@ def _write_run_provenance(
         "cellflow_version": _cellflow_version(),
         "params": dict(params or {}),
         "positions": [_provenance_position(r) for r in records],
-        "tables": {name: dict(meta) for name, meta in table_meta.items()},
+        "quantifiers": {name: dict(meta) for name, meta in quant_meta.items()},
     }
     path = Path(root) / PROVENANCE_NAME
     path.parent.mkdir(parents=True, exist_ok=True)

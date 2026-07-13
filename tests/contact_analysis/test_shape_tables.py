@@ -277,9 +277,16 @@ def test_aggregate_writes_run_level_provenance(tmp_path, monkeypatch):
     # Every contributing position is recorded by identity + source paths.
     assert {p["position_id"] for p in prov["positions"]} == {"a", "b"}
     assert {p["experiment_id"] for p in prov["positions"]} == {"exp1"}
-    # Each written table records its columns + row count (a=2 rows, b=1 → 3).
-    assert prov["tables"]["cell_shape"]["rows"] == 3
-    assert "cell_shape.area_um2" in prov["tables"]["cell_shape"]["columns"]
+    # The quantifier that pooled rows records its columns + row count (a=2, b=1 → 3).
+    assert prov["quantifiers"]["cell_shape"]["rows"] == 3
+    assert "cell_shape.area_um2" in prov["quantifiers"]["cell_shape"]["columns"]
+    # Provenance is seam-uniform: every in-scope pooled quantifier is recorded,
+    # including those that pooled to zero rows (here everything but cell_shape,
+    # whose inputs these stub records don't supply) — so an empty quantifier is
+    # auditable, not silently absent. It records rows: 0 and wrote no CSV.
+    assert set(prov["quantifiers"]) == set(shape_table_registry())
+    assert prov["quantifiers"]["neighbor_count"] == {"rows": 0, "columns": []}
+    assert not table_path(out_dir, "neighbor_count").exists()
 
 
 def test_aggregate_writes_no_provenance_when_nothing_pooled(tmp_path):
