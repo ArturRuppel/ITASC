@@ -203,9 +203,9 @@ def test_fov_autofills_from_image_size_and_pixel_size(tmp_path):
     from cellflow.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
-    # 6x8 lateral pixels, 0.5 µm/px -> 48 px * 0.25 µm² = 12 µm² = 12e-6 mm².
+    # 6x8 lateral pixels, 0.5 µm/px -> 48 px * 0.25 µm² = 12 µm² (field is µm²).
     w.set_records([_ready_record_with_labels(tmp_path, "posA", (2, 6, 8), pixel_size=0.5)])
-    assert w.fov_field.value() == pytest.approx(12e-6)
+    assert w.fov_field.value() == pytest.approx(12.0)
     # A positive FOV lifts Cell density into support (enabled + checked).
     assert w._checks["cell_density"].isEnabled()
     assert w._checks["cell_density"].isChecked()
@@ -242,9 +242,11 @@ def test_current_params_carries_calibration_and_fov(tmp_path):
     rec["pixel_size_um"] = 0.25
     rec["time_interval_s"] = 2.0
     w.set_records([rec])
-    w.fov_field.setValue(4.0)
+    w.fov_field.setValue(4.0)  # 4 µm² -> 4e-6 mm² backend param
     params = w._current_params()
-    assert params == {"pixel_size_um": 0.25, "time_interval_s": 2.0, "fov_area_mm2": 4.0}
+    assert params["pixel_size_um"] == 0.25
+    assert params["time_interval_s"] == 2.0
+    assert params["fov_area_mm2"] == pytest.approx(4e-6)
 
 
 def test_run_params_reach_the_authored_config(tmp_path, monkeypatch):

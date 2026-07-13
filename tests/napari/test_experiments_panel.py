@@ -274,10 +274,12 @@ def test_setup_collapses_after_first_find():
 
 def test_calibration_round_trips():
     panel = _panel(show_calibration=True)
-    panel.set_calibration_values({"pixel_size_um": 0.1, "time_interval_s": 30})
+    # The panel is generic over its calibration keys; the frame-length field now
+    # keys/carries minutes (the host converts to backend seconds).
+    panel.set_calibration_values({"pixel_size_um": 0.1, "time_interval_min": 5})
     vals = panel.calibration_values()
     assert vals["pixel_size_um"] == "0.1"
-    assert vals["time_interval_s"] == "30"
+    assert vals["time_interval_min"] == "5"
 
 
 def test_quickstart_mentions_project_file():

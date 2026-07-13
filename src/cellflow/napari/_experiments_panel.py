@@ -72,7 +72,9 @@ from cellflow.napari.widgets import CollapsibleSection
 # Free-text calibration fields (soft validator, not spinbox stepping).
 _CALIBRATION_SPECS = (
     ("pixel_size_um", "Pixel Size (µm)", 0.0001, 1000.0),
-    ("time_interval_s", "Frame Length (s)", 0.0, 1e9),
+    # Entered in minutes (long timelapses read naturally that way); the host
+    # converts to the backend's seconds-based ``time_interval_s`` at the boundary.
+    ("time_interval_min", "Frame Length (min)", 0.0, 1e9),
 )
 _INPUT_DECIMALS = 6
 

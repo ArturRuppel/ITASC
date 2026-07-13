@@ -61,14 +61,15 @@ def test_catalog_records_stamp_setup_calibration(tmp_path):
     instead of staying greyed."""
     get_qapp()
     w = CellFlowMainWidget(_fake_viewer())
+    # Frame length is entered in minutes; the record carries backend seconds.
     w._positions_panel.set_calibration_values(
-        {"pixel_size_um": "0.25", "time_interval_s": "2.0"}
+        {"pixel_size_um": "0.25", "time_interval_min": "2.0"}
     )
     records = w._catalog_records_for_panel([
         {"position_path": tmp_path / "posA", "columns": {"condition": "ctrl", "id": "posA"}},
     ])
     assert records[0]["pixel_size_um"] == 0.25
-    assert records[0]["time_interval_s"] == 2.0
+    assert records[0]["time_interval_s"] == 120.0
 
 
 def test_catalog_records_omit_blank_calibration(tmp_path):
@@ -76,9 +77,35 @@ def test_catalog_records_omit_blank_calibration(tmp_path):
     positive-value gate anyway)."""
     get_qapp()
     w = CellFlowMainWidget(_fake_viewer())
-    w._positions_panel.set_calibration_values({"pixel_size_um": "", "time_interval_s": ""})
+    w._positions_panel.set_calibration_values({"pixel_size_um": "", "time_interval_min": ""})
     records = w._catalog_records_for_panel([
         {"position_path": tmp_path / "posA", "columns": {"id": "posA"}},
     ])
     assert "pixel_size_um" not in records[0]
     assert "time_interval_s" not in records[0]
+
+
+def test_calibration_edit_refreshes_aggregate():
+    """Editing a calibration field re-stamps the aggregate records, so quantities
+    gated on a param filled in *after* folders were added stop being greyed."""
+    get_qapp()
+    w = CellFlowMainWidget(_fake_viewer())
+    calls = []
+    w._refresh_aggregate = lambda: calls.append(1)  # lambda in __init__ looks this up at emit
+    w._positions_panel.calibration_changed.emit("pixel_size_um", "0.5")
+    assert calls == [1]
+
+
+def test_frame_length_minutes_persist_as_backend_seconds():
+    """The Setup frame-length field is minutes; the config stores seconds and a
+    seconds config loads back into the field as minutes."""
+    get_qapp()
+    w = CellFlowMainWidget(_fake_viewer())
+    w._positions_panel.set_calibration_values(
+        {"pixel_size_um": "0.3", "time_interval_min": "5"}
+    )
+    assert w.get_state()["metadata"]["time_interval_s"] == "300"
+
+    w2 = CellFlowMainWidget(_fake_viewer())
+    w2.set_state({"metadata": {"pixel_size_um": "0.3", "time_interval_s": "300"}})
+    assert w2._positions_panel.calibration_values()["time_interval_min"] == "5"

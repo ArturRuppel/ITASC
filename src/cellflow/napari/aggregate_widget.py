@@ -150,12 +150,13 @@ class AggregateWidget(QWidget):
         # from image size x pixel size (see :meth:`_maybe_autofill_fov`); the user
         # can override, after which autofill leaves it alone.
         self.fov_field = QDoubleSpinBox()
-        # 6 decimals = 1 µm² resolution, so a small ROI or fine pixel size autofills
-        # a representable area rather than rounding down to zero (which would grey
-        # Cell density out).
-        self.fov_field.setDecimals(6)
-        self.fov_field.setRange(0.0, 1e9)
-        self.fov_field.setSuffix(" mm²")
+        # Entered in µm² (a microscope field is a handful of ×10⁴ µm², which reads
+        # cleanly, where the mm² value would be a long decimal). Converted to the
+        # backend's mm² param in :meth:`_current_params`. 2 decimals is 0.01 µm²
+        # resolution — ample, and no risk of rounding a real area down to zero.
+        self.fov_field.setDecimals(2)
+        self.fov_field.setRange(0.0, 1e12)
+        self.fov_field.setSuffix(" µm²")
         self.fov_field.setToolTip(
             "Field-of-view area for Cell density. Autofilled from image size times "
             "pixel size; edit to override."
@@ -174,7 +175,7 @@ class AggregateWidget(QWidget):
             if qid == "cell_density":
                 row = QHBoxLayout()
                 row.addWidget(box)
-                row.addWidget(QLabel("FOV area (mm²):"))
+                row.addWidget(QLabel("FOV area (µm²):"))
                 row.addWidget(self.fov_field)
                 row.addStretch()
                 layout.addLayout(row)
@@ -206,15 +207,17 @@ class AggregateWidget(QWidget):
                     params[key] = float(value)
                 except (TypeError, ValueError):
                     pass
-        fov = self.fov_field.value()
-        if fov > 0:
-            params["fov_area_mm2"] = fov
+        fov_um2 = self.fov_field.value()
+        if fov_um2 > 0:
+            # The field is µm²; the backend's Cell density param is mm² (density is
+            # reported in cells/mm²).
+            params["fov_area_mm2"] = fov_um2 / 1e6
         return params
 
     def _maybe_autofill_fov(self) -> None:
-        """Prefill the FOV field from ``image lateral pixels x pixel_size_um²`` (in
-        mm²), reading a ready position's cell-label image. No-ops once the user has
-        edited the field, when no pixel size is set, or when no image is readable."""
+        """Prefill the FOV field (µm²) from ``image lateral pixels x pixel_size_um²``,
+        reading a ready position's cell-label image. No-ops once the user has edited
+        the field, when no pixel size is set, or when no image is readable."""
         if self._fov_user_edited:
             return
         pixel_size = self._current_params().get("pixel_size_um")
@@ -224,9 +227,9 @@ class AggregateWidget(QWidget):
         for record in ready:
             n_pixels = _lateral_pixels(record.get("cell_tracked_labels_path"))
             if n_pixels:
-                fov_mm2 = n_pixels * pixel_size * pixel_size / 1e6
+                fov_um2 = n_pixels * pixel_size * pixel_size
                 self.fov_field.blockSignals(True)
-                self.fov_field.setValue(fov_mm2)
+                self.fov_field.setValue(fov_um2)
                 self.fov_field.blockSignals(False)
                 return
 

@@ -66,6 +66,36 @@ _SEED_LEVEL_NAMES = ("condition", "experiment_id", "position_id")
 _CELL_LABELS_RELPATH = "cell_labels.tif"
 _NUCLEUS_LABELS_RELPATH = "nucleus_labels.tif"
 
+#: Seconds per minute — the Setup frame-length field is entered in minutes but the
+#: backend (dynamics, persisted ``metadata.time_interval_s``) works in seconds.
+_SECONDS_PER_MINUTE = 60.0
+
+
+def _positive_float_or_none(value) -> float | None:
+    """*value* as a positive float, or ``None`` when blank / non-numeric / ≤ 0."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if result > 0 else None
+
+
+def _min_str_to_s_str(text) -> str:
+    """A minutes field text → its seconds string for persistence (blank stays blank)."""
+    minutes = _positive_float_or_none(text)
+    return "" if minutes is None else _format_calibration(minutes * _SECONDS_PER_MINUTE)
+
+
+def _s_str_to_min_str(text) -> str:
+    """A persisted seconds value → its minutes string for the field (blank stays blank)."""
+    seconds = _positive_float_or_none(text)
+    return "" if seconds is None else _format_calibration(seconds / _SECONDS_PER_MINUTE)
+
+
+def _format_calibration(value: float) -> str:
+    """Compact numeric text (no trailing-zero noise), matching the panel's own."""
+    return f"{value:g}"
+
 
 def _seed_level_names(depth: int) -> list[str]:
     """Default name for each of *depth* nesting levels (anchored at the root)."""
@@ -240,6 +270,11 @@ class CellFlowMainWidget(QWidget):
         self._positions_panel.discover_requested.connect(self._on_discover_positions)
         self._positions_panel.stage_load_requested.connect(self._on_position_stage_load)
         self._positions_panel.records_changed.connect(self._refresh_aggregate)
+        # Editing the Setup calibration after folders are added must re-stamp the
+        # aggregate records, or param-gated quantities filled in afterwards stay grey.
+        self._positions_panel.calibration_changed.connect(
+            lambda *_: self._refresh_aggregate()
+        )
 
         # Viewer-activity banner sits at the top level, above the stage
         # sections, so the "exit the active mode" hint is visible regardless of which section
@@ -542,7 +577,8 @@ class CellFlowMainWidget(QWidget):
         return {
             "metadata": {
                 "pixel_size_um": calibration.get("pixel_size_um", ""),
-                "time_interval_s": calibration.get("time_interval_s", ""),
+                # Panel holds minutes; persist the backend's seconds.
+                "time_interval_s": _min_str_to_s_str(calibration.get("time_interval_min", "")),
             },
             "cellpose": self._cellpose_widget.get_state(),
             "nucleus": self.nucleus_workflow_widget.get_state(),
@@ -553,8 +589,14 @@ class CellFlowMainWidget(QWidget):
         """Update the UI state from a dictionary."""
         if "metadata" in state:
             m = state["metadata"]
-            # Calibration now lives in the positions panel's Setup section.
-            self._positions_panel.set_calibration_values(m)
+            # Calibration now lives in the positions panel's Setup section. The
+            # config stores seconds; the panel field is minutes, so translate.
+            self._positions_panel.set_calibration_values(
+                {
+                    "pixel_size_um": m.get("pixel_size_um", ""),
+                    "time_interval_min": _s_str_to_min_str(m.get("time_interval_s", "")),
+                }
+            )
             # Legacy ``condition`` / ``position`` keys are intentionally ignored:
             # condition is a folder-derived per-position column, and the selected
             # folder carries position identity.
@@ -613,17 +655,20 @@ class CellFlowMainWidget(QWidget):
         return records
 
     def _calibration_params(self) -> dict[str, float]:
-        """Setup calibration as ``{param: float}``, dropping blank / non-positive
-        entries (an unset field contributes nothing rather than a zero)."""
+        """Setup calibration as backend ``{param: float}``, dropping blank /
+        non-positive entries (an unset field contributes nothing rather than a zero).
+
+        The frame-length field is entered in minutes; the backend's dynamics work
+        in seconds, so it is converted to ``time_interval_s`` here.
+        """
         values = self._positions_panel.calibration_values()
         params: dict[str, float] = {}
-        for key in ("pixel_size_um", "time_interval_s"):
-            try:
-                value = float(values.get(key, ""))
-            except (TypeError, ValueError):
-                continue
-            if value > 0:
-                params[key] = value
+        pixel_size = _positive_float_or_none(values.get("pixel_size_um", ""))
+        if pixel_size is not None:
+            params["pixel_size_um"] = pixel_size
+        minutes = _positive_float_or_none(values.get("time_interval_min", ""))
+        if minutes is not None:
+            params["time_interval_s"] = minutes * 60.0
         return params
 
     def _refresh_aggregate(self) -> None:
