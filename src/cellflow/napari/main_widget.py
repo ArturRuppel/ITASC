@@ -596,13 +596,35 @@ class CellFlowMainWidget(QWidget):
         }
 
     def _catalog_records_for_panel(self, panel_records) -> list[dict]:
-        """Catalog records (with committed output paths) for a list of panel rows."""
-        return [
-            self._catalog_record_for_position(
+        """Catalog records (committed output paths + calibration) for panel rows.
+
+        The Setup calibration (pixel size, frame length) is stamped onto every
+        record so the aggregate's pooled cheap quantities (shape, dynamics) compute
+        in physical units and light up in the panel; without it they stay greyed.
+        """
+        calibration = self._calibration_params()
+        records = []
+        for rec in panel_records:
+            record = self._catalog_record_for_position(
                 rec["position_path"], rec.get("columns", {})
             )
-            for rec in panel_records
-        ]
+            record.update(calibration)
+            records.append(record)
+        return records
+
+    def _calibration_params(self) -> dict[str, float]:
+        """Setup calibration as ``{param: float}``, dropping blank / non-positive
+        entries (an unset field contributes nothing rather than a zero)."""
+        values = self._positions_panel.calibration_values()
+        params: dict[str, float] = {}
+        for key in ("pixel_size_um", "time_interval_s"):
+            try:
+                value = float(values.get(key, ""))
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                params[key] = value
+        return params
 
     def _refresh_aggregate(self) -> None:
         """Feed the project-level catalog to the capstone; show it once positions exist."""

@@ -177,3 +177,95 @@ def test_pool_positions_authors_selected_quantities(tmp_path, monkeypatch):
 
     config_text = (seen["config_path"]).read_text()
     assert 'quantities = ["cell_shape"]' in config_text
+
+
+# ---------------------------------------------------------- FOV area + params
+
+import numpy as np
+import pytest
+import tifffile
+
+
+def _ready_record_with_labels(tmp_path, name, shape=(2, 6, 8), pixel_size=None):
+    """A ready record whose cell-label TIFF actually exists on disk (so the FOV
+    autofill can read its lateral pixel dims)."""
+    rec = _record(tmp_path / name, ready=True)
+    cells = Path(rec["cell_tracked_labels_path"])
+    cells.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(cells, np.zeros(shape, dtype=np.uint16))
+    if pixel_size is not None:
+        rec["pixel_size_um"] = pixel_size
+    return rec
+
+
+def test_fov_autofills_from_image_size_and_pixel_size(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    # 6x8 lateral pixels, 0.5 µm/px -> 48 px * 0.25 µm² = 12 µm² = 12e-6 mm².
+    w.set_records([_ready_record_with_labels(tmp_path, "posA", (2, 6, 8), pixel_size=0.5)])
+    assert w.fov_field.value() == pytest.approx(12e-6)
+    # A positive FOV lifts Cell density into support (enabled + checked).
+    assert w._checks["cell_density"].isEnabled()
+    assert w._checks["cell_density"].isChecked()
+
+
+def test_fov_autofill_backs_off_after_user_edit(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.fov_field.setValue(3.0)  # user edit sets the sticky flag
+    w.set_records([_ready_record_with_labels(tmp_path, "posA", (2, 6, 8), pixel_size=0.5)])
+    assert w.fov_field.value() == 3.0  # autofill left the user's value alone
+
+
+def test_manual_fov_lights_up_density_without_pixel_size(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.set_records([_record(tmp_path / "posA", ready=True)])  # no pixel size, no labels on disk
+    assert not w._checks["cell_density"].isEnabled()  # no FOV -> greyed
+    w.fov_field.setValue(1.5)
+    assert w._checks["cell_density"].isEnabled()  # typing an area supports density
+    assert "fov_area_mm2" in w._current_params()
+
+
+def test_current_params_carries_calibration_and_fov(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    rec = _record(tmp_path / "posA", ready=True)
+    rec["pixel_size_um"] = 0.25
+    rec["time_interval_s"] = 2.0
+    w.set_records([rec])
+    w.fov_field.setValue(4.0)
+    params = w._current_params()
+    assert params == {"pixel_size_um": 0.25, "time_interval_s": 2.0, "fov_area_mm2": 4.0}
+
+
+def test_run_params_reach_the_authored_config(tmp_path, monkeypatch):
+    ready = [_record(tmp_path / "study" / "posA", ready=True)]
+    seen = {}
+
+    def _fake_run(config_path, *, build=True):
+        seen["config_path"] = Path(config_path)
+        return {}
+
+    monkeypatch.setattr(aw, "run", _fake_run)
+    aw.pool_positions(ready, skipped_names=[], quantities=(), params={"fov_area_mm2": 2.5})
+    assert "fov_area_mm2 = 2.5" in seen["config_path"].read_text()
+
+
+def test_disabled_quantity_tooltip_has_no_em_dash(tmp_path):
+    get_qapp()
+    from cellflow.napari.aggregate_widget import AggregateWidget
+
+    w = AggregateWidget()
+    w.set_records([_record(tmp_path / "posA", ready=True)])  # cell_shape unsupported
+    tip = w._checks["cell_shape"].toolTip()
+    assert not w._checks["cell_shape"].isEnabled()
+    assert "—" not in tip and "–" not in tip
