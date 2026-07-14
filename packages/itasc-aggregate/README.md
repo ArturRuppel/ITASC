@@ -24,16 +24,16 @@ step: it does not run segmentation or tracking, so it treats the committed
 produces the contact-analysis `.h5`.
 
 - **napari plugin:** add the *ITASC Aggregate* widget.
-  - **Data folders** — point *Find* at a parent directory to discover every
+  - **Data folders**: point *Find* at a parent directory to discover every
     **position** (a folder containing `cell_labels.tif`) beneath it; the columns
     are derived from each position's nesting under that directory. Each row carries
-    a three-dot **status rail** — cell labels, nucleus labels, contact analysis —
+    a three-dot **status rail** (cell labels, nucleus labels, contact analysis)
     that shows, at a glance, which inputs are present and whether the `.h5` is
     built. Click a rail dot to load that input into the viewer (or, for the
     contact dot, open the overlays).
-  - **Contact Analysis** — select a row to retarget the stage to that position;
+  - **Contact Analysis**: select a row to retarget the stage to that position;
     run or re-run its contact analysis and visualize the result.
-  - **Aggregate** — the project-level capstone pools across the whole catalog,
+  - **Aggregate**: the project-level capstone pools across the whole catalog,
     grouped by your columns, once positions have been added.
 - **Headless / scripting:**
 
@@ -66,5 +66,5 @@ produces the contact-analysis `.h5`.
 ## I/O contract
 
 - **Input:** `cell_labels` (2D+t TIFF, required); `nucleus_labels` (2D+t TIFF,
-  optional — when given, the `cell_id == nucleus_id` invariant is enforced).
+  optional: when given, the `cell_id == nucleus_id` invariant is enforced).
 - **Output:** an HDF5 file with `cells`, `edges`, `t1_events`, and `provenance`.

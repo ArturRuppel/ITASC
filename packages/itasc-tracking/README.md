@@ -1,8 +1,8 @@
 # itasc-tracking
 
-Independent ITASC piece for **nucleus tracking and interactive correction**:
-turn 2D+t foreground + contour maps into Ultrack candidate segments, a tracking
-database, solved tracks, and validated/corrected nucleus labels — all from a
+Independent ITASC piece for **nucleus tracking and interactive correction**. It
+turns 2D+t foreground and contour maps into Ultrack candidate segments, a tracking
+database, solved tracks, and validated, corrected nucleus labels, all from a
 napari plugin.
 
 ## Install
@@ -22,9 +22,9 @@ correction-only use does not require the `[solve]` extra.
 
 - **napari plugin:** launch napari and add the *Ultrack Segment + Track*
   widget. It exposes three path fields:
-  - **Foreground** — the foreground probability/intensity `.tif` (2D+t),
-  - **Contours** — the contour/boundary `.tif` (2D+t),
-  - **Output dir** — where every artifact is written (defaults to the
+  - **Foreground**: the foreground probability/intensity `.tif` (2D+t).
+  - **Contours**: the contour/boundary `.tif` (2D+t).
+  - **Output dir**: where every artifact is written (defaults to the
     foreground file's folder when left blank).
 
   The two inputs can have any name and live anywhere.

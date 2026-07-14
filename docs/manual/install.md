@@ -54,5 +54,5 @@ python -m pip install -e .[dev]    # + ruff, pytest
 python -m pip install -e .[docs]   # to build this documentation locally
 ```
 
-With ITASC installed, [The staged workflow](workflow.md) walks through what
+With the full app installed, the [Full app guide](full-app.md) walks through what
 each stage reads and writes, and how to drive the plugin in napari.

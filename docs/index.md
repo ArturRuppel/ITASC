@@ -8,7 +8,11 @@
 :caption: User Manual
 
 manual/index
-manual/workflow
+manual/full-app
+manual/cellpose
+manual/tracking
+manual/aggregate
+manual/core
 manual/install
 ```
 
