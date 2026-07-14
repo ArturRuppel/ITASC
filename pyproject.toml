@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itasc"
-version = "0.2.0"
+version = "0.2.0.dev0"
 description = "Fast, interactive cell tracking"
 readme = "README.md"
 requires-python = ">=3.10"

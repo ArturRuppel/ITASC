@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itasc-core"
-version = "0.2.0"
+version = "0.2.0.dev0"
 description = "Shared ITASC substrate: TIFF/path/logging helpers and reusable napari UI primitives"
 readme = "README.md"
 requires-python = ">=3.10"

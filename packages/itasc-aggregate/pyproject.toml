@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itasc-aggregate"
-version = "0.2.0"
+version = "0.2.0.dev0"
 description = "ITASC aggregate quantification: per-position quantifiers (density, shape, dynamics, contacts: cell-cell edges, T1 events) and napari visualization"
 readme = "README.md"
 requires-python = ">=3.10"

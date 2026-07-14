@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "itasc-cellpose"
-version = "0.2.0"
+version = "0.2.0.dev0"
 description = "ITASC Cellpose: standalone Cellpose-SAM segment + laptrack tracking tool (napari)"
 readme = "README.md"
 requires-python = ">=3.10"
