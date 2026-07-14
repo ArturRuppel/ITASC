@@ -24,14 +24,14 @@
 
 ```{toctree}
 :hidden:
-:caption: User Manual
+:caption: How to get started
 
-manual/install
-manual/full-app
-manual/cellpose
-manual/tracking
-manual/aggregate
-manual/core
+Install <manual/install>
+Run the whole pipeline <manual/full-app>
+Segment and track sparse cells <manual/cellpose>
+Track dense cells from maps <manual/tracking>
+Quantify and pool positions <manual/aggregate>
+Build on the Python API <manual/core>
 ```
 
 ```{toctree}
@@ -42,6 +42,7 @@ explanation/index
 explanation/input-maps
 explanation/nucleus-tracking
 explanation/cell-segmentation
+explanation/contact-analysis
 ```
 
 ```{toctree}

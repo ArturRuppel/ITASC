@@ -6,6 +6,25 @@ the fact that it is the same cell from the first frame to the last. From that it
 measures which cells touch and when neighbours swap. This page states the problem and
 the idea behind the solution; the later pages detail each step and build on it.
 
+```{figure} ../_static/diagrams/diagram-overview.svg
+:alt: The ITASC pipeline as five stages left to right, input maps, nucleus tracking, cell bodies, contacts and T1, aggregate, with a correction box attached beneath nucleus tracking and cell bodies.
+:figclass: only-light
+:width: 100%
+
+The pipeline end to end: the input maps feed nucleus tracking, each cell body grows from
+its tracked nucleus, and the contacts and pooled tables follow. Correction sits on the two
+segmentation-and-tracking stages, where a person fixes what the automatics miss.
+```
+```{figure} ../_static/diagrams/diagram-overview-dark.svg
+:alt: The ITASC pipeline as five stages left to right, input maps, nucleus tracking, cell bodies, contacts and T1, aggregate, with a correction box attached beneath nucleus tracking and cell bodies.
+:figclass: only-dark
+:width: 100%
+
+The pipeline end to end: the input maps feed nucleus tracking, each cell body grows from
+its tracked nucleus, and the contacts and pooled tables follow. Correction sits on the two
+segmentation-and-tracking stages, where a person fixes what the automatics miss.
+```
+
 ## The problem
 
 The monolayers ITASC is built for are dense and highly motile. Cells are packed with

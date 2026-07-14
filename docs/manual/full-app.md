@@ -1,4 +1,23 @@
-# itasc\[all]
+# Run the whole pipeline
+
+```{figure} ../_static/diagrams/diagram-distro-all.svg
+:alt: The ITASC ingredient board with the dense chain lit, Cellpose maps, Ultrack, cell bodies, Ultrack correction, EpiCure editing, contact analysis, aggregator, and Core; the sparse Cellpose-masks and LapTrack path dashed.
+:figclass: only-light
+:width: 100%
+
+**itasc[all]** ships the dense pipeline end to end: Cellpose maps, Ultrack, cell bodies,
+both correction tools, and the contact and aggregate stages. The sparse Cellpose-masks path
+is a separate tool. Solid chips are shipped; dashed are the rest of the family.
+```
+```{figure} ../_static/diagrams/diagram-distro-all-dark.svg
+:alt: The ITASC ingredient board with the dense chain lit, Cellpose maps, Ultrack, cell bodies, Ultrack correction, EpiCure editing, contact analysis, aggregator, and Core; the sparse Cellpose-masks and LapTrack path dashed.
+:figclass: only-dark
+:width: 100%
+
+**itasc[all]** ships the dense pipeline end to end: Cellpose maps, Ultrack, cell bodies,
+both correction tools, and the contact and aggregate stages. The sparse Cellpose-masks path
+is a separate tool. Solid chips are shipped; dashed are the rest of the family.
+```
 
 The full ITASC plugin runs the whole pipeline in one napari widget: segment,
 track, correct, and quantify, in that order, without leaving the viewer. Reach

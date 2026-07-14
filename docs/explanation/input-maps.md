@@ -11,6 +11,23 @@ tracking](nucleus-tracking.md) and the [cell-body stage](cell-segmentation.md).
 
 The stage is built on Cellpose, a published tool for finding cells.
 
+```{figure} ../_static/diagrams/diagram-input-maps.svg
+:alt: One raw frame enters Cellpose, which produces a brightness output and a direction output; brightness becomes the foreground map and direction becomes the contour map.
+:figclass: only-light
+:width: 100%
+
+One frame in, two maps out: Cellpose reports a brightness and a direction at every point;
+the brightness becomes the foreground map, and the direction field becomes the contour map.
+```
+```{figure} ../_static/diagrams/diagram-input-maps-dark.svg
+:alt: One raw frame enters Cellpose, which produces a brightness output and a direction output; brightness becomes the foreground map and direction becomes the contour map.
+:figclass: only-dark
+:width: 100%
+
+One frame in, two maps out: Cellpose reports a brightness and a direction at every point;
+the brightness becomes the foreground map, and the direction field becomes the contour map.
+```
+
 ## What Cellpose gives
 
 Cellpose reads one image and reports two things at every point in it.

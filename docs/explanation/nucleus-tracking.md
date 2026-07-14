@@ -15,6 +15,25 @@ errors are corrected manually.
 The stage operates only on the nucleus maps. Cell bodies are generated in a later stage
 from this result.
 
+```{figure} ../_static/diagrams/diagram-nucleus-tracking.svg
+:alt: Nucleus maps flow through atoms, candidates, a solve, and tracked nuclei, with a correction box that feeds a dashed re-solve arrow back to the solve step.
+:figclass: only-light
+:width: 100%
+
+The four steps: the maps are cut into atoms, the atoms are merged into candidate outlines, a
+solver selects a consistent set across time, and the result is corrected. Correction feeds
+back into the solver, which re-solves with the confirmed tracks held fixed.
+```
+```{figure} ../_static/diagrams/diagram-nucleus-tracking-dark.svg
+:alt: Nucleus maps flow through atoms, candidates, a solve, and tracked nuclei, with a correction box that feeds a dashed re-solve arrow back to the solve step.
+:figclass: only-dark
+:width: 100%
+
+The four steps: the maps are cut into atoms, the atoms are merged into candidate outlines, a
+solver selects a consistent set across time, and the result is corrected. Correction feeds
+back into the solver, which re-solves with the confirmed tracks held fixed.
+```
+
 ## Atoms
 
 An atom is a fragment smaller than a nucleus, or at most equal to one. The foreground is

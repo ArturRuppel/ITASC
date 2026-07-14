@@ -12,6 +12,23 @@ This installs the full ITASC pipeline. Installing a single stage instead changes
 one word in the last command, covered at the end under [Other
 stages](#other-stages).
 
+```{figure} ../_static/diagrams/diagram-parts.svg
+:alt: The full ITASC ingredient board, every piece lit: the dense Cellpose-maps, Ultrack, cell bodies, correction, contact and aggregate chain, and the sparse Cellpose-masks and LapTrack path, all resting on Core.
+:figclass: only-light
+:width: 100%
+
+Everything ITASC is made of. This page installs the whole set; each getting-started page
+that follows installs one slice, and its board shows which pieces light up.
+```
+```{figure} ../_static/diagrams/diagram-parts-dark.svg
+:alt: The full ITASC ingredient board, every piece lit: the dense Cellpose-maps, Ultrack, cell bodies, correction, contact and aggregate chain, and the sparse Cellpose-masks and LapTrack path, all resting on Core.
+:figclass: only-dark
+:width: 100%
+
+Everything ITASC is made of. This page installs the whole set; each getting-started page
+that follows installs one slice, and its board shows which pieces light up.
+```
+
 ## Install uv
 
 uv is a small free program that does the setup: it installs its own copy of

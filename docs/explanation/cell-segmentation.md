@@ -17,6 +17,25 @@ maps stage](input-maps.md), and the tracked nucleus labels from the previous sta
 proceeds in three steps: the maps are cleaned, the region to fill is fixed, and a cell body
 is grown from each nucleus into that region.
 
+```{figure} ../_static/diagrams/diagram-cell-segmentation.svg
+:alt: Cell maps build a cost field; tracked nuclei are the seeds; a geodesic grow produces cell bodies, which are then corrected.
+:figclass: only-light
+:width: 100%
+
+Each cell body is grown from its tracked nucleus through a cost field built from the cell
+maps: the nuclei are the seeds, the geodesic grow assigns every pixel to its nearest one, and
+the result is corrected.
+```
+```{figure} ../_static/diagrams/diagram-cell-segmentation-dark.svg
+:alt: Cell maps build a cost field; tracked nuclei are the seeds; a geodesic grow produces cell bodies, which are then corrected.
+:figclass: only-dark
+:width: 100%
+
+Each cell body is grown from its tracked nucleus through a cost field built from the cell
+maps: the nuclei are the seeds, the geodesic grow assigns every pixel to its nearest one, and
+the result is corrected.
+```
+
 ## Preparing the maps
 
 The cell foreground and contour maps are cleaned the same way the nucleus maps are: the
