@@ -293,9 +293,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         body.setLayout(grid)
         self.nuc_layout_combo = _layout_combo()
         self.nuc_3d_chk = QCheckBox("3D mode")
-        self.nuc_3d_chk.setChecked(True)
+        self.nuc_3d_chk.setChecked(False)
         self.nuc_anisotropy_spin = _dslider(0.1, 20.0, 1.5, 0.1, 2)
-        self.nuc_diameter_spin = _dslider(0.0, 500.0, 25.0, 1.0, 1)
+        self.nuc_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
         self.nuc_min_size_spin = _islider(0, 100000, 15)
         self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
         row = 0

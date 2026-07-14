@@ -127,18 +127,18 @@ class NucleusAtomExtractionWidget(QWidget):
             "0 = raw fg map (no flattening).",
         )
         self.contour_window_spin = _islider(
-            3, 301, 51, tooltip="Contour residual window (px, forced odd)."
+            3, 301, 20, tooltip="Contour residual window (px, forced odd)."
         )
         self.contour_floor_spin = _dslider(
-            0, 1, 0.01, 0.001, 3, "Ridge noise floor on the contour residual."
+            0, 1, 0.05, 0.001, 3, "Ridge noise floor on the contour residual."
         )
         self.contour_strength_spin = _dslider(
-            0, 1, 1.0, 0.05, 2,
+            0, 1, 0.16455696202531644, 0.05, 2,
             "Background-subtraction strength: 1 = full contour residual, "
             "0 = raw contour map (no flattening).",
         )
         self.atom_min_area_spin = _islider(
-            0, 5000, 100, tooltip="Atoms smaller than this merge into a neighbour."
+            0, 5000, 10, tooltip="Atoms smaller than this merge into a neighbour."
         )
 
         self.status_lbl = QLabel("")

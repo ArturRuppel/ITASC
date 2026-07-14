@@ -74,16 +74,16 @@ class CellDivergenceParams:
     """Percentile of the positive contour signal mapped to 1.0 in [0, 1]."""
 
     # ── Temporal smoothing ──────────────────────────────────────────────────
-    memory_tau: float = 0.0
+    memory_tau: float = 0.1
     """EMA crossover (~the contour value you call "weak"). 0 = off."""
-    memory_floor: float = 0.01
+    memory_floor: float = 0.3
     """Minimum per-frame alpha; ghost half-life (~69 frames @ 0.01)."""
 
     # ── Segmentation ────────────────────────────────────────────────────────
-    balance: float = 0.98
+    balance: float = 0.9
     """Contour↔foreground split ``r`` in ``[0, 1]`` (``1`` = pure contour).
     See :func:`balance_strength_to_weights`."""
-    feature_strength: float = 100.0
+    feature_strength: float = 250.0
     """Overall feature weight ``s >= 0`` relative to the base cost of 1."""
     n_workers: int = 4
     """Parallel workers for geodesic computation (compute only)."""

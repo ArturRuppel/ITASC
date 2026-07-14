@@ -31,10 +31,10 @@ class AtomParams:
     fg_window: int = 51
     fg_cutoff: float = 0.002
     fg_strength: float = 1.0
-    contour_window: int = 51
-    contour_floor: float = 0.01
-    contour_strength: float = 1.0
-    atom_min_area: int = 100
+    contour_window: int = 20
+    contour_floor: float = 0.05
+    contour_strength: float = 0.16455696202531644
+    atom_min_area: int = 10
 
 
 def extract_atoms_frame(

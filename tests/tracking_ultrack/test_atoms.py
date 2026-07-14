@@ -117,9 +117,9 @@ def test_atom_params_defaults_match_spec():
     p = AtomParams()
     assert p.fg_window == 51
     assert p.fg_cutoff == 0.002
-    assert p.contour_window == 51
-    assert p.contour_floor == 0.01
-    assert p.atom_min_area == 100
+    assert p.contour_window == 20
+    assert p.contour_floor == 0.05
+    assert p.atom_min_area == 10
 
 
 def test_extract_atoms_stack_shape_and_determinism():

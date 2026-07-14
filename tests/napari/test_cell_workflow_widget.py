@@ -194,9 +194,9 @@ def test_widget_exposes_single_run_and_preview_path(monkeypatch):
     # Primary knobs carry the spec defaults, all in one flat panel.
     assert widget.fg_strength_spin.value() == 0.0
     assert widget.fg_threshold_spin.value() == 0.1
-    assert widget.memory_tau_spin.value() == 0.0
-    assert widget.balance_spin.value() == 0.98
-    assert widget.feature_strength_spin.value() == 100.0
+    assert widget.memory_tau_spin.value() == 0.1
+    assert widget.balance_spin.value() == 0.9
+    assert widget.feature_strength_spin.value() == 250.0
     assert not hasattr(widget, "advanced_section")
     assert not hasattr(widget, "fg_params_section")
 

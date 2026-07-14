@@ -462,21 +462,21 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         )
         # ── Temporal smoothing ───────────────────────────────────────
         self.memory_tau_spin = _dslider(
-            0, 1, 0.0, 0.01, 3,
+            0, 1, 0.1, 0.01, 3,
             "Temporal EMA crossover (~the contour value you call weak). 0 = off.",
         )
         self.memory_floor_spin = _dslider(
-            0.001, 0.5, 0.01, 0.001, 3,
+            0.001, 0.5, 0.3, 0.001, 3,
             "Min per-frame alpha; ghost half-life (~69 frames @ 0.01).",
         )
         # ── Segmentation ─────────────────────────────────────────────
         self.balance_spin = _dslider(
-            0.0, 1.0, 0.98, 0.01, 2,
+            0.0, 1.0, 0.9, 0.01, 2,
             "Contour↔foreground split r: 1 = pure contour, 0 = pure "
             "foreground. cost = 1 + s·[r·contour + (1−r)·(1−fg)].",
         )
         self.feature_strength_spin = _dslider(
-            0, 1000, 100.0, 1.0, 1,
+            0, 1000, 250.0, 1.0, 1,
             "Feature strength s: how hard contour/foreground bend the walk vs "
             "a plain distance Voronoi. 0 = pure distance.",
         )

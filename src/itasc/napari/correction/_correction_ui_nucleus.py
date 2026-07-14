@@ -326,6 +326,7 @@ def _build_view_toggle_buttons(w) -> None:
         "comet (viridis, oldest→newest) with a frame number in each mask.",
         checkable=True,
     )
+    w.track_path_btn.setChecked(True)
     w.spotlight_btn = _tool_btn(
         "🔦",
         "Spotlight: dim everything outside the selected cell. Off = mark the "

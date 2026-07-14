@@ -69,8 +69,10 @@ def test_fg_strength_zero_is_a_no_op_on_foreground():
 
 def test_contour_threshold_zeros_sub_threshold_values():
     contours, fg, nuc = _make_inputs()
+    # memory_tau=0 keeps temporal smoothing out, so the threshold alone decides
+    # which values survive; smoothing would otherwise reintroduce sub-threshold ones.
     high = segment_cells_divergence(
-        contours, fg, nuc, CellDivergenceParams(contour_threshold=0.5)
+        contours, fg, nuc, CellDivergenceParams(contour_threshold=0.5, memory_tau=0.0)
     )
     assert np.all((high.contours_clean == 0) | (high.contours_clean >= 0.5))
 

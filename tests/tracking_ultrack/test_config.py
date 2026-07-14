@@ -12,7 +12,7 @@ def test_tracking_config_exposes_seed_prior_defaults():
 
     assert cfg.power == 4
     assert isinstance(cfg.power, int)
-    assert cfg.quality_exponent == 8.0
+    assert cfg.quality_exponent == 1.0
 
 
 def test_tracking_config_solver_power_is_integer_typed():
@@ -27,7 +27,7 @@ def test_tracking_config_exposes_node_probability_weights():
 
     assert cfg.quality_weight == 1.0
     assert cfg.circularity_weight == 0.25
-    assert cfg.quality_exponent == 8.0
+    assert cfg.quality_exponent == 1.0
 
 
 def test_build_ultrack_config_forwards_bias_to_tracking_config(monkeypatch, tmp_path):
@@ -97,9 +97,9 @@ def test_tracking_config_exposes_atom_extraction_params():
     cfg = TrackingConfig()
     assert cfg.fg_window == 51
     assert cfg.fg_cutoff == 0.002
-    assert cfg.contour_window == 51
-    assert cfg.contour_floor == 0.01
-    assert cfg.atom_min_area == 100
+    assert cfg.contour_window == 20
+    assert cfg.contour_floor == 0.05
+    assert cfg.atom_min_area == 10
 
 
 def test_tracking_config_atom_params_override():

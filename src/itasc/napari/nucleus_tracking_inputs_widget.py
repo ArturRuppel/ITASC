@@ -41,7 +41,7 @@ class NucleusTrackingInputsWidget(QWidget):
 
         # ─── DB Generation — Atom-Union Candidates ──────────────────
         self.db_gen_min_area_spin = _islider(
-            0, 1_000_000, 100, tooltip="Minimum single-atom candidate area in pixels.")
+            0, 1_000_000, 20, tooltip="Minimum single-atom candidate area in pixels.")
         self.atom_union_max_area_spin = _islider(
             0, 100_000, 8000, tooltip="Maximum total pixel area of a candidate union.")
         self.atom_overlap_budget_spin = _islider(
@@ -57,10 +57,11 @@ class NucleusTrackingInputsWidget(QWidget):
         self.db_gen_max_area_spin = _islider(0, 10_000_000, 100_000, tooltip="")
 
         # ─── DB Generation — Linking ────────────────────────────────
-        self.db_gen_max_dist_spin = _dslider(0, 500, 15.0, 1.0, 1)
-        self.db_gen_max_neighbors_spin = _islider(1, 50, 5)
+        self.db_gen_max_dist_spin = _dslider(0, 500, 30.0, 1.0, 1)
+        self.db_gen_max_neighbors_spin = _islider(1, 50, 10)
         self.db_gen_linking_mode_combo = QComboBox()
         self.db_gen_linking_mode_combo.addItems(["default", "shape"])
+        self.db_gen_linking_mode_combo.setCurrentText("shape")
         self.db_gen_area_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
         self.db_gen_area_weight_spin.setEnabled(False)
         self.db_gen_iou_weight_spin = _dslider(0, 10, 1.0, 0.1, 2)
@@ -74,7 +75,7 @@ class NucleusTrackingInputsWidget(QWidget):
             "Weight applied to signal-based segmentation quality.",
         )
         self.db_gen_quality_exp_spin = _dslider(
-            0.1, 50, 8.0, 0.5, 2,
+            0.1, 50, 1.0, 0.5, 2,
             "Raises the combined quality and circularity score before storing as node_prob.",
         )
         self.db_gen_circularity_weight_spin = _dslider(
