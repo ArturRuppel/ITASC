@@ -368,10 +368,14 @@ def _resolve_optional_with_base(
 
 
 def _path_for_csv(path: Path, base_dir: Path) -> str:
+    # Normalise to forward slashes so the catalog stays a portable artifact:
+    # os.path.relpath emits the host separator (``\`` on Windows), and a
+    # backslash-separated relative path fails to load on POSIX (Path treats it
+    # as a literal filename, not a separator). Forward slashes load on both.
     try:
-        return os.path.relpath(path, start=base_dir)
+        return Path(os.path.relpath(path, start=base_dir)).as_posix()
     except ValueError:
-        return str(path)
+        return Path(path).as_posix()
 
 
 def _optional_path_for_csv(path: Path | str | None, base_dir: Path) -> str:

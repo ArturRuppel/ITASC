@@ -59,6 +59,32 @@ def test_read_corrections_cache_invalidates_on_write(pos_dir):
     assert len(read_corrections(pos_dir)) == 2
 
 
+def test_cache_invalidates_when_stat_signature_cannot_distinguish_writes(
+    pos_dir, monkeypatch
+):
+    """Two same-size writes can share a (mtime_ns, size) signature on coarse-mtime
+    filesystems (Windows, FAT/exFAT, some NFS/overlay mounts). The writers must
+    invalidate the parse cache themselves, or the newer write is masked by a
+    stale parse. Freezing the signature to a constant reproduces the worst case:
+    neither mtime nor size ever changes between the two writes. Regression for
+    the Windows-CI failure in test_add_correction_replaces_same_cell_frame_kind.
+    """
+    import cellflow.tracking_ultrack.validation_state as vs
+
+    monkeypatch.setattr(vs, "_stat_signature", lambda p: (0, 0))
+
+    add_correction(pos_dir, Correction(cell_id=7, t=0, kind="anchor", y=1.0, x=2.0))
+    assert read_corrections(pos_dir) == [
+        Correction(cell_id=7, t=0, kind="anchor", y=1.0, x=2.0)
+    ]
+    # Same (cell, frame, kind), so this replaces the first and the serialised
+    # length is identical — the signature is stuck, but the read must still see it.
+    add_correction(pos_dir, Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0))
+    assert read_corrections(pos_dir) == [
+        Correction(cell_id=7, t=0, kind="anchor", y=3.0, x=4.0)
+    ]
+
+
 def test_read_corrections_returns_independent_copy(pos_dir):
     """Mutating the returned list must not corrupt the cached value."""
     add_correction(pos_dir, Correction(cell_id=1, t=0, kind="validated", y=1.0, x=1.0))

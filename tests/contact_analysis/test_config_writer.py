@@ -48,10 +48,18 @@ def test_quantities_empty_means_all(tmp_path):
 
 
 def test_string_escaping(tmp_path):
-    """Backslashes / quotes in a path survive the round trip."""
+    """Backslashes / quotes in a string value survive the round trip.
+
+    Asserted through a ``params`` value rather than ``catalog``: the writer's
+    escaping (``_toml_str``, shared by both) is what's under test, but a catalog
+    value is resolved through ``Path``, and on Windows a ``\\`` there is a path
+    separator, not a filename character — so a name like ``weird"\\name.csv`` is
+    unrepresentable there. A plain string field tests the escaping on every OS.
+    """
     path = tmp_path / "config.toml"
-    write_config(path, catalog=r'weird"\name.csv')
-    assert load_config(path).catalog.name == r'weird"\name.csv'
+    weird = 'weird"\\value'
+    write_config(path, catalog="catalog.csv", params={"label": weird})
+    assert load_config(path).params["label"] == weird
 
 
 def test_returns_written_path(tmp_path):

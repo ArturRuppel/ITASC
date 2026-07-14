@@ -283,7 +283,11 @@ def _compute_geodesic_unaries(
     T = fg_mask.shape[0]
     _report = progress_cb or (lambda msg: None)
 
-    if n_workers > 1:
+    if n_workers > 1 and "fork" in mp.get_all_start_methods():
+        # The parallel path relies on fork COW to share input arrays with
+        # workers (see _compute_geodesic_unaries_parallel). Where fork is
+        # unavailable — Windows only offers spawn, which re-imports rather than
+        # inheriting the module globals — fall through to the sequential loop.
         return _compute_geodesic_unaries_parallel(
             nuc_tracks, fg_mask, contours, label_ids, alpha_unary,
             foreground_scores=foreground_scores,

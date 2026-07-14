@@ -72,7 +72,9 @@ def test_relative_paths_resolve_against_config_dir(tmp_path):
 
 def test_absolute_paths_kept(tmp_path):
     abs_cat = tmp_path / "elsewhere" / "catalog.csv"
-    cfg_path = _write(tmp_path, f'catalog = "{abs_cat}"\n')
+    # Single-quoted TOML literal string: no escape processing, so a Windows
+    # absolute path's backslashes aren't parsed as (invalid) escape sequences.
+    cfg_path = _write(tmp_path, f"catalog = '{abs_cat}'\n")
 
     cfg = load_config(cfg_path)
 

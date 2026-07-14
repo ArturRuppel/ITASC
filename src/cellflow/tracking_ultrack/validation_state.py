@@ -149,6 +149,10 @@ def _write_validated_tracks(nucleus_dir: Path, data: dict[int, set[int]]) -> Non
         if frames
     }
     p.write_text(json.dumps(serialisable))
+    # Invalidate the parse cache explicitly: two same-size writes within the
+    # filesystem's mtime granularity (coarse on Windows/FAT/NFS) leave the
+    # (mtime_ns, size) signature unchanged, so a stale entry would survive.
+    _legacy_tracks_cache.pop(p, None)
 
 
 def read_validated_cells_at_frame(nucleus_dir: Path, t: int) -> set[int]:
@@ -300,6 +304,9 @@ def write_corrections(nucleus_dir: Path, corrections: Iterable[Correction]) -> N
         for c in sorted(corrections, key=lambda item: (item.t, item.cell_id, item.kind))
     ]
     p.write_text(json.dumps(serialisable))
+    # See _write_validated_tracks: same-size writes can share a (mtime_ns, size)
+    # signature on coarse-mtime filesystems, so invalidate the cache explicitly.
+    _corrections_cache.pop(p, None)
 
 
 def add_correction(nucleus_dir: Path, correction: Correction) -> None:
