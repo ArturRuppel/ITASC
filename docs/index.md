@@ -36,6 +36,15 @@ manual/core
 
 ```{toctree}
 :hidden:
+:caption: How it works
+
+explanation/index
+explanation/input-maps
+explanation/nucleus-tracking
+```
+
+```{toctree}
+:hidden:
 :caption: Reference
 
 api/index
