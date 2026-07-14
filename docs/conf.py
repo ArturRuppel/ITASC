@@ -94,14 +94,14 @@ intersphinx_mapping = {
 }
 
 # -- HTML output --------------------------------------------------------------
-html_theme = "pydata_sphinx_theme"
+html_theme = "furo"
 html_title = "ITASC"
 html_static_path = ["_static"]
 html_theme_options = {
-    "github_url": "https://github.com/ArturRuppel/ITASC",
-    "navbar_align": "content",
-    "show_prev_next": True,
     "navigation_with_keys": True,
+    "source_repository": "https://github.com/ArturRuppel/ITASC",
+    "source_branch": "main",
+    "source_directory": "docs/",
 }
 
 # Cross-references that don't resolve should be visible but not (yet) fatal.
