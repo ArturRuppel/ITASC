@@ -70,8 +70,13 @@ An empty napari window opens. In the menu bar at the top, click **Plugins →
 ITASC → ITASC**. A panel appears on the right of the window: that panel is ITASC.
 If it is there, the install worked.
 
-> 📷 **Screenshot:** the napari window just after opening the plugin, the ITASC
-> panel docked on the right with its stage sections collapsed.
+```{figure} ../_static/manual/01-open-panel.png
+:alt: An empty napari window with the ITASC panel docked on the right.
+:width: 100%
+
+napari just after opening the plugin: an empty viewer with the ITASC panel docked
+on the right. If the panel is there, the install worked.
+```
 
 If typing `napari` gives `command not found`, the terminal is an old one: close
 it and open a new one. If napari opens but there is no **ITASC** under

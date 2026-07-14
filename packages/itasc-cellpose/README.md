@@ -1,126 +1,103 @@
 # itasc-cellpose
 
-Standalone **Cellpose segment + track** tool. It works on **one or two channels**:
+The Cellpose stage on its own, run inside the napari viewer. Bind it to an image,
+get tracked labels back, correct them, and keep what you want. Reach for it when
+you already have a stack open and want [Cellpose](https://github.com/MouseLand/cellpose)
+masks and time tracks without the full pipeline's project folder.
 
-- **One channel**: run a local Cellpose-SAM model for **native masks**, then link
-  them across time with [`laptrack`](https://github.com/yfukai/laptrack) into
-  tracked labels, a self-contained "segment then track" product.
-- **Two channels**: **joint** mode (and only joint mode). The first channel is
-  the anchor (segmented + tracked); the second channel's foreground is flowed onto
-  it, giving one second-channel object per anchor object, sharing its track id.
+That absence is the main difference from the full `itasc[all]` app, which works
+through a folder on disk, each stage reading and writing files. This tool touches
+no folder: a run leaves its results in the viewer, and nothing is saved unless you
+choose to.
 
-It does not need the rest of the ITASC pipeline. Every result is added to the
-napari viewer as a layer, and **there is no output directory**: you save whichever
-layers you want via napari's own *Save Selected Layers*. There is no
-nucleus/cell vocabulary; conventionally Channel 1 is the nucleus and Channel 2
-the cell, but nothing assumes it.
+![The Cellpose Segment + Track panel in napari, with nucleus and cell images bound to its two channels.](../../docs/_static/manual/cellpose-setup.png)
 
-> The integrated ITASC app uses this distribution's Cellpose runner and
-> divergence maps for its in-app stage; those modules still ship here and are
-> imported directly by the orchestrator. This README covers the **standalone**
-> napari surface, which is the segment + track tool.
+*The **Cellpose Segment + Track** panel, with the open `nucleus` and `cell` images
+bound to its two channels. The controls above tune the segmentation.*
+
+## One channel or two
+
+With one channel, Cellpose finds the objects in each frame and links them across
+time into tracks with [`laptrack`](https://github.com/yfukai/laptrack). The shapes
+are Cellpose's own, drawn directly; the full app stops a step earlier and builds
+its shapes another way.
+
+With a second channel, the two are read together, so the first helps Cellpose find
+the objects in the second: a nucleus channel makes the cell bodies come out much
+cleaner. Each object in the second channel is matched to one in the first and
+inherits its track, so a cell carries the identity of the nucleus inside it. By
+convention the first channel is the nucleus and the second the cell, though the
+tool does not require it.
+
+![A finished two-channel run in napari, with tracked label layers over the inputs and the Correction panel open.](../../docs/_static/manual/cellpose-result.png)
+
+*A finished two-channel run. The tracked `[Channel 1]` and `[Channel 2]` labels sit
+above the `nucleus` and `cell` inputs; the **Correction** panel below edits
+whichever labels are active. Nothing is saved until you save the layers.*
+
+## Running it
+
+Select an image in the viewer and bind it to a channel with the channel's bind
+button; there is no file to open. **Preview** (▷) tries the current frame so you
+can adjust the controls before committing; it also shows the probability and flow
+maps Cellpose works from. **Segment** (▶) runs the whole stack, and **Track** (⊳)
+links the objects across time. Bind a second channel to read the two together.
+
+The results arrive as label layers. Correct any mistakes in the panel below, then
+save the layers you want with **File → Save Selected Layers**.
+
+## Correcting labels
+
+The **Correction** panel edits whichever label layer is active, in place. Its tools
+are adapted from [EpiCure](https://github.com/Image-Analysis-Hub/Epicure):
+
+- **Select** a cell with left-click, **spawn** one with middle-click on empty
+  space, **erase** one with middle-click (or `Delete`).
+- **Merge** two cells with `Ctrl`+left, **draw or split** with `Shift`+left or
+  right-drag.
+- **Swap or attach to a track** with `Ctrl`+right, **grow or link the selected
+  track** with `Ctrl`+middle.
+- **Retrack** from the current frame outward: `E` forward, `Q` backward.
+- Fill holes, clear stranded fragments, and `Ctrl+Z` to undo.
+
+Save the corrected layer with **File → Save Selected Layers**.
 
 ## Install
 
 ```bash
-pip install itasc-cellpose                       # package + Qt-free helpers
-pip install "itasc-cellpose[cellpose]"           # + the Cellpose-SAM model
-pip install "itasc-cellpose[cellpose,laptrack]"  # + the laptrack tracker
+pip install "itasc-cellpose[cellpose,laptrack]"
 ```
 
-This pulls in `itasc-core`. Everything installs into the shared `itasc.*`
-namespace (PEP 420), so `import itasc.cellpose` works with or without the full
-orchestrator. The model (`cellpose`, `torch`, `torchvision`) is the `[cellpose]`
-extra and `laptrack`/`pandas` are the `[laptrack]` extra, both imported lazily,
-so importing the package does not require them.
+The `[cellpose]` extra adds the Cellpose-SAM model (`cellpose`, `torch`,
+`torchvision`), `[laptrack]` adds the time tracker; both are imported lazily, so
+`import itasc.cellpose` works without them. To run it as a napari app instead of
+installing into your own environment, the
+[install guide](https://arturruppel.github.io/ITASC/manual/install.html) sets up
+napari and the tool together.
 
-## Use
+## Scripting
 
-- **napari plugin:** add the *Cellpose Segment + Track* widget. Each channel
-  takes its input from the **active image layer**: select an image in the viewer
-  and click the channel's `⧉` pill to bind it. There is no file loading and
-  **no layout to declare**. That pill then doubles as a status light: it stays lit
-  while its bound layer is in the viewer and goes dark (releasing the channel) when
-  the layer is removed.
-  - **Channel 1**: the anchor stack (typically the nucleus).
-  - **Channel 2**: optional second stack (typically the cell).
+The rest of this page is reference for scripting the tool; skip it if you only
+drive the widget. Everything the widget does is available headless and Qt-free
+under `itasc.cellpose`:
 
-  Every plane is segmented individually, so the input shape needs no `2D/2D+t/3D/
-  3D+t` selection. Axis identity only matters for tracking, and is inferred: the
-  last two axes are `Y, X`; of the remaining leading axes the **shorter is `Z`**
-  and the longer is **time** (the preview status shows the inferred `T`/`Z`).
+```python
+import tifffile
+from itasc.cellpose import cellpose_runner, native_masks, track_laptrack
 
-  **Channel 1** carries the single-channel pipeline and surfaces three maps from a
-  single Cellpose pass: the **native masks**, the **sigmoid probability map**, and
-  the **flow** (HSV-coloured by direction). **Preview** (▷) runs them on the
-  **current frame only** so you can tune diameter / min-size / gamma and the
-  **Prob threshold** (a `[0, 1]` cutoff read in the prob-map image's own space,
-  `0.5` = Cellpose's default; reversed through the inverse sigmoid to the raw
-  `cellprob` Cellpose thresholds, where lower finds more and larger masks and
-  higher is stricter), the **Flow error tolerance** (Cellpose's `flow_threshold`,
-  relabelled so its direction reads right: it is the per-mask flow-error budget, so
-  *higher is more permissive*; `0.4` default, `0` disables the QC and keeps every
-  mask; this, not Prob threshold, is usually the knob that gates how many masks
-  survive) and **Iterations** (`niter` flow steps, `0` = auto) against what you
-  see; **Segment**
-  (▶) runs the whole stack and **streams** each frame into the viewer as it is
-  computed, so the masks/prob/flow layers fill in live instead of appearing only
-  at the end. **Track** (⊳) links the masks **axis-by-axis**: it stitches the `z`
-  axis by overlap (so an object spanning planes becomes one), then tracks time by
-  motion with laptrack (max-distance / frame-gap, in the *Channel 2 & tracking
-  parameters* section). Results land as layers tagged `[Channel 1]` (`… masks`,
-  `… prob`, `… flow`, `… tracked`, and `… preview` / `… prob preview` /
-  `… flow preview`); save whichever you want via napari.
+stack = cellpose_runner.to_tzyx(tifffile.imread("cell.tif"), "2D+t")
+params = cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+masks = native_masks.run_cell_masks_stack(stack, params)       # (T, Z, Y, X)
+tracked = track_laptrack.track_masks(masks, max_distance=15.0)  # tracked labels
+```
 
-  **Channel 2** is never segmented on its own: it is always run *jointly*. Once a
-  second channel is set its two actions mirror Channel 1's: **Preview** (▷) runs
-  the joint assignment on the current frame so you can tune the Channel-2 params
-  first, and **Run** (▶) commits it over the whole stack. Either way Channel 1 is
-  segmented + tracked, then each Channel-2 foreground pixel is flowed along
-  Cellpose's flow field (blended with a pull toward the nearest Channel-1 object)
-  and assigned to one. You get **one Channel-2 object per Channel-1 object, sharing
-  its track id**: `[Channel 1] tracked` and `[Channel 2] tracked` are paired by
-  construction (Channel 2 is tracked by inheriting Channel 1's tracks, not a
-  separate tracker). *Channel 2 & tracking parameters*: **Diameter/Min size/Gamma**
-  shape its Cellpose flow field; **FG threshold** (foreground cutoff on the
-  sigmoid), **Flow weight** (Cellpose flow vs. pull-to-anchor) and **Max assign
-  radius** (foreground farther than this from any anchor is left unassigned) drive
-  the assignment; **Max distance / Max frame gap** tune the Channel-1 tracker that
-  both the joint anchor and Channel 1's own Track action run.
+**Input** is any 2-D to 4-D image layer per channel, bound from the active layer;
+there is no file loading and no layout to declare. Every plane is segmented
+individually; for tracking the shorter leading axis is read as `Z`, the longer as
+time. Channel 1 is required, Channel 2 optional. **Output** is napari layers, not
+files: `int32` Labels layers tagged `[Channel 1]` and `[Channel 2]`, saved with
+napari's *Save Selected Layers*.
 
-  The embedded **Correction** panel (the ultrack/OverlapDB-free cell corrector)
-  edits whatever **Labels** layer is currently active (typically `[Channel 2]
-  tracked`) in place, with the full DB-free toolkit: **select** (left-click),
-  **spawn** (middle-click empty space), **erase** (middle-click a cell or
-  `Delete`), **merge** (`Ctrl`+left), **swap / attach to track** (`Ctrl`+right),
-  **grow / link the selected track** (`Ctrl`+middle), **draw / split** (`Shift`+
-  left / right-drag), plus **fill-holes** and **stranded-fragment cleanup** and
-  `Ctrl+Z` undo. A built-in **retracker** re-links the tracks from the current
-  frame outward by geometric similarity: **`E`** forward, **`Q`** backward (the
-  *Retrack max dist* parameter gates a match). It targets 2D+t (single-Z) labels;
-  save the corrected layer via napari.
-
-- **Headless / scripting:**
-
-  ```python
-  import tifffile
-  from itasc.cellpose import cellpose_runner, native_masks, track_laptrack
-
-  stack = cellpose_runner.to_tzyx(tifffile.imread("cell.tif"), "2D+t")
-  params = cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0)
-  masks = native_masks.run_cell_masks_stack(stack, params)       # (T, Z, Y, X)
-  tracked = track_laptrack.track_masks(masks, max_distance=15.0)  # tracked labels
-  ```
-
-## I/O contract
-
-- **Input:** any 2-D..4-D image layer per channel, bound from the **active layer**
-  via the channel's `⧉` pill (there is no file loading). There is no required
-  `0_input/` layout and **no layout to declare**. Every plane is segmented
-  individually; for tracking the shorter leading axis is read as `Z`, the longer
-  as time. Channel 1 is required; Channel 2 is optional (and turns the run into
-  joint mode). The headless API below still reads `.tif` files directly.
-- **Output:** napari **layers**, not files. Masks/tracked/preview are added as
-  `int32` Labels layers tagged `[Channel 1]` / `[Channel 2]` (singleton-Z squeezed
-  to `(T, Y, X)` for 2D+t data); the user saves them with napari's *Save Selected
-  Layers*. The headless API above still returns plain `(T, Z, Y, X)` arrays.
+> The integrated ITASC app reuses this distribution's Cellpose runner for its own
+> in-app stage; those modules ship here and are imported by the orchestrator. This
+> document covers the standalone napari tool.
