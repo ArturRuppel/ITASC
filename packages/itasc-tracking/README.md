@@ -1,55 +1,45 @@
 # itasc-tracking
 
-Independent ITASC piece for **nucleus tracking and interactive correction**. It
-turns 2D+t foreground and contour maps into Ultrack candidate segments, a tracking
-database, solved tracks, and validated, corrected nucleus labels, all from a
-napari plugin.
+The nucleus tracking stage on its own, run inside the napari viewer. It takes the
+foreground and contour maps Cellpose produced and turns them into tracked,
+correctable nucleus labels, using the [Ultrack](https://github.com/royerlab/ultrack)
+solver. Reach for it when you already have those maps and want tracks without the
+full pipeline's project folder.
+
+This is [Stage 2 of the full app](https://arturruppel.github.io/ITASC/manual/full-app.html#stage-2-nucleus-segmentation-and-tracking),
+lifted out on its own. Everything it does, from atom extraction through the solve
+to the correction pass, works exactly as it does there, so that page is the
+explanation: read it for what each button does and how to correct the tracks.
+
+![The Ultrack Segment + Track panel in napari, with foreground, contours, and output paths set.](../../docs/_static/manual/tracking-setup.png)
+
+*The **Ultrack Segment + Track** panel. The three fields point it at the two input
+maps and the folder for its results; the buttons below run the stages top to bottom.*
+
+## The one difference
+
+The full app reads and writes through a project folder, one position at a time.
+This tool takes files instead: point **Foreground** at the foreground map, **Contours**
+at the contour map, and **Output dir** at a folder for the results (it defaults to the
+foreground file's folder). The two inputs can have any name and live anywhere. Run the
+stages top to bottom, correct the tracks, and the results land in the output folder.
 
 ## Install
 
 ```bash
-pip install itasc-tracking          # correction + browsing
-pip install "itasc-tracking[solve]" # + the Ultrack solver (db build / track)
+pip install "itasc-tracking[solve]"
 ```
 
-This pulls in `itasc-core`. Everything installs into the shared `itasc.*`
-namespace (PEP 420), so `import itasc.tracking_ultrack` works whether or not
-the full ITASC orchestrator is present. The Ultrack engine is only imported
-lazily when you actually run candidate generation / linking / solving, so
-correction-only use does not require the `[solve]` extra.
+The `[solve]` extra adds the Ultrack solver, imported only when you build the database
+or solve; correction-only use does not need it. To run it as a napari app instead of
+installing into your own environment, the
+[install guide](https://arturruppel.github.io/ITASC/manual/install.html) sets up napari
+and the tool together.
 
-## Use
+## For scripting
 
-- **napari plugin:** launch napari and add the *Ultrack Segment + Track*
-  widget. It exposes three path fields:
-  - **Foreground**: the foreground probability/intensity `.tif` (2D+t).
-  - **Contours**: the contour/boundary `.tif` (2D+t).
-  - **Output dir**: where every artifact is written (defaults to the
-    foreground file's folder when left blank).
-
-  The two inputs can have any name and live anywhere.
-- **Standalone path contract:**
-
-  ```text
-  <foreground.tif>            (in, any name/location)
-  <contours.tif>             (in, any name/location)
-  output_dir/
-    atoms.tif                 (out)
-    ultrack_workdir/data.db   (out)
-    tracked_labels.tif        (out)
-    validated_cells.json      (out)
-    corrections.json          (out)
-  ```
-
-The full `itasc` orchestrator drives the same widget through its staged
-`<pos>/1_cellpose` + `<pos>/2_nucleus` layout instead; the piece supports both
-via `itasc.napari._paths.NucleusWorkspace` (`files()` / `flat()` vs
-`staged()`).
-
-## Backend
-
-The headless backend lives under `itasc.tracking_ultrack` (candidate atoms,
-database build, linking, solving, export, correction primitives, and the
-`validation_state` validation/correction annotation store) and
-`itasc.correction` (label-edit helpers). Generic tracked-label-stack IO is
-shared substrate in `itasc.core.label_store`.
+The headless backend lives under `itasc.tracking_ultrack` (atoms, database, linking,
+solving, export, correction) and `itasc.correction` (label edits), Qt-free and importable
+without the full app. The
+[full-app guide](https://arturruppel.github.io/ITASC/manual/full-app.html) covers the
+pipeline this stage sits in.
