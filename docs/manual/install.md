@@ -83,7 +83,7 @@ it and open a new one. If napari opens but there is no **ITASC** under
 **Plugins**, run the install command again.
 
 With the panel open, the [full-app guide](full-app.md) walks through where your
-files live on disk and the five stages in order.
+files live on disk and the four stages in order.
 
 ## Graphics card (GPU)
 

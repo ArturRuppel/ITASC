@@ -8,6 +8,15 @@ time, lets you correct the result by hand where the automatics miss, and
 measures what the tracked cells do. It is a [napari](https://napari.org) plugin
 built for dense, motile monolayers, where segmentation and tracking are often difficult.
 
+Dense epithelial monolayers are where automatic segmentation and tracking break
+down: cells are crowded, they change shape frame to frame, and they slide past
+one another, so a fully automatic pipeline leaves errors that corrupt every
+measurement built on top of the tracks. ITASC pairs strong automatic methods
+(Cellpose-SAM, Ultrack) with the interactive correction such data demands, and
+holds the corrected labels and the quantities derived from them in one project
+folder. The effort a monolayer needs is spent once, at the point of correction,
+and carried through to the numbers.
+
 <!-- hero-start -->
 <p align="center">
   <img src="docs/_static/napari_timelapse_last.png"
@@ -44,7 +53,7 @@ which covers how to install it and how to use it.
 | **Dense, motile cells of varying shape** (a confluent monolayer), from raw stacks to quantified contacts | [itasc\[all\]](https://arturruppel.github.io/ITASC/manual/full-app.html) | The unified `ITASC` workflow widget, every stage end to end. |
 | **Sparse, well-separated cells** with a cell and/or nucleus marker, to segment and track one or both channels | [itasc-cellpose](https://arturruppel.github.io/ITASC/manual/cellpose.html) | A local Cellpose-SAM runner for segmentation, then `laptrack` linking across time, plus manual correction of tracks and masks (adapted from [EpiCure](https://github.com/Image-Analysis-Hub/Epicure)). One channel or two. |
 | **Foreground and contour maps already**, to skip the cellpose step | [itasc-tracking](https://arturruppel.github.io/ITASC/manual/tracking.html) | Ultrack candidate database, solving, browsing, and interactive segmentation and tracking correction. |
-| **Tracked cell labels already**, and you want the aggregate quantification | [itasc-aggregate](https://arturruppel.github.io/ITASC/manual/aggregate.html) | Cell-cell edges, border edges, and T1 events to HDF5, aggregate quantification to `.csv`. |
+| **Tracked labels for a set of positions** (cell and/or nucleus), to quantify and pool them | [itasc-aggregate](https://arturruppel.github.io/ITASC/manual/aggregate.html) | Contact analysis per position (cell-cell edges, border edges, T1 events to HDF5), then aggregate quantification pooled across the project to `.csv`. Partial data is fine. |
 | **Code to build on** | [itasc-core](https://arturruppel.github.io/ITASC/manual/core.html) | TIFF/path/label-IO helpers, the lineage model, and napari UI primitives. |
 
 ## Built on
@@ -82,6 +91,16 @@ ITASC is approaching its first public release and JOSS submission. The four
 stages and the file-based project layout are settled and in active research use.
 Installation and the public API are close to final: expect small changes before
 the release and its accompanying manuscript.
+
+## Contributing and support
+
+Bug reports, questions, and pull requests are welcome. Open an
+[issue](https://github.com/ArturRuppel/ITASC/issues) to report a problem or ask a
+usage question (label it `question`), and see
+[`CONTRIBUTING.md`](https://github.com/ArturRuppel/ITASC/blob/main/CONTRIBUTING.md)
+for how to set up a development environment and send a change. For
+pre-publication or scientific questions, contact Artur Ruppel at
+`artur@ruppel.pro`.
 
 ## Citing ITASC
 
