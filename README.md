@@ -41,11 +41,11 @@ which covers how to install it and how to use it.
 
 | If you have… | Reach for | It gives you |
 | --- | --- | --- |
-| **Dense, motile cells of varying shape** (a confluent monolayer), from raw stacks to quantified contacts | [itasc\[all\]](docs/manual/full-app.md) | The unified `ITASC` workflow widget, every stage end to end. |
-| **Sparse, well-separated cells** with a cell and/or nucleus marker, to segment and track one or both channels | [itasc-cellpose](docs/manual/cellpose.md) | A local Cellpose-SAM runner for segmentation, then `laptrack` linking across time, plus manual correction of tracks and masks (adapted from [EpiCure](https://github.com/Image-Analysis-Hub/Epicure)). One channel or two. |
-| **Foreground and contour maps already**, to skip the cellpose step | [itasc-tracking](docs/manual/tracking.md) | Ultrack candidate database, solving, browsing, and interactive segmentation and tracking correction. |
-| **Tracked cell labels already**, and you want the aggregate quantification | [itasc-aggregate](docs/manual/aggregate.md) | Cell-cell edges, border edges, and T1 events to HDF5, aggregate quantification to `.csv`. |
-| **Code to build on** | [itasc-core](docs/manual/core.md) | TIFF/path/label-IO helpers, the lineage model, and napari UI primitives. |
+| **Dense, motile cells of varying shape** (a confluent monolayer), from raw stacks to quantified contacts | [itasc\[all\]](https://arturruppel.github.io/ITASC/manual/full-app.html) | The unified `ITASC` workflow widget, every stage end to end. |
+| **Sparse, well-separated cells** with a cell and/or nucleus marker, to segment and track one or both channels | [itasc-cellpose](https://arturruppel.github.io/ITASC/manual/cellpose.html) | A local Cellpose-SAM runner for segmentation, then `laptrack` linking across time, plus manual correction of tracks and masks (adapted from [EpiCure](https://github.com/Image-Analysis-Hub/Epicure)). One channel or two. |
+| **Foreground and contour maps already**, to skip the cellpose step | [itasc-tracking](https://arturruppel.github.io/ITASC/manual/tracking.html) | Ultrack candidate database, solving, browsing, and interactive segmentation and tracking correction. |
+| **Tracked cell labels already**, and you want the aggregate quantification | [itasc-aggregate](https://arturruppel.github.io/ITASC/manual/aggregate.html) | Cell-cell edges, border edges, and T1 events to HDF5, aggregate quantification to `.csv`. |
+| **Code to build on** | [itasc-core](https://arturruppel.github.io/ITASC/manual/core.html) | TIFF/path/label-IO helpers, the lineage model, and napari UI primitives. |
 
 ## Built on
 
@@ -71,9 +71,9 @@ depends on one, please cite it:
 
 ## Documentation
 
-- [User guide](docs/index.md): install, the staged workflow, and driving the
+- [User guide](https://arturruppel.github.io/ITASC/): install, the staged workflow, and driving the
   plugin.
-- [API reference](docs/api/index.md): the programmatic API, generated
+- [API reference](https://arturruppel.github.io/ITASC/api/index.html): the programmatic API, generated
   from the source.
 
 ## Status
