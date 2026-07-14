@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.seed_prior import (
+from itasc.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.seed_prior import (
     _seed_node_prob,
     compute_drop_frac,
     compute_mask_circularity,

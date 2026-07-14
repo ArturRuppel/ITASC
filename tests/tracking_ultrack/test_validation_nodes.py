@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack._node_geometry import node_bbox_and_mask, node_pickle_ndim
-from cellflow.tracking_ultrack.validation_nodes import inject_validated_nodes
+from itasc.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack._node_geometry import node_bbox_and_mask, node_pickle_ndim
+from itasc.tracking_ultrack.validation_nodes import inject_validated_nodes
 
 pytest.importorskip("ultrack")
 

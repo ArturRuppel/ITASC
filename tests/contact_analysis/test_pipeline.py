@@ -17,9 +17,9 @@ import numpy as np
 import pandas as pd
 import tifffile
 
-from cellflow.contact_analysis import pipeline
-from cellflow.contact_analysis.quantifier import Quantifier
-from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+from itasc.contact_analysis import pipeline
+from itasc.contact_analysis.quantifier import Quantifier
+from itasc.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
 
 
 # --------------------------------------------------------------------- helpers
@@ -127,7 +127,7 @@ def test_build_quantities_only_builds_producers(tmp_path):
     A non-producer/derived quantifier (mirrors cell_shape, neighbor_count, …) is
     never built — even when its required input is already sitting on disk — since
     it is instead pooled in memory (``compute_object_table``) by ``aggregate``."""
-    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
+    from itasc.contact_analysis.quantifier import OUTPUT_SUBDIR
 
     producer = _ProducerQuantifier()
     consumer = _ConsumerQuantifier()
@@ -200,7 +200,7 @@ def test_build_quantities_defaults_to_registered_quantifiers(tmp_path):
     registered *producer* (contacts) — a registered cheap quantity like
     cell_shape is never written per-position; it only exists pooled (in
     memory) once ``aggregate`` computes it via ``compute_object_table``."""
-    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
+    from itasc.contact_analysis.quantifier import OUTPUT_SUBDIR
 
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
@@ -237,7 +237,7 @@ def test_build_catalog_discovers_and_writes_skeleton(tmp_path):
 
     assert [r["id"] for r in records] == ["pos1"]
     assert out_csv.is_file()
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     # The discovered per-folder id persists as a ``position_id`` classification
     # column (``id`` is reserved for the pooled row-id downstream).
@@ -275,7 +275,7 @@ def test_pipeline_build_aggregate_round_trip(tmp_path):
 
 
 def test_select_quantifiers_empty_is_every_registered():
-    from cellflow.contact_analysis.quantifier import available_quantifiers
+    from itasc.contact_analysis.quantifier import available_quantifiers
 
     selected = {type(q).quantity_id for q in pipeline.select_quantifiers(())}
     assert selected == {cls.quantity_id for cls in available_quantifiers()}
@@ -300,7 +300,7 @@ def test_select_quantifiers_unknown_raises():
 
 
 def test_run_from_config_round_trip(tmp_path):
-    from cellflow.contact_analysis.catalog import save_catalog
+    from itasc.contact_analysis.catalog import save_catalog
 
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1
@@ -338,7 +338,7 @@ def test_run_from_config_round_trip(tmp_path):
 
 
 def test_run_defaults_out_dir_to_catalogue_root(tmp_path):
-    from cellflow.contact_analysis.catalog import save_catalog
+    from itasc.contact_analysis.catalog import save_catalog
 
     frame = np.zeros((6, 8), dtype=np.uint16)
     frame[:, :4] = 1

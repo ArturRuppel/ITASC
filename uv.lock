@@ -587,7 +587,7 @@ wheels = [
 ]
 
 [[package]]
-name = "cellflow"
+name = "itasc"
 version = "0.2.0"
 source = { editable = "." }
 dependencies = [
@@ -658,7 +658,7 @@ tracking = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cellflow", extras = ["cellpose", "tracking"], marker = "extra == 'all'" },
+    { name = "itasc", extras = ["cellpose", "tracking"], marker = "extra == 'all'" },
     { name = "cellpose", marker = "extra == 'cellpose'", specifier = ">=4.0" },
     { name = "h5py" },
     { name = "matplotlib", specifier = ">=3.9.4" },

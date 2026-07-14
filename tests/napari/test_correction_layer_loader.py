@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_layer_loader import (
+from itasc.napari.correction._correction_layer_loader import (
     add_correction_image_layer,
     add_tracked_labels_and_track_layer,
     remove_other_correction_label_layers,

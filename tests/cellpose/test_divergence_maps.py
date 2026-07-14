@@ -1,4 +1,4 @@
-"""Unit tests for cellflow.cellpose.divergence_maps."""
+"""Unit tests for itasc.cellpose.divergence_maps."""
 from __future__ import annotations
 
 import numpy as np
@@ -6,7 +6,7 @@ import pytest
 
 
 def test_sigmoid_clamps_extreme_logits():
-    from cellflow.cellpose.divergence_maps import sigmoid
+    from itasc.cellpose.divergence_maps import sigmoid
 
     x = np.array([-1e6, 0.0, 1e6], dtype=np.float32)
     out = sigmoid(x)
@@ -17,7 +17,7 @@ def test_sigmoid_clamps_extreme_logits():
 
 
 def test_foreground_from_prob_mean_matches_sigmoid_mean():
-    from cellflow.cellpose.divergence_maps import foreground_from_prob
+    from itasc.cellpose.divergence_maps import foreground_from_prob
 
     rng = np.random.default_rng(0)
     prob = rng.normal(0, 3, size=(2, 4, 5, 6)).astype(np.float32)
@@ -29,7 +29,7 @@ def test_foreground_from_prob_mean_matches_sigmoid_mean():
 
 
 def test_foreground_from_prob_max_matches_sigmoid_max():
-    from cellflow.cellpose.divergence_maps import foreground_from_prob
+    from itasc.cellpose.divergence_maps import foreground_from_prob
 
     prob = np.array(
         [[[[-2.0, 2.0]], [[0.0, -3.0]]]],  # T=1, Z=2, Y=1, X=2
@@ -42,7 +42,7 @@ def test_foreground_from_prob_max_matches_sigmoid_max():
 
 
 def test_foreground_from_prob_rejects_unknown_reduction():
-    from cellflow.cellpose.divergence_maps import foreground_from_prob
+    from itasc.cellpose.divergence_maps import foreground_from_prob
 
     prob = np.zeros((1, 1, 1, 1), dtype=np.float32)
     with pytest.raises(ValueError, match="reduction"):
@@ -50,7 +50,7 @@ def test_foreground_from_prob_rejects_unknown_reduction():
 
 
 def test_divergence_2d_linear_field_returns_constant():
-    from cellflow.cellpose.divergence_maps import divergence_2d
+    from itasc.cellpose.divergence_maps import divergence_2d
 
     # dy(y, x) = 2y -> d_dy/d_y = 2; dx(y, x) = 3x -> d_dx/d_x = 3; sum = 5.
     y, x = np.mgrid[0:8, 0:8].astype(np.float32)
@@ -63,7 +63,7 @@ def test_divergence_2d_linear_field_returns_constant():
 
 
 def test_divergence_2d_rejects_wrong_shape():
-    from cellflow.cellpose.divergence_maps import divergence_2d
+    from itasc.cellpose.divergence_maps import divergence_2d
 
     with pytest.raises(ValueError, match=r"\(2, Y, X\)"):
         divergence_2d(np.zeros((3, 4, 5), dtype=np.float32))
@@ -74,7 +74,7 @@ def test_divergence_2d_rejects_wrong_shape():
 def test_divergence_2d_handles_singleton_axis():
     """A 1-pixel Y or X axis must not crash np.gradient; the divergence
     contribution along a singleton axis is simply zero."""
-    from cellflow.cellpose.divergence_maps import divergence_2d
+    from itasc.cellpose.divergence_maps import divergence_2d
 
     # 1-pixel-tall field: only the x-gradient contributes (dx = 3x -> 3).
     y, x = np.mgrid[0:1, 0:6].astype(np.float32)
@@ -96,7 +96,7 @@ def test_divergence_2d_handles_singleton_axis():
 
 
 def test_contour_from_dp_skips_filters_when_off(monkeypatch):
-    import cellflow.cellpose.divergence_maps as dm
+    import itasc.cellpose.divergence_maps as dm
 
     calls = {"median": 0, "gaussian": 0}
 
@@ -123,7 +123,7 @@ def test_contour_from_dp_skips_filters_when_off(monkeypatch):
 
 
 def test_contour_from_dp_clips_negative_divergence():
-    from cellflow.cellpose.divergence_maps import contour_from_dp
+    from itasc.cellpose.divergence_maps import contour_from_dp
 
     # Construct a convergent field (div < 0 interior) -- all output should be 0.
     y, x = np.mgrid[0:6, 0:6].astype(np.float32)
@@ -139,7 +139,7 @@ def test_contour_from_dp_clips_negative_divergence():
 
 
 def test_contour_from_dp_invokes_filters_in_order(monkeypatch):
-    import cellflow.cellpose.divergence_maps as dm
+    import itasc.cellpose.divergence_maps as dm
 
     order: list[str] = []
 
@@ -165,7 +165,7 @@ def test_contour_from_dp_invokes_filters_in_order(monkeypatch):
 
 
 def test_contour_from_dp_reduces_max_vs_mean():
-    from cellflow.cellpose.divergence_maps import contour_from_dp
+    from itasc.cellpose.divergence_maps import contour_from_dp
 
     # T=1, Z=2; z=0 has zero div, z=1 has +1 div.
     y, x = np.mgrid[0:6, 0:6].astype(np.float32)
@@ -183,7 +183,7 @@ def test_contour_from_dp_reduces_max_vs_mean():
 
 def test_build_divergence_maps_writes_and_reports(tmp_path):
     import tifffile
-    from cellflow.cellpose.divergence_maps import (
+    from itasc.cellpose.divergence_maps import (
         DivergenceMapsReport, build_divergence_maps,
     )
 
@@ -232,7 +232,7 @@ def test_build_divergence_maps_writes_and_reports(tmp_path):
 def test_build_divergence_maps_rejects_empty_stack(tmp_path):
     """A T=0 stack must raise cleanly, not crash in np.stack([])."""
     import tifffile
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from itasc.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((0, 3, 5, 6), dtype=np.float32)
     dp = np.zeros((0, 3, 2, 5, 6), dtype=np.float32)
@@ -258,7 +258,7 @@ def test_build_divergence_maps_rejects_do_3d_flows(tmp_path):
     """do_3d=True yields (T,3,Z,Y,X) flows the divergence builder can't consume;
     it must say so clearly instead of a cryptic shape error or silent misread."""
     import tifffile
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from itasc.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((2, 4, 6, 6), dtype=np.float32)       # (T, Z, Y, X)
     dp = np.zeros((2, 3, 4, 6, 6), dtype=np.float32)      # (T, 3, Z, Y, X) — do_3d
@@ -282,7 +282,7 @@ def test_build_divergence_maps_rejects_do_3d_flows(tmp_path):
 
 def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
     import tifffile
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from itasc.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((1, 3, 4, 4), dtype=np.float32)
     dp = np.zeros((1, 3, 2, 4, 4), dtype=np.float32)
@@ -317,8 +317,8 @@ def test_build_divergence_maps_reports_per_z_contour_progress(tmp_path):
 
 def test_build_divergence_maps_respects_cancel(tmp_path):
     import tifffile
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
-    from cellflow.core.cancellation import CancelledError
+    from itasc.cellpose.divergence_maps import build_divergence_maps
+    from itasc.core.cancellation import CancelledError
 
     prob = np.zeros((3, 1, 2, 2), dtype=np.float32)
     dp = np.zeros((3, 1, 2, 2, 2), dtype=np.float32)
@@ -349,7 +349,7 @@ def test_build_divergence_maps_reads_frames_lazily(tmp_path, monkeypatch):
     in instead of being decompressed whole up front.
     """
     import tifffile
-    import cellflow.cellpose.divergence_maps as dm
+    import itasc.cellpose.divergence_maps as dm
 
     prob = np.zeros((4, 2, 5, 6), dtype=np.float32)
     dp = np.zeros((4, 2, 2, 5, 6), dtype=np.float32)
@@ -388,7 +388,7 @@ def test_build_divergence_maps_reads_frames_lazily(tmp_path, monkeypatch):
 
 def test_build_divergence_maps_validates_shapes(tmp_path):
     import tifffile
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from itasc.cellpose.divergence_maps import build_divergence_maps
 
     prob = np.zeros((2, 3, 5, 6), dtype=np.float32)
     dp = np.zeros((3, 3, 2, 5, 6), dtype=np.float32)  # T mismatch
@@ -425,8 +425,8 @@ def test_build_divergence_maps_preserves_frames_across_layouts(
     must not be misread as a single z-stack)."""
     import numpy as np
     import tifffile
-    from cellflow.cellpose.cellpose_runner import write_outputs
-    from cellflow.cellpose.divergence_maps import build_divergence_maps
+    from itasc.cellpose.cellpose_runner import write_outputs
+    from itasc.cellpose.divergence_maps import build_divergence_maps
 
     write_outputs(
         np.zeros(prob_shape, np.float32), np.zeros(dp_shape, np.float32),

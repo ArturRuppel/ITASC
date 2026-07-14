@@ -4,7 +4,7 @@ from __future__ import annotations
 import h5py
 import numpy as np
 
-from cellflow.contact_analysis.dynamics.store import _read_table
+from itasc.contact_analysis.dynamics.store import _read_table
 
 
 def test_read_table_preserves_authored_column_order(tmp_path):

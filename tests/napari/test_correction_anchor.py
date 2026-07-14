@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from cellflow.napari.correction._correction_anchor import (
+from itasc.napari.correction._correction_anchor import (
     anchor_correction,
     without_anchor_correction,
 )
-from cellflow.tracking_ultrack.corrections import Correction
+from itasc.tracking_ultrack.corrections import Correction
 
 
 def test_without_anchor_correction_removes_only_matching_anchor() -> None:

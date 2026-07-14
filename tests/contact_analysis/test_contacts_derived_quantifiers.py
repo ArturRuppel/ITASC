@@ -15,7 +15,7 @@ import h5py
 import numpy as np
 import pytest
 
-from cellflow.contact_analysis.quantifier import (
+from itasc.contact_analysis.quantifier import (
     PositionInputs,
     available_quantifiers,
 )

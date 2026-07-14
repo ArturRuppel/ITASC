@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cellflow.napari.validated_overlay_controller import (
+from itasc.napari.validated_overlay_controller import (
     ANCHOR_OVERLAY,
     SPOTLIGHT_LAYER,
     VALIDATED_OVERLAY,

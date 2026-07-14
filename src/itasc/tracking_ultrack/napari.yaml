@@ -1,0 +1,10 @@
+name: itasc-tracking
+display_name: ITASC Nucleus Tracking
+contributions:
+  commands:
+    - id: itasc-tracking.widget
+      title: "Ultrack Segment + Track"
+      python_name: itasc.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
+  widgets:
+    - command: itasc-tracking.widget
+      display_name: "Ultrack Segment + Track"

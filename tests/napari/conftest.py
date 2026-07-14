@@ -37,8 +37,8 @@ def wired_stub():
     args to override any slot / supply extra attributes. Emitting an event on
     ``stub.events`` then runs the genuine subscriber set.
     """
-    from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
-    from cellflow.napari.correction._correction_events import CorrectionEvents
+    from itasc.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
+    from itasc.napari.correction._correction_events import CorrectionEvents
 
     def _make(*, bind=(), **attrs):
         stub = _WidgetStub()
@@ -58,9 +58,9 @@ def wired_stub():
 @pytest.fixture(autouse=True)
 def _restore_napari_import_stubs_and_close_viewers():
     tracked_roots = {
-        "cellflow.napari",
-        "cellflow.tracking_ultrack",
-        "cellflow.segmentation",
+        "itasc.napari",
+        "itasc.tracking_ultrack",
+        "itasc.segmentation",
     }
     tracked_prefixes = tuple(f"{name}." for name in tracked_roots)
     originals = {

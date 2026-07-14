@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.contact_analysis.quantifier import (
+from itasc.contact_analysis.quantifier import (
     PositionInputs,
     available_quantifiers,
 )

@@ -1,14 +1,14 @@
 cff-version: 1.2.0
-message: "If you use CellFlow, please cite this software using the metadata from this file."
-title: "CellFlow"
+message: "If you use ITASC, please cite this software using the metadata from this file."
+title: "ITASC"
 version: "0.2.0"
 abstract: "A napari-based research software project for time-lapse cell microscopy, Cellpose-derived segmentation inputs, Ultrack-based tracking, interactive correction, and contact analysis."
 authors:
   - family-names: "Ruppel"
     given-names: "Artur"
     email: artur@ruppel.pro
-repository-code: https://github.com/ArturRuppel/CellFlow
-url: https://github.com/ArturRuppel/CellFlow
+repository-code: https://github.com/ArturRuppel/ITASC
+url: https://github.com/ArturRuppel/ITASC
 license: AGPL-3.0-only
 keywords:
   - cell-tracking

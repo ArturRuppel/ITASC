@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cellflow.contact_analysis.shape_tables import (
+from itasc.contact_analysis.shape_tables import (
     aggregate,
     build_table,
     catalogue_root,
@@ -14,8 +14,8 @@ from cellflow.contact_analysis.shape_tables import (
     table_for_quantity,
     table_path,
 )
-from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
-from cellflow.contact_analysis.quantifiers.neighbor_count import (
+from itasc.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+from itasc.contact_analysis.quantifiers.neighbor_count import (
     NeighborCountQuantifier,
 )
 
@@ -296,7 +296,7 @@ def test_aggregate_skips_empty_tables(tmp_path):
 def test_aggregate_writes_run_level_provenance(tmp_path, monkeypatch):
     import json
 
-    from cellflow.contact_analysis.shape_tables import PROVENANCE_NAME
+    from itasc.contact_analysis.shape_tables import PROVENANCE_NAME
 
     rec_a = _record(tmp_path, "a", experiment_id="exp1")
     rec_b = _record(tmp_path, "b", experiment_id="exp1")
@@ -310,7 +310,7 @@ def test_aggregate_writes_run_level_provenance(tmp_path, monkeypatch):
 
     prov = json.loads((out_dir / PROVENANCE_NAME).read_text())
     assert prov["params"] == {"pixel_size_um": 0.5}
-    assert "created_at" in prov and "cellflow_version" in prov
+    assert "created_at" in prov and "itasc_version" in prov
     # Every contributing position is recorded by identity + source paths.
     assert {p["position_id"] for p in prov["positions"]} == {"a", "b"}
     assert {p["experiment_id"] for p in prov["positions"]} == {"exp1"}
@@ -327,7 +327,7 @@ def test_aggregate_writes_run_level_provenance(tmp_path, monkeypatch):
 
 
 def test_aggregate_writes_no_provenance_when_nothing_pooled(tmp_path):
-    from cellflow.contact_analysis.shape_tables import PROVENANCE_NAME
+    from itasc.contact_analysis.shape_tables import PROVENANCE_NAME
 
     rec = _record(tmp_path, "a")
     del rec["cell_tracked_labels_path"]  # no inputs → no tables → no provenance

@@ -4,7 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from cellflow.napari._stage_status import (
+from itasc.napari._stage_status import (
     CONTACT_STAGES,
     DONE,
     MISSING,
@@ -18,7 +18,7 @@ from cellflow.napari._stage_status import (
     UNKNOWN,
     WORKING,
 )
-from cellflow.napari._status_rail import StatusRail
+from itasc.napari._status_rail import StatusRail
 
 
 def _app():

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_utils import (
+from itasc.napari.correction._correction_utils import (
     frame_view_2d,
     reassign_ids_ordered,
     reassign_ids_stack,
@@ -302,7 +302,7 @@ def test_reorder_stack_by_quality_no_scores_is_noop() -> None:
 
 
 def test_reorder_stack_by_quality_remaps_validated_tracks(monkeypatch) -> None:
-    import cellflow.tracking_ultrack.validation_state as validation
+    import itasc.tracking_ultrack.validation_state as validation
 
     calls = {}
 

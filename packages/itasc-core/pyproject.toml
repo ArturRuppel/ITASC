@@ -1,0 +1,54 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itasc-core"
+version = "0.2.0"
+description = "Shared ITASC substrate: TIFF/path/logging helpers and reusable napari UI primitives"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
+keywords = ["cell-tracking", "microscopy", "napari"]
+dependencies = [
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+    "pyqtgraph>=0.13",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArturRuppel/ITASC"
+Repository = "https://github.com/ArturRuppel/ITASC"
+
+# Built from the shared source tree without moving files. The wheel deliberately
+# omits itasc/__init__.py and itasc/napari/__init__.py so itasc and
+# itasc.napari install as PEP 420 namespace packages, letting sibling
+# distributions (itasc-aggregate, the orchestrator) contribute their own
+# submodules under the same namespace.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/itasc/core" = "itasc/core"
+"../../src/itasc/correction" = "itasc/correction"
+"../../src/itasc/napari/ui_gate.py" = "itasc/napari/ui_gate.py"
+"../../src/itasc/napari/ui_style.py" = "itasc/napari/ui_style.py"
+"../../src/itasc/napari/_widget_helpers.py" = "itasc/napari/_widget_helpers.py"
+"../../src/itasc/napari/_flow_layout.py" = "itasc/napari/_flow_layout.py"
+"../../src/itasc/napari/_napari_compat.py" = "itasc/napari/_napari_compat.py"
+"../../src/itasc/napari/_track_render.py" = "itasc/napari/_track_render.py"
+"../../src/itasc/napari/_paths.py" = "itasc/napari/_paths.py"
+"../../src/itasc/napari/_standalone_paths.py" = "itasc/napari/_standalone_paths.py"
+"../../src/itasc/napari/widgets.py" = "itasc/napari/widgets.py"
+# Shared correction base: the generic interactive-correction widget + its UI
+# scaffolding and layer lifecycle, reused by both the nucleus (itasc-tracking)
+# and cell (the full itasc app's cell-segmentation stage) correction widgets.
+# The nucleus-specific _correction_* machinery stays in itasc-tracking.
+"../../src/itasc/napari/correction/correction_widget.py" = "itasc/napari/correction/correction_widget.py"
+"../../src/itasc/napari/correction/_correction_ui.py" = "itasc/napari/correction/_correction_ui.py"
+"../../src/itasc/napari/correction/_correction_layer_lifecycle.py" = "itasc/napari/correction/_correction_layer_lifecycle.py"

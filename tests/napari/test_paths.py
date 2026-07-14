@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cellflow.napari._paths import NucleusArtifactPaths
+from itasc.napari._paths import NucleusArtifactPaths
 
 
 def test_nucleus_atoms_path_under_2_nucleus():
@@ -11,7 +11,7 @@ def test_nucleus_atoms_path_under_2_nucleus():
 
 
 def test_final_output_label_paths_live_in_position_base_folder(tmp_path):
-    from cellflow.napari._paths import NucleusArtifactPaths
+    from itasc.napari._paths import NucleusArtifactPaths
 
     p = NucleusArtifactPaths(tmp_path)
     assert p.nucleus_labels == tmp_path / "nucleus_labels.tif"

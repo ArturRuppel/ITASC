@@ -4,7 +4,7 @@ import warnings
 
 import numpy as np
 
-from cellflow.core.tiff import imwrite_grayscale
+from itasc.core.tiff import imwrite_grayscale
 
 
 def test_imwrite_grayscale_avoids_rgb_shape_warning(tmp_path) -> None:

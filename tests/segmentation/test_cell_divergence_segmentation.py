@@ -4,15 +4,15 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.segmentation import (
+from itasc.segmentation import (
     CellDivergenceParams,
     CellDivergenceResult,
     segment_cells_divergence,
 )
-from cellflow.segmentation.cell_divergence_segmentation import (
+from itasc.segmentation.cell_divergence_segmentation import (
     clean_and_smooth_contours,
 )
-from cellflow.segmentation.cell_label_icm import (
+from itasc.segmentation.cell_label_icm import (
     assemble_cost_field,
     balance_strength_to_weights,
 )

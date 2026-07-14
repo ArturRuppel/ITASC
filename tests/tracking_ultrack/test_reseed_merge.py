@@ -8,11 +8,11 @@ import numpy as np
 
 
 def _merge_validated_into_export():
-    ingest_stub = types.ModuleType("cellflow.tracking_ultrack.ingest")
+    ingest_stub = types.ModuleType("itasc.tracking_ultrack.ingest")
     ingest_stub._build_ultrack_config = lambda *args, **kwargs: object()
-    sys.modules.setdefault("cellflow.tracking_ultrack.ingest", ingest_stub)
+    sys.modules.setdefault("itasc.tracking_ultrack.ingest", ingest_stub)
     return importlib.import_module(
-        "cellflow.tracking_ultrack.reseed"
+        "itasc.tracking_ultrack.reseed"
     ).merge_validated_into_export
 
 

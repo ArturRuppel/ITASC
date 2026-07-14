@@ -26,7 +26,7 @@ sample_data_dimensionality_test/
 .superpowers/
 .devcontainer/
 scripts/experiment_*.py
-notes/cellflow_source_concatenated.md
+notes/itasc_source_concatenated.md
 docs/staging/segmentation_ui_redesign/all_source.py
 test_dupes.py
 AGENTS.md

@@ -1,0 +1,81 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itasc-tracking"
+version = "0.2.0"
+description = "Independent ITASC piece: Ultrack-based nucleus tracking + interactive correction (napari)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
+keywords = ["cell-tracking", "microscopy", "napari", "ultrack"]
+dependencies = [
+    "itasc-core",
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+    "pydantic",
+    "sqlalchemy",
+]
+
+[project.optional-dependencies]
+# The Ultrack solver itself is heavy and only imported lazily when an action
+# actually runs candidate segmentation / linking / solving. Install it to enable
+# database generation and tracking; correction-only use does not require it.
+solve = [
+    "ultrack",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArturRuppel/ITASC"
+Repository = "https://github.com/ArturRuppel/ITASC"
+
+[project.entry-points."napari.manifest"]
+itasc-tracking = "itasc.tracking_ultrack:napari.yaml"
+
+# Built from the shared source tree without moving files. The wheel deliberately
+# omits itasc/__init__.py and itasc/napari/__init__.py so itasc and
+# itasc.napari install as PEP 420 namespace packages, composing with
+# itasc-core and the orchestrator. The tracking_ultrack / correction
+# subpackages own their own __init__.py (they are real subpackages, not
+# namespace roots). The tracking-only validation state lives in
+# tracking_ultrack/validation_state.py; the generic tracked-label-stack IO now
+# lives in itasc-core as itasc.core.label_store.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/itasc/tracking_ultrack" = "itasc/tracking_ultrack"
+# itasc/correction and the shared correction base (correction_widget,
+# _correction_ui, _correction_layer_lifecycle) now ship in itasc-core, which
+# this distribution depends on. Only the nucleus-specific _correction_* machinery
+# is listed below.
+"../../src/itasc/napari/correction/_correction_anchor.py" = "itasc/napari/correction/_correction_anchor.py"
+"../../src/itasc/napari/correction/_correction_candidate_panel.py" = "itasc/napari/correction/_correction_candidate_panel.py"
+"../../src/itasc/napari/correction/_correction_candidates.py" = "itasc/napari/correction/_correction_candidates.py"
+"../../src/itasc/napari/correction/_correction_centroids.py" = "itasc/napari/correction/_correction_centroids.py"
+"../../src/itasc/napari/correction/_correction_commit.py" = "itasc/napari/correction/_correction_commit.py"
+"../../src/itasc/napari/correction/_correction_layer_loader.py" = "itasc/napari/correction/_correction_layer_loader.py"
+"../../src/itasc/napari/correction/_correction_protection.py" = "itasc/napari/correction/_correction_protection.py"
+"../../src/itasc/napari/correction/_correction_takeover.py" = "itasc/napari/correction/_correction_takeover.py"
+"../../src/itasc/napari/correction/_correction_track_accordion.py" = "itasc/napari/correction/_correction_track_accordion.py"
+"../../src/itasc/napari/correction/_correction_track_path.py" = "itasc/napari/correction/_correction_track_path.py"
+"../../src/itasc/napari/correction/_correction_utils.py" = "itasc/napari/correction/_correction_utils.py"
+"../../src/itasc/napari/correction/_correction_validation.py" = "itasc/napari/correction/_correction_validation.py"
+"../../src/itasc/napari/_state.py" = "itasc/napari/_state.py"
+"../../src/itasc/napari/candidate_gallery_controller.py" = "itasc/napari/candidate_gallery_controller.py"
+"../../src/itasc/napari/lineage_canvas_controller.py" = "itasc/napari/lineage_canvas_controller.py"
+"../../src/itasc/napari/nucleus_atom_extraction_widget.py" = "itasc/napari/nucleus_atom_extraction_widget.py"
+"../../src/itasc/napari/correction/nucleus_correction_widget.py" = "itasc/napari/correction/nucleus_correction_widget.py"
+"../../src/itasc/napari/nucleus_db_browser_widget.py" = "itasc/napari/nucleus_db_browser_widget.py"
+"../../src/itasc/napari/nucleus_pipeline_widget.py" = "itasc/napari/nucleus_pipeline_widget.py"
+"../../src/itasc/napari/nucleus_segmentation_inputs_widget.py" = "itasc/napari/nucleus_segmentation_inputs_widget.py"
+"../../src/itasc/napari/nucleus_tracking_inputs_widget.py" = "itasc/napari/nucleus_tracking_inputs_widget.py"
+"../../src/itasc/napari/nucleus_workflow_widget.py" = "itasc/napari/nucleus_workflow_widget.py"
+"../../src/itasc/napari/track_path_controller.py" = "itasc/napari/track_path_controller.py"
+"../../src/itasc/napari/validated_overlay_controller.py" = "itasc/napari/validated_overlay_controller.py"

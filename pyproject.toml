@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cellflow"
+name = "itasc"
 version = "0.2.0"
 description = "Fast, interactive cell tracking"
 readme = "README.md"
@@ -47,9 +47,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ArturRuppel/CellFlow"
-Repository = "https://github.com/ArturRuppel/CellFlow"
-Issues = "https://github.com/ArturRuppel/CellFlow/issues"
+Homepage = "https://github.com/ArturRuppel/ITASC"
+Repository = "https://github.com/ArturRuppel/ITASC"
+Issues = "https://github.com/ArturRuppel/ITASC/issues"
 
 [project.optional-dependencies]
 cellpose = [
@@ -61,7 +61,7 @@ tracking = [
     "ultrack",
 ]
 all = [
-    "cellflow[cellpose,tracking]",
+    "itasc[cellpose,tracking]",
 ]
 test = [
     "pytest>=8",
@@ -79,18 +79,19 @@ docs = [
     "sphinx-design>=0.5",
     "sphinx-autodoc-typehints>=1.25",
     "sphinxcontrib-mermaid>=0.9",
+    "sphinx-autobuild>=2024.2",
 ]
 
 [project.entry-points."napari.manifest"]
 # A Python distribution may register exactly one napari manifest, and npe2
 # requires its name to match the distribution. The full install therefore
 # exposes the extracted pieces' widgets by folding their contributions into the
-# single cellflow manifest (see src/cellflow/napari.yaml) rather than
-# registering the standalone cellflow-aggregate / cellflow-tracking manifests.
-cellflow = "cellflow:napari.yaml"
+# single itasc manifest (see src/itasc/napari.yaml) rather than
+# registering the standalone itasc-aggregate / itasc-tracking manifests.
+itasc = "itasc:napari.yaml"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/cellflow"]
+packages = ["src/itasc"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
@@ -107,7 +108,7 @@ exclude = [
 ]
 
 [tool.hatch.build.targets.wheel.shared-data]
-"src/cellflow/napari.yaml" = "cellflow/napari.yaml"
+"src/itasc/napari.yaml" = "itasc/napari.yaml"
 
 [tool.ruff]
 target-version = "py310"

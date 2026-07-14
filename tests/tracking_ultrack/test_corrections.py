@@ -11,8 +11,8 @@ def test_apply_corrections_marks_validated_nodes_fake_and_anchor_nodes_real(tmp_
     from ultrack.core.database import NodeDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_corrections_to_database
 
     engine = _make_engine(tmp_path / "data.db")
     with Session(engine) as session:
@@ -52,8 +52,8 @@ def test_apply_corrections_uses_iou_to_pick_correct_hierarchical_candidate(tmp_p
     from ultrack.core.database import NodeDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_corrections_to_database
 
     engine = _make_engine(tmp_path / "data.db")
     # Two hierarchically nested candidates at frame 0:
@@ -99,8 +99,8 @@ def test_apply_corrections_prunes_overlap_between_anchor_real_nodes(tmp_path):
         _make_node_row,
     )
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_corrections_to_database
 
     engine = _make_engine(tmp_path / "data.db")
     with Session(engine) as session:
@@ -143,8 +143,8 @@ def test_apply_corrections_marks_consecutive_anchor_link_real(tmp_path):
     from ultrack.core.database import LinkDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_corrections_to_database
 
     engine = _make_engine(tmp_path / "data.db")
     with Session(engine) as session:
@@ -176,8 +176,8 @@ def test_annotate_anchor_tail_links_marks_best_successor_real(tmp_path):
     from ultrack.core.database import LinkDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         annotate_anchor_tail_links,
         apply_corrections_to_database,
@@ -232,8 +232,8 @@ def test_annotate_anchor_tail_links_walks_successor_chain(tmp_path):
     from ultrack.core.database import LinkDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         annotate_anchor_tail_links,
         apply_corrections_to_database,
@@ -291,8 +291,8 @@ def test_annotate_anchor_tail_links_walks_predecessor_chain(tmp_path):
     from ultrack.core.database import LinkDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         annotate_anchor_tail_links,
         apply_corrections_to_database,
@@ -352,8 +352,8 @@ def test_annotate_anchor_tail_links_avoids_converging_anchor_lineages(tmp_path):
     from ultrack.core.database import LinkDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         annotate_anchor_tail_links,
         apply_corrections_to_database,
@@ -417,8 +417,8 @@ def test_annotate_anchor_tail_links_avoids_overlapping_forced_successors(tmp_pat
     from ultrack.core.database import LinkDB, OverlapDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         annotate_anchor_tail_links,
         apply_corrections_to_database,
@@ -486,8 +486,8 @@ def test_annotate_anchor_tail_links_avoids_overlapping_forced_successors(tmp_pat
 
 
 def test_apply_post_solve_corrections_remaps_anchor_track_stamps_missing_anchor_and_pastes_validated():
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         apply_post_solve_corrections,
     )
@@ -522,12 +522,12 @@ def test_apply_post_solve_corrections_remaps_real_link_descendant_tracklet(tmp_p
     from ultrack.core.database import LinkDB, NO_PARENT, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         apply_post_solve_corrections,
     )
-    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    from itasc.tracking_ultrack.ingest import _build_ultrack_config
     from ultrack.core.export import to_tracks_layer
 
     engine = _make_engine(tmp_path / "data.db")
@@ -588,12 +588,12 @@ def test_apply_post_solve_corrections_remaps_real_link_ancestor_tracklet(tmp_pat
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
     from ultrack.core.export import to_tracks_layer
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         apply_post_solve_corrections,
     )
-    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    from itasc.tracking_ultrack.ingest import _build_ultrack_config
 
     engine = _make_engine(tmp_path / "data.db")
     (tmp_path / "metadata.toml").write_text("shape = [ 2, 40, 40,]\n")
@@ -648,9 +648,9 @@ def test_apply_post_solve_corrections_remaps_real_link_ancestor_tracklet(tmp_pat
 
 
 def test_apply_post_solve_corrections_preserves_identity_lineage_tracklet(monkeypatch):
-    from cellflow.tracking_ultrack import corrections as corrections_module
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack import corrections as corrections_module
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         apply_post_solve_corrections,
     )
@@ -683,8 +683,8 @@ def test_apply_post_solve_corrections_preserves_identity_lineage_tracklet(monkey
 def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_validated_paste():
     """A validated cell_id that collides with an unrelated solver track must
     not produce two disjoint regions sharing the same ID."""
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
 
     exported = np.zeros((3, 40, 40), dtype=np.uint32)
     # Solver independently used ID=7 for an unrelated track across all frames.
@@ -713,8 +713,8 @@ def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_validat
 def test_apply_post_solve_corrections_evicts_unrelated_solver_pixels_for_anchor_stamp():
     """An unmatched anchor with cell_id colliding with an unrelated solver
     track must evict the solver pixels before stamping."""
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
 
     exported = np.zeros((2, 40, 40), dtype=np.uint32)
     # Solver used ID=5 for an unrelated track far from the anchor location.
@@ -745,8 +745,8 @@ def test_apply_corrections_returns_unmatched_anchor_when_no_candidate_in_radius(
     from ultrack.core.database import NodeDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_corrections_to_database
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_corrections_to_database
 
     engine = _make_engine(tmp_path / "data.db")
     with Session(engine) as session:
@@ -777,8 +777,8 @@ def test_inject_unmatched_anchor_nodes_inserts_real_node_and_overlap_rows(tmp_pa
     from ultrack.core.database import NodeDB, OverlapDB, VarAnnotation
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         inject_unmatched_anchor_nodes,
     )
@@ -826,8 +826,8 @@ def test_inject_unmatched_anchor_nodes_skips_when_no_mask_in_tracked_labels(tmp_
     """If the anchor's cell_id is not in tracked_labels at frame t, skip it."""
     from tests.tracking_ultrack.test_reseed import _make_engine, _make_node_row
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import (
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import (
         Correction,
         inject_unmatched_anchor_nodes,
     )
@@ -855,8 +855,8 @@ def test_inject_unmatched_anchor_nodes_skips_when_no_mask_in_tracked_labels(tmp_
 def test_apply_corrections_preserves_matched_anchor_when_solver_id_equals_target():
     """When the solver already labeled the matched anchor's track with the
     correct ID, the track must be preserved untouched (no eviction)."""
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import Correction, apply_post_solve_corrections
 
     exported = np.zeros((2, 40, 40), dtype=np.uint32)
     # Solver track with ID=5 is at the anchor location.

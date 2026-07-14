@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.config import TrackingConfig
 
 
 def test_export_preserves_validated_ids_when_database_has_annotations(
     monkeypatch, tmp_path
 ):
-    from cellflow.tracking_ultrack import export as export_mod
+    from itasc.tracking_ultrack import export as export_mod
 
     tracked = np.zeros((1, 6, 6), dtype=np.uint32)
     tracked[0, 1:3, 1:3] = 7
@@ -30,7 +30,7 @@ def test_export_preserves_validated_ids_when_database_has_annotations(
 
 
 def test_export_fails_when_annotated_database_lacks_validated_masks(monkeypatch, tmp_path):
-    from cellflow.tracking_ultrack import export as export_mod
+    from itasc.tracking_ultrack import export as export_mod
 
     monkeypatch.setattr(export_mod, "database_has_annotations", lambda _wd: True)
     monkeypatch.setattr(

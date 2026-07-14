@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itasc-cellpose"
+version = "0.2.0"
+description = "ITASC Cellpose: standalone Cellpose-SAM segment + laptrack tracking tool (napari)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
+keywords = ["cell-tracking", "microscopy", "napari", "cellpose", "segmentation"]
+dependencies = [
+    "itasc-core",
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+    "numpy",
+    "scipy",
+    "scikit-image",
+    "tifffile",
+]
+
+[project.optional-dependencies]
+# The Cellpose-SAM model powers segmentation (native masks + the prob/dp maps);
+# it is imported lazily and only needed to *generate* masks/maps. Importing the
+# package — and the Qt-free tracking helpers — does not require it.
+cellpose = [
+    "cellpose>=4.0",
+    "torch",
+    "torchvision",
+]
+# laptrack links the per-frame native masks into tracked labels. Imported lazily
+# inside track_laptrack.track_masks; install to enable the Track step.
+laptrack = [
+    "laptrack",
+    "pandas",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArturRuppel/ITASC"
+Repository = "https://github.com/ArturRuppel/ITASC"
+
+[project.entry-points."napari.manifest"]
+itasc-cellpose = "itasc.cellpose:napari.yaml"
+
+# Built from the shared source tree without moving files; omits the namespace
+# roots (itasc/__init__.py, itasc/napari/__init__.py) so it composes with
+# itasc-core via PEP 420. The cellpose / divergence-maps widgets depend only
+# on shared primitives now shipped in itasc-core. See itasc-core for the
+# namespace rationale.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/itasc/cellpose" = "itasc/cellpose"
+# The standalone surface is the segment+track widget (napari.yaml points here).
+"../../src/itasc/napari/cellpose_segment_track_widget.py" = "itasc/napari/cellpose_segment_track_widget.py"
+# The basic (ultrack/OverlapDB-free) cell corrector is embedded in the
+# segment+track widget so the tool covers segment → track → correct. Its base
+# (correction_widget + _correction_ui/_correction_layer_lifecycle) ships in
+# itasc-core; _spotlight is the only shared dep core does not yet ship.
+"../../src/itasc/napari/correction/cell_correction_widget.py" = "itasc/napari/correction/cell_correction_widget.py"
+"../../src/itasc/napari/_spotlight.py" = "itasc/napari/_spotlight.py"
+# cellpose_widget + divergence_maps_widget stay shipped (Qt-free of the model):
+# the integrated app imports them directly for its in-app Cellpose stage; they
+# are no longer the distro's standalone napari command but remain importable.
+"../../src/itasc/napari/cellpose_widget.py" = "itasc/napari/cellpose_widget.py"
+"../../src/itasc/napari/divergence_maps_widget.py" = "itasc/napari/divergence_maps_widget.py"

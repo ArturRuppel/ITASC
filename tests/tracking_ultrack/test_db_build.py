@@ -6,8 +6,8 @@ import types
 import numpy as np
 import pytest
 
-from cellflow.core.cancellation import CancelledError
-from cellflow.tracking_ultrack.config import TrackingConfig
+from itasc.core.cancellation import CancelledError
+from itasc.tracking_ultrack.config import TrackingConfig
 
 
 class _FakeNodeDB:
@@ -86,7 +86,7 @@ def test_build_atom_union_database_segments_then_links(monkeypatch, tmp_path):
     """Atom-union build: read atoms -> config -> clear/create DB -> link, in order."""
     import tifffile
 
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     _install_ultrack_stubs(monkeypatch)
 
@@ -231,7 +231,7 @@ def _stub_build_env(monkeypatch, tmp_path, db_build, atoms):
 def test_build_atom_union_database_cancels_before_any_work(monkeypatch, tmp_path):
     """A cancel signal already set when the build starts aborts on the first frame —
     no frames are inserted and linking never runs."""
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     atoms = np.zeros((2, 4, 6), dtype=np.int32)
     atoms[:, :, :3] = 1
@@ -250,7 +250,7 @@ def test_build_atom_union_database_cancels_before_any_work(monkeypatch, tmp_path
 def test_build_atom_union_database_cancels_mid_build(monkeypatch, tmp_path):
     """Cancelling after the first frame stops the per-frame loop before the second
     frame and before linking — the bug was that the loop ignored the signal."""
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     atoms = np.zeros((3, 4, 6), dtype=np.int32)
     atoms[:, :, :3] = 1
@@ -282,8 +282,8 @@ def test_build_atom_union_database_uses_contour_for_ridge_weights(monkeypatch, t
     runs the ridge-weighted merge-tree path to completion, producing candidates."""
     import tifffile
 
-    from cellflow.tracking_ultrack import db_build
-    from cellflow.tracking_ultrack.atoms import AtomParams, write_atoms_tif
+    from itasc.tracking_ultrack import db_build
+    from itasc.tracking_ultrack.atoms import AtomParams, write_atoms_tif
 
     _install_ultrack_stubs(monkeypatch)
 
@@ -342,7 +342,7 @@ def test_build_atom_union_database_uses_contour_for_ridge_weights(monkeypatch, t
         db_build, "run_linking", lambda *_a, **_kw: iter([(1, 1, "linked")])
     )
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.config import TrackingConfig
 
     report = db_build.build_atom_union_database(
         atoms_path,
@@ -359,7 +359,7 @@ def test_build_atom_union_database_uses_contour_for_ridge_weights(monkeypatch, t
 
 def test_db_build_segments_then_links(monkeypatch, tmp_path):
     """Candidate-only build: segment + link, no annotations, no scoring."""
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     calls: list[str] = []
 
@@ -395,7 +395,7 @@ def test_db_build_segments_then_links(monkeypatch, tmp_path):
 
 def test_apply_annotations_and_score_resets_then_applies_in_order(monkeypatch, tmp_path):
     """apply_annotations_and_score: reset → pre-link annotate → score → post-link annotate."""
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     calls: list[str] = []
     tracked = np.zeros((1, 8, 8), dtype=np.uint32)
@@ -467,7 +467,7 @@ def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(
     monkeypatch, tmp_path
 ):
     """No corrections + no validated_tracks: reset and score, but skip annotation passes."""
-    from cellflow.tracking_ultrack import db_build
+    from itasc.tracking_ultrack import db_build
 
     calls: list[str] = []
 
@@ -500,7 +500,7 @@ def test_apply_annotations_and_score_without_corrections_just_resets_and_scores(
 
 
 def test_apply_annotations_and_score_validated_without_tracked_labels_raises(tmp_path):
-    from cellflow.tracking_ultrack.db_build import apply_annotations_and_score
+    from itasc.tracking_ultrack.db_build import apply_annotations_and_score
 
     try:
         apply_annotations_and_score(

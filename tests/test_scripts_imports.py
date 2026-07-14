@@ -9,26 +9,26 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 
 
-def _cellflow_imports(script: Path) -> list[tuple[str, str | None]]:
+def _itasc_imports(script: Path) -> list[tuple[str, str | None]]:
     tree = ast.parse(script.read_text(), filename=str(script))
     imports: list[tuple[str, str | None]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                if alias.name == "cellflow" or alias.name.startswith("cellflow."):
+                if alias.name == "itasc" or alias.name.startswith("itasc."):
                     imports.append((alias.name, None))
         elif isinstance(node, ast.ImportFrom) and node.module:
-            if node.module == "cellflow" or node.module.startswith("cellflow."):
+            if node.module == "itasc" or node.module.startswith("itasc."):
                 for alias in node.names:
                     if alias.name != "*":
                         imports.append((node.module, alias.name))
     return imports
 
 
-def test_active_scripts_do_not_reference_missing_cellflow_imports() -> None:
+def test_active_scripts_do_not_reference_missing_itasc_imports() -> None:
     missing: list[str] = []
     for script in sorted(SCRIPTS_DIR.glob("*.py")):
-        for module_name, symbol_name in _cellflow_imports(script):
+        for module_name, symbol_name in _itasc_imports(script):
             try:
                 module = importlib.import_module(module_name)
             except Exception as exc:

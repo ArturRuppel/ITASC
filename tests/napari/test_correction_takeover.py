@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cellflow.napari.correction._correction_takeover import (
+from itasc.napari.correction._correction_takeover import (
     hide_native_docks,
     restore_native_docks,
 )

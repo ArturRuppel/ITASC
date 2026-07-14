@@ -1,10 +1,10 @@
 """Tests for the signed central junction-length reaction coordinate."""
 import numpy as np
 
-from cellflow.contact_analysis.contacts.signed_contact_length import (
+from itasc.contact_analysis.contacts.signed_contact_length import (
     signed_central_junction_lengths,
 )
-from cellflow.contact_analysis.contacts.reader import PositionContactAnalysis
+from itasc.contact_analysis.contacts.reader import PositionContactAnalysis
 
 
 def _analysis(edges, t1_events) -> PositionContactAnalysis:

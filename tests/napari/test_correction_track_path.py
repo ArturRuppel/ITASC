@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.napari.correction._correction_track_path import (
+from itasc.napari.correction._correction_track_path import (
     build_all_tracks_data,
     build_track_film_strip,
 )

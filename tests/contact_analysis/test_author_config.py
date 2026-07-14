@@ -1,8 +1,8 @@
 """author_config — write catalog.csv + config.toml, ready for run()."""
 from __future__ import annotations
 
-from cellflow.contact_analysis.config import load_config
-from cellflow.contact_analysis.pipeline import author_config
+from itasc.contact_analysis.config import load_config
+from itasc.contact_analysis.pipeline import author_config
 
 
 def _record(tmp_path, pid="p1"):
@@ -57,9 +57,9 @@ def test_out_dir_unset_by_default(tmp_path):
 
 
 def test_author_config_is_on_package_surface():
-    import cellflow.contact_analysis as ca
+    import itasc.contact_analysis as ca
 
     assert hasattr(ca, "author_config")
     assert ca.author_config is __import__(
-        "cellflow.contact_analysis.pipeline", fromlist=["author_config"]
+        "itasc.contact_analysis.pipeline", fromlist=["author_config"]
     ).author_config

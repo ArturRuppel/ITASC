@@ -12,7 +12,7 @@ import types
 
 import numpy as np
 
-from cellflow.napari.correction.correction_widget import CorrectionWidget
+from itasc.napari.correction.correction_widget import CorrectionWidget
 
 
 def _default_mask():

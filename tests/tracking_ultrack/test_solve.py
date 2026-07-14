@@ -3,13 +3,13 @@ from __future__ import annotations
 import sys
 import types
 
-from cellflow.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.config import TrackingConfig
 
 
 def test_run_solve_passes_annotations_true_by_default(
     monkeypatch, tmp_path
 ):
-    from cellflow.tracking_ultrack import solve as solve_mod
+    from itasc.tracking_ultrack import solve as solve_mod
 
     calls: list[dict] = []
 
@@ -33,7 +33,7 @@ def test_run_solve_passes_annotations_true_by_default(
 
 
 def test_run_solve_allows_annotations_override(monkeypatch, tmp_path):
-    from cellflow.tracking_ultrack import solve as solve_mod
+    from itasc.tracking_ultrack import solve as solve_mod
 
     calls: list[dict] = []
 
@@ -57,7 +57,7 @@ def test_run_solve_allows_annotations_override(monkeypatch, tmp_path):
 
 
 def test_run_solve_builds_ultrack_config_from_supplied_cfg(monkeypatch, tmp_path):
-    from cellflow.tracking_ultrack import solve as solve_mod
+    from itasc.tracking_ultrack import solve as solve_mod
 
     cfg = TrackingConfig(bias=-0.5)
     built_cfg = object()

@@ -1,7 +1,7 @@
 """Standalone-mode seam for the nucleus tracking/correction piece.
 
 The full orchestrator drives the widget through ``refresh(pos_dir)`` (staged
-``<pos>/2_nucleus`` layout); the independently-installable ``cellflow-tracking``
+``<pos>/2_nucleus`` layout); the independently-installable ``itasc-tracking``
 plugin drives it through ``set_context(foreground=..., contours=...,
 output_dir=...)`` — three explicit path fields in the widget.
 """
@@ -12,8 +12,8 @@ from types import SimpleNamespace
 import napari
 import pytest
 
-from cellflow.napari import nucleus_workflow_widget as mod
-from cellflow.napari._paths import NucleusWorkspace
+from itasc.napari import nucleus_workflow_widget as mod
+from itasc.napari._paths import NucleusWorkspace
 
 
 @pytest.fixture()
@@ -171,7 +171,7 @@ def test_atom_compute_checkboxes_gate_which_layers_compute(viewer, tmp_path, mon
     import numpy as np
     import tifffile
 
-    from cellflow.napari import nucleus_atom_extraction_widget as atom_mod
+    from itasc.napari import nucleus_atom_extraction_widget as atom_mod
 
     monkeypatch.setattr(atom_mod, "thread_worker", _sync_thread_worker())
 

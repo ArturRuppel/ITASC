@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_commit import (
+from itasc.napari.correction._correction_commit import (
     prepare_committed_labels,
     remove_unvalidated_from_data,
 )

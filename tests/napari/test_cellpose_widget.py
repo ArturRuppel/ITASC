@@ -97,16 +97,16 @@ def _mock_cellpose(monkeypatch):
     fake_cellpose.models = fake_models
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
-    monkeypatch.delitem(sys.modules, "cellflow.cellpose.cellpose_runner", raising=False)
+    monkeypatch.delitem(sys.modules, "itasc.cellpose.cellpose_runner", raising=False)
 
 
 def _load_widget(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
+    napari_pkg = types.ModuleType("itasc.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.cellpose_widget", None)
-    return importlib.import_module("cellflow.napari.cellpose_widget")
+    monkeypatch.setitem(sys.modules, "itasc.napari", napari_pkg)
+    sys.modules.pop("itasc.napari.cellpose_widget", None)
+    return importlib.import_module("itasc.napari.cellpose_widget")
 
 
 def _layout_items(layout):
@@ -202,7 +202,7 @@ def test_stage_row_buttons_are_clustered_and_use_header_style(
         w.cell_preview_btn,
         w.cell_run_btn,
     ):
-        assert button.property("cellflow_stage_header_action") is True
+        assert button.property("itasc_stage_header_action") is True
         assert "border: none" in button.styleSheet()
         assert "text-align: center" in button.styleSheet()
 
@@ -330,7 +330,7 @@ def test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_pane
 ):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
-    divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
+    divergence_mod = importlib.import_module("itasc.napari.divergence_maps_widget")
 
     w = mod.CellposeWidget(_FakeViewer())
 
@@ -358,8 +358,8 @@ def test_cellpose_embeds_single_divergence_subwidget_without_duplicate_file_pane
 def test_embeds_divergence_maps_subwidget_and_state(_mock_cellpose, monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
     mod = _load_widget(monkeypatch)
-    divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
-    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
+    divergence_mod = importlib.import_module("itasc.napari.divergence_maps_widget")
+    from itasc.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     w = mod.CellposeWidget(_FakeViewer())
@@ -763,7 +763,7 @@ def test_preview_reports_missing_input(_mock_cellpose, monkeypatch, tmp_path):
     w.deleteLater()
 
 
-# ── standalone seam (cellflow-cellpose distribution) ───────────────────────────
+# ── standalone seam (itasc-cellpose distribution) ───────────────────────────
 
 def test_standalone_shows_pickers_and_keeps_files_panel(monkeypatch):
     app = QApplication.instance() or QApplication([])

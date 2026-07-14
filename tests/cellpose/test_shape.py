@@ -1,9 +1,9 @@
-"""Tests for cellflow.cellpose.shape — layout-free canonicalisation."""
+"""Tests for itasc.cellpose.shape — layout-free canonicalisation."""
 from __future__ import annotations
 
 import numpy as np
 
-from cellflow.cellpose.shape import describe_axes, to_canonical_tzyx
+from itasc.cellpose.shape import describe_axes, to_canonical_tzyx
 
 
 def test_2d_gains_singleton_t_and_z():

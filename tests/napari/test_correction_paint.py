@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from cellflow.napari.correction._correction_paint import paint_assignments
+from itasc.napari.correction._correction_paint import paint_assignments
 
 
 def _assignment(cell_id, mask):

@@ -90,12 +90,12 @@ class _FakeViewer:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
+    napari_pkg = types.ModuleType("itasc.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.contact_visualization", None)
-    return importlib.import_module("cellflow.napari.contact_visualization")
+    monkeypatch.setitem(sys.modules, "itasc.napari", napari_pkg)
+    sys.modules.pop("itasc.napari.contact_visualization", None)
+    return importlib.import_module("itasc.napari.contact_visualization")
 
 
 def _make_contact_analysis() -> dict[str, dict[str, np.ndarray]]:
@@ -681,7 +681,7 @@ def test_tracks_layer_registers_no_frame_callback(monkeypatch, tmp_path):
     # Only the edge + T1 path Shapes need a time-slider callback; the native
     # Tracks layer fades on its own.
     assert len(viewer.current_step_event.callbacks) == 2
-    assert not hasattr(track_layer, "_cellflow_frame_shape_cleanup")
+    assert not hasattr(track_layer, "_itasc_frame_shape_cleanup")
 
 
 def test_edge_layer_disconnects_when_removed(monkeypatch, tmp_path):
@@ -733,6 +733,6 @@ def test_clear_hook_disconnects_frame_shape_callback(monkeypatch, tmp_path):
     edge_layer = layers[3]
 
     # the widget's clear path invokes this stashed cleanup before removal
-    edge_layer._cellflow_frame_shape_cleanup()
+    edge_layer._itasc_frame_shape_cleanup()
 
     assert len(viewer.current_step_event.callbacks) == 1

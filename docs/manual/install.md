@@ -1,6 +1,6 @@
 # Installation
 
-CellFlow requires **Python 3.10+**. What you install depends on where you enter
+ITASC requires **Python 3.10+**. What you install depends on where you enter
 the pipeline: the full app for the whole workflow, or a single piece for one
 stage. If you have not decided yet, [Choosing your install](index.md) routes you
 by your data.
@@ -8,7 +8,7 @@ by your data.
 ## Full workflow (the napari plugin)
 
 ```bash
-pip install cellflow[all]
+pip install itasc[all]
 ```
 
 The `[all]` extra pulls the core scientific stack plus the optional workflow
@@ -21,18 +21,18 @@ python -m pip install -e .[all]
 
 ## A single piece
 
-Each tool installs on its own and shares the `cellflow.*` namespace, so
-`import cellflow.<stage>` works whether or not the full app is present.
+Each tool installs on its own and shares the `itasc.*` namespace, so
+`import itasc.<stage>` works whether or not the full app is present.
 
 ```bash
-pip install "cellflow-cellpose[cellpose,laptrack]"  # sparse cells: segment + track
-pip install "cellflow-tracking[solve]"              # maps → tracks + correction
-pip install cellflow-aggregate                      # tracked labels → contacts (HDF5)
-pip install cellflow-core                           # shared library only
+pip install "itasc-cellpose[cellpose,laptrack]"  # sparse cells: segment + track
+pip install "itasc-tracking[solve]"              # maps → tracks + correction
+pip install itasc-aggregate                      # tracked labels → contacts (HDF5)
+pip install itasc-core                           # shared library only
 ```
 
 Divergence-based cell segmentation is not published as a standalone wheel: it
-ships inside the full `cellflow` app (`pip install cellflow[all]`).
+ships inside the full `itasc` app (`pip install itasc[all]`).
 
 ## Optional engines
 
@@ -45,7 +45,7 @@ without the extra still works.
   `[cellpose]`.
 - **Ultrack**: candidate segmentation, database construction, linking, and
   solving for nucleus tracking. Extra: `[solve]`, or `[tracking]` on the full
-  `cellflow` distribution.
+  `itasc` distribution.
 
 ## Development install
 
@@ -54,5 +54,5 @@ python -m pip install -e .[dev]    # + ruff, pytest
 python -m pip install -e .[docs]   # to build this documentation locally
 ```
 
-With CellFlow installed, [The staged workflow](workflow.md) walks through what
+With ITASC installed, [The staged workflow](workflow.md) walks through what
 each stage reads and writes, and how to drive the plugin in napari.

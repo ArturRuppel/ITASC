@@ -1,0 +1,44 @@
+name: itasc
+display_name: ITASC
+contributions:
+  commands:
+    - id: itasc.main_widget
+      title: "ITASC"
+      python_name: itasc.napari:ITASCWidget
+    # The full install folds the extracted tools' widgets into this single
+    # manifest. npe2 requires a manifest's name to match the providing
+    # distribution, so the standalone itasc-cellpose / itasc-tracking /
+    # itasc-aggregate manifests cannot be re-registered from the itasc
+    # distribution; their contributions are mirrored here instead. The integrated
+    # ITASC app's own per-stage widgets (Cellpose map-building, Cell
+    # Segmentation) live inside the ITASC widget above and are not exposed as
+    # separate menu entries.
+    - id: itasc.nucleus_tracking_widget
+      title: "Ultrack Segment + Track"
+      python_name: itasc.napari.nucleus_workflow_widget:make_nucleus_tracking_widget
+    # The ITASC Aggregate app: the full catalog UI restricted to the
+    # Contact Analysis stage + Aggregate capstone (three-dot rail: cell labels,
+    # nucleus labels, contact analysis). Both the full install and the standalone
+    # itasc-aggregate wheel resolve this same factory; the standalone simply
+    # lacks the upstream segmentation/tracking distributions, so it always comes
+    # up contact-only. In the full install this is the slim aggregate-focused
+    # entry alongside the complete ITASC widget above.
+    - id: itasc.contact_analysis_widget
+      title: "ITASC Aggregate"
+      python_name: itasc.napari.main_widget:make_aggregate_app_widget
+    # The itasc-cellpose distribution's *standalone* surface — native-mask
+    # segment + laptrack track + embedded basic correction. It is not part of the
+    # integrated pipeline (the pipeline uses the Cellpose widget above); it is
+    # mirrored here only so the full install can also reach the standalone tool.
+    - id: itasc.cellpose_segment_track_widget
+      title: "Cellpose Segment + Track"
+      python_name: itasc.napari.cellpose_segment_track_widget:make_cellpose_segment_track_widget
+  widgets:
+    - command: itasc.main_widget
+      display_name: "ITASC"
+    - command: itasc.nucleus_tracking_widget
+      display_name: "Ultrack Segment + Track"
+    - command: itasc.contact_analysis_widget
+      display_name: "ITASC Aggregate"
+    - command: itasc.cellpose_segment_track_widget
+      display_name: "Cellpose Segment + Track"

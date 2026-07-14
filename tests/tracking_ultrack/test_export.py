@@ -6,12 +6,12 @@ import types
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.export import export_tracked_labels
+from itasc.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.export import export_tracked_labels
 
 
 def test_export_prefers_public_track_id_zarr_export(monkeypatch, tmp_path):
-    import cellflow.tracking_ultrack.export as export_module
+    import itasc.tracking_ultrack.export as export_module
 
     expected = np.zeros((2, 8, 8), dtype=np.uint32)
     expected[:, 1:4, 1:4] = 12
@@ -53,7 +53,7 @@ def test_export_prefers_public_track_id_zarr_export(monkeypatch, tmp_path):
 def test_export_propagates_runtime_error_from_track_export(monkeypatch, tmp_path):
     """A genuine runtime failure (e.g. corrupt DB) must propagate, not silently
     fall through to the degraded CTC/to_labels path and emit wrong labels."""
-    import cellflow.tracking_ultrack.export as export_module
+    import itasc.tracking_ultrack.export as export_module
 
     fallback = np.zeros((2, 8, 8), dtype=np.uint32)
     fallback[:, 2:5, 2:5] = 7
@@ -91,7 +91,7 @@ def test_export_propagates_runtime_error_from_track_export(monkeypatch, tmp_path
 def test_export_falls_through_when_track_api_absent(monkeypatch, tmp_path):
     """An older ultrack lacking the public track-export API (ImportError) should
     fall through to the to_labels strategy — capability detection, not failure."""
-    import cellflow.tracking_ultrack.export as export_module
+    import itasc.tracking_ultrack.export as export_module
 
     expected = np.zeros((2, 8, 8), dtype=np.uint32)
     expected[:, 1:4, 1:4] = 3

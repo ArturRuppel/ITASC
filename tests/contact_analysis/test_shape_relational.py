@@ -3,7 +3,7 @@ import math
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis.shape.relational import (
+from itasc.contact_analysis.shape.relational import (
     RELATIONAL_COLUMNS,
     compute_relational_table,
 )

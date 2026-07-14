@@ -26,7 +26,7 @@ def test_heavy_workflow_dependencies_are_optional_extras() -> None:
     assert "torch" in extras["cellpose"]
     assert "torchvision" in extras["cellpose"]
     assert "ultrack" in extras["tracking"]
-    assert "cellflow[cellpose,tracking]" in extras["all"]
+    assert "itasc[cellpose,tracking]" in extras["all"]
     assert "tomli>=2.0; python_version < '3.11'" in extras["test"]
     assert "tomli>=2.0; python_version < '3.11'" in extras["dev"]
 
@@ -37,27 +37,27 @@ def _python_names(manifest_text: str) -> set[str]:
 
 def test_full_install_folds_extracted_pieces_into_single_napari_manifest() -> None:
     # A Python distribution may register exactly one napari manifest, and npe2
-    # requires its name to match the distribution. The full cellflow install
-    # therefore cannot re-register the standalone cellflow-aggregate /
-    # cellflow-tracking manifests; instead it folds their widgets into the single
-    # cellflow manifest so every extracted piece stays reachable from the full
+    # requires its name to match the distribution. The full itasc install
+    # therefore cannot re-register the standalone itasc-aggregate /
+    # itasc-tracking manifests; instead it folds their widgets into the single
+    # itasc manifest so every extracted piece stays reachable from the full
     # install without installing the sub-distributions.
     manifests = _pyproject()["project"]["entry-points"]["napari.manifest"]
-    assert manifests == {"cellflow": "cellflow:napari.yaml"}
+    assert manifests == {"itasc": "itasc:napari.yaml"}
 
-    folded = (Path("src") / "cellflow" / "napari.yaml").read_text(encoding="utf-8")
-    assert "name: cellflow" in folded
+    folded = (Path("src") / "itasc" / "napari.yaml").read_text(encoding="utf-8")
+    assert "name: itasc" in folded
     folded_factories = _python_names(folded)
 
     # The orchestrator's own widget is registered alongside the folded pieces.
-    assert "cellflow.napari:CellFlowWidget" in folded_factories
+    assert "itasc.napari:ITASCWidget" in folded_factories
 
     # Every standalone piece's widget factory is mirrored verbatim in the folded
     # manifest, so the full install and a standalone install expose the same
     # callable for each piece.
     for piece in ("contact_analysis", "tracking_ultrack", "cellpose"):
         standalone = (
-            Path("src") / "cellflow" / piece / "napari.yaml"
+            Path("src") / "itasc" / piece / "napari.yaml"
         ).read_text(encoding="utf-8")
         standalone_factories = _python_names(standalone)
         assert standalone_factories
@@ -82,18 +82,18 @@ def test_publication_metadata_includes_repository_readme_and_classifiers() -> No
 def test_publication_metadata_exposes_project_urls() -> None:
     urls = _pyproject()["project"]["urls"]
 
-    assert urls["Homepage"] == "https://github.com/ArturRuppel/CellFlow"
-    assert urls["Repository"] == "https://github.com/ArturRuppel/CellFlow"
-    assert urls["Issues"] == "https://github.com/ArturRuppel/CellFlow/issues"
+    assert urls["Homepage"] == "https://github.com/ArturRuppel/ITASC"
+    assert urls["Repository"] == "https://github.com/ArturRuppel/ITASC"
+    assert urls["Issues"] == "https://github.com/ArturRuppel/ITASC/issues"
 
 
 def test_citation_file_contains_provisional_release_metadata() -> None:
     citation = Path("CITATION.cff").read_text(encoding="utf-8")
 
     assert "cff-version: 1.2.0" in citation
-    assert 'title: "CellFlow"' in citation
+    assert 'title: "ITASC"' in citation
     assert 'version: "0.2.0"' in citation
-    assert "repository-code: https://github.com/ArturRuppel/CellFlow" in citation
+    assert "repository-code: https://github.com/ArturRuppel/ITASC" in citation
     assert "email: artur@ruppel.pro" in citation
 
 

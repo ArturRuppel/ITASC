@@ -7,7 +7,7 @@ import pytest
 def test_annotation_name_handles_ultrack_var_annotation_enum_shape():
     from enum import Enum
 
-    from cellflow.tracking_ultrack.db_query import annotation_name
+    from itasc.tracking_ultrack.db_query import annotation_name
 
     class VarAnnotationLike(Enum):
         UNKNOWN = 0
@@ -115,7 +115,7 @@ def _make_hierarchy_db(db_path: Path) -> None:
 def test_summary_text_reports_node_and_edge_probability_statistics(tmp_path):
     pytest.importorskip("ultrack")
 
-    from cellflow.tracking_ultrack.db_query import summary_text
+    from itasc.tracking_ultrack.db_query import summary_text
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB, NodeDB
 
@@ -156,7 +156,7 @@ def test_summary_text_reports_node_and_edge_probability_statistics(tmp_path):
 
 
 def test_query_hierarchy_cut_states_promotes_equal_height_plateau(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_hierarchy_cut_states
+    from itasc.tracking_ultrack.db_query import query_hierarchy_cut_states
 
     db_path = tmp_path / "data.db"
     _make_hierarchy_db(db_path)
@@ -172,7 +172,7 @@ def test_query_hierarchy_cut_states_promotes_equal_height_plateau(tmp_path):
 
 
 def test_query_connected_nodes_returns_predecessor_successor_weights(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_connected_nodes
+    from itasc.tracking_ultrack.db_query import query_connected_nodes
 
     db_path = tmp_path / "data.db"
     _make_hierarchy_db(db_path)
@@ -231,7 +231,7 @@ def _make_node_edges_db(db_path: Path) -> None:
 
 
 def test_query_node_edges_returns_raw_uncollapsed_per_link_rows(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_node_edges
+    from itasc.tracking_ultrack.db_query import query_node_edges
 
     db_path = tmp_path / "data.db"
     _make_node_edges_db(db_path)
@@ -275,7 +275,7 @@ def test_query_node_edges_returns_raw_uncollapsed_per_link_rows(tmp_path):
 
 
 def test_query_node_edges_no_links_returns_empty_edges(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_node_edges
+    from itasc.tracking_ultrack.db_query import query_node_edges
 
     db_path = tmp_path / "data.db"
     _make_hierarchy_db(db_path)
@@ -287,7 +287,7 @@ def test_query_node_edges_no_links_returns_empty_edges(tmp_path):
 
 
 def test_render_hierarchy_cut_state_returns_preview_metadata(tmp_path):
-    from cellflow.tracking_ultrack.db_query import (
+    from itasc.tracking_ultrack.db_query import (
         HierarchyCutState,
         render_hierarchy_cut_state,
     )
@@ -311,7 +311,7 @@ def test_render_hierarchy_cut_state_returns_preview_metadata(tmp_path):
 
 
 def test_greedy_color_classes_packs_non_overlapping_candidates():
-    from cellflow.tracking_ultrack.db_query import greedy_color_classes
+    from itasc.tracking_ultrack.db_query import greedy_color_classes
 
     # 4 atoms in a row -> size-2 unions AB=11, BC=12, CD=13; 11-12 and 12-13 overlap.
     classes = greedy_color_classes([11, 12, 13], [(11, 12), (12, 13)])
@@ -329,7 +329,7 @@ def test_greedy_color_classes_packs_non_overlapping_candidates():
 
 
 def test_greedy_color_classes_edge_cases():
-    from cellflow.tracking_ultrack.db_query import greedy_color_classes
+    from itasc.tracking_ultrack.db_query import greedy_color_classes
 
     assert greedy_color_classes([], []) == ()
     assert greedy_color_classes([1, 2, 3], []) == ((1, 2, 3),)  # no overlaps -> one class
@@ -393,7 +393,7 @@ def _make_atom_union_db(db_path: Path) -> None:
 
 
 def test_query_union_sizes_returns_distinct_sizes_for_frame(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_union_sizes
+    from itasc.tracking_ultrack.db_query import query_union_sizes
 
     db_path = tmp_path / "data.db"
     _make_atom_union_db(db_path)
@@ -402,7 +402,7 @@ def test_query_union_sizes_returns_distinct_sizes_for_frame(tmp_path):
 
 
 def test_query_union_color_classes_groups_disjoint_size2_candidates(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_union_color_classes
+    from itasc.tracking_ultrack.db_query import query_union_color_classes
 
     db_path = tmp_path / "data.db"
     _make_atom_union_db(db_path)
@@ -415,7 +415,7 @@ def test_query_union_color_classes_groups_disjoint_size2_candidates(tmp_path):
 
 
 def test_query_union_color_classes_size1_atoms_are_one_class(tmp_path):
-    from cellflow.tracking_ultrack.db_query import query_union_color_classes
+    from itasc.tracking_ultrack.db_query import query_union_color_classes
 
     db_path = tmp_path / "data.db"
     _make_atom_union_db(db_path)
@@ -425,7 +425,7 @@ def test_query_union_color_classes_size1_atoms_are_one_class(tmp_path):
 
 
 def test_render_union_partition_merges_class_and_fills_leftover_atoms(tmp_path):
-    from cellflow.tracking_ultrack.db_query import render_union_partition
+    from itasc.tracking_ultrack.db_query import render_union_partition
 
     db_path = tmp_path / "data.db"
     _make_atom_union_db(db_path)
@@ -465,7 +465,7 @@ def _make_atom_union_db_with_lower_merge(db_path: Path) -> None:
 
 
 def test_render_union_partition_fills_leftover_with_most_merged_union(tmp_path):
-    from cellflow.tracking_ultrack.db_query import render_union_partition
+    from itasc.tracking_ultrack.db_query import render_union_partition
 
     db_path = tmp_path / "data.db"
     _make_atom_union_db_with_lower_merge(db_path)

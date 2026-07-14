@@ -1,0 +1,10 @@
+name: itasc-aggregate
+display_name: ITASC Aggregate Quantification
+contributions:
+  commands:
+    - id: itasc-aggregate.widget
+      title: "ITASC Aggregate"
+      python_name: itasc.napari.main_widget:make_aggregate_app_widget
+  widgets:
+    - command: itasc-aggregate.widget
+      display_name: "ITASC Aggregate"

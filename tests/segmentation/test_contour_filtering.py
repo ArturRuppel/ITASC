@@ -4,8 +4,8 @@ import numpy as np
 
 
 def test_compute_filtered_contour_maps_applies_median_and_gaussian(monkeypatch):
-    from cellflow.segmentation import contour_filtering as cf
-    from cellflow.segmentation import ContourFilterParams
+    from itasc.segmentation import contour_filtering as cf
+    from itasc.segmentation import ContourFilterParams
 
     contours = np.ones((2, 5, 5), dtype=np.float32)
     median_calls: list[tuple[int, ...]] = []
@@ -38,8 +38,8 @@ def test_compute_filtered_contour_maps_applies_median_and_gaussian(monkeypatch):
 
 
 def test_compute_filtered_contour_maps_skips_noop_filters(monkeypatch):
-    from cellflow.segmentation import contour_filtering as cf
-    from cellflow.segmentation import ContourFilterParams
+    from itasc.segmentation import contour_filtering as cf
+    from itasc.segmentation import ContourFilterParams
 
     contours = np.arange(9, dtype=np.float32).reshape(3, 3)
     median_calls: list[tuple[int, ...]] = []

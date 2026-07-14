@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.track_laptrack.
+"""Tests for itasc.cellpose.track_laptrack.
 
 The centroid/relabel helpers are tested directly (numpy + scikit-image only).
 The laptrack orchestration is tested by monkeypatching the isolated
@@ -10,7 +10,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.cellpose import track_laptrack as tl
+from itasc.cellpose import track_laptrack as tl
 
 
 def test_stitch_z_merges_overlapping_planes_into_one_object():

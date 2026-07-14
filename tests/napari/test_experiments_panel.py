@@ -6,8 +6,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QToolButton
 
-from cellflow.napari._experiments_panel import ExperimentsPanel, overall_status
-from cellflow.napari._stage_status import (
+from itasc.napari._experiments_panel import ExperimentsPanel, overall_status
+from itasc.napari._stage_status import (
     DONE,
     MISSING,
     STAGE_CELL,
@@ -252,7 +252,7 @@ def test_rows_height_grows_with_entries_and_clamps():
 
 
 def test_grip_drag_resizes_list_and_double_click_restores_autofit():
-    from cellflow.napari._experiments_panel import _MIN_ROWS_HEIGHT
+    from itasc.napari._experiments_panel import _MIN_ROWS_HEIGHT
 
     panel = _panel(max_rows_height=300)
     panel.set_records([_entry(k) for k in ("a", "b", "c")])
@@ -327,7 +327,7 @@ def test_calibration_round_trips():
 
 
 def test_quickstart_mentions_project_file():
-    from cellflow.napari._experiments_panel import _QUICKSTART_HTML
+    from itasc.napari._experiments_panel import _QUICKSTART_HTML
 
     text = _QUICKSTART_HTML.lower()
     assert "no project file" not in text

@@ -1,8 +1,8 @@
 """Tests for the constrained centroid-LAP ID retracker."""
 import numpy as np
 
-import cellflow.tracking_ultrack.retracker as retracker
-from cellflow.tracking_ultrack.retracker import retrack_frame_constrained
+import itasc.tracking_ultrack.retracker as retracker
+from itasc.tracking_ultrack.retracker import retrack_frame_constrained
 
 
 def _sq(shape, row, col, size, label):

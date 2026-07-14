@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack.atoms import (
+from itasc.tracking_ultrack.atoms import (
     AtomParams,
     atom_adjacency,
     atom_adjacency_weighted,
@@ -169,7 +169,7 @@ def test_read_atoms_params_returns_none_when_absent(tmp_path):
 
 
 def test_merge_small_atoms_keeps_isolated_small_atom_beside_a_large_one():
-    from cellflow.tracking_ultrack.atoms import _merge_small_atoms
+    from itasc.tracking_ultrack.atoms import _merge_small_atoms
 
     atoms = np.zeros((20, 40), dtype=np.int32)
     atoms[2:18, 2:18] = 1   # large atom (256 px)
@@ -181,7 +181,7 @@ def test_merge_small_atoms_keeps_isolated_small_atom_beside_a_large_one():
 
 
 def test_merge_small_atoms_folds_into_longest_border_neighbour():
-    from cellflow.tracking_ultrack.atoms import _merge_small_atoms
+    from itasc.tracking_ultrack.atoms import _merge_small_atoms
 
     atoms = np.zeros((20, 20), dtype=np.int32)
     atoms[:, :8] = 1       # large left neighbour
@@ -206,7 +206,7 @@ def test_extract_atoms_frame_keeps_labels_when_all_atoms_below_min_area():
 
 
 def test_extract_atoms_stack_with_maps_dtypes_and_consistency():
-    from cellflow.tracking_ultrack.atoms import extract_atoms_stack_with_maps
+    from itasc.tracking_ultrack.atoms import extract_atoms_stack_with_maps
 
     rng = np.random.default_rng(42)
     fg = rng.random((3, 40, 40)).astype(np.float32)

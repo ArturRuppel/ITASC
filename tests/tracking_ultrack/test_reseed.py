@@ -1,4 +1,4 @@
-"""Tests for cellflow.tracking_ultrack.reseed.
+"""Tests for itasc.tracking_ultrack.reseed.
 
 Three test groups:
   - Unit: prune_validated_overlaps — synthetic NodeDB, assert correct deletions
@@ -15,8 +15,8 @@ import pytest
 import sqlalchemy as sqla
 from sqlalchemy.orm import Session
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.reseed import (
+from itasc.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.reseed import (
     merge_validated_into_export,
     prune_validated_overlaps,
 )

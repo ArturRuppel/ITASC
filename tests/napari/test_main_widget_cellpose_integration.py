@@ -1,4 +1,4 @@
-"""Integration test: CellFlowMainWidget uses the new CellposeWidget."""
+"""Integration test: ITASCMainWidget uses the new CellposeWidget."""
 from __future__ import annotations
 
 import importlib
@@ -38,16 +38,16 @@ def _mock_cellpose(monkeypatch):
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
     reloaded = (
-        "cellflow.cellpose.cellpose_runner",
-        "cellflow.napari.cellpose_widget",
-        "cellflow.napari.main_widget",
+        "itasc.cellpose.cellpose_runner",
+        "itasc.napari.cellpose_widget",
+        "itasc.napari.main_widget",
     )
     for name in reloaded:
         monkeypatch.delitem(sys.modules, name, raising=False)
     # ``delitem`` only restores the ``sys.modules`` entry on teardown; re-importing
     # these modules below also rebinds the same-named attribute on their parent
-    # package (e.g. ``cellflow.napari.main_widget``) to the fresh copy. That parent
-    # attribute is what ``mock.patch("cellflow.napari.main_widget.show_info")``
+    # package (e.g. ``itasc.napari.main_widget``) to the fresh copy. That parent
+    # attribute is what ``mock.patch("itasc.napari.main_widget.show_info")``
     # resolves, so a leaked copy would silently divert patches in later tests away
     # from the module other tests imported via ``from ... import``. Arm monkeypatch
     # to restore the parent attributes to their original modules too.
@@ -85,13 +85,13 @@ def _fake_viewer():
 def test_positions_panel_discovers_and_drives_pos_dir(tmp_path):
     """Find data folders adds rows directly; activating a row sets ``_pos_dir``."""
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     for cond, pos in (("WT", "p1"), ("WT", "p2"), ("KO", "p1")):
         raw = tmp_path / cond / pos / "0_input"
         raw.mkdir(parents=True)
         (raw / "nucleus.tif").touch()  # the discovery input file
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     found = w._positions_panel.discover(str(tmp_path))
     assert len(found) == 3
     keys = w._positions_panel.keys()
@@ -111,7 +111,7 @@ def test_discover_positions_handles_root_inside_a_position(tmp_path):
     is the parent of the chosen root. It sits above root and has no nesting under
     it: added plainly, identified by its own folder name.
     """
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     pos = tmp_path / "processed" / "pos11"
     (pos / "0_input").mkdir(parents=True)
     (pos / "0_input" / "nucleus.tif").touch()
@@ -131,12 +131,12 @@ def test_configured_input_name_reaches_cellpose_stage(tmp_path):
     cellpose stage so its run path and Pipeline Files status follow the real file.
     """
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     pos = tmp_path / "WT" / "p1"
     (pos / "raw").mkdir(parents=True)
     (pos / "raw" / "nuc.tif").touch()  # not behind 0_input, not the canonical name
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     w._positions_panel.input_name_fields["nucleus"].setText("raw/nuc.tif")
     w._positions_panel.discover(str(tmp_path))
     w._positions_panel.set_active(str(pos))
@@ -153,9 +153,9 @@ def test_configured_input_name_reaches_cellpose_stage(tmp_path):
 
 def test_main_widget_constructs_new_cellpose_widget():
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    cellpose_mod = importlib.import_module("cellflow.napari.cellpose_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    cellpose_mod = importlib.import_module("itasc.napari.cellpose_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     assert isinstance(w._cellpose_widget, cellpose_mod.CellposeWidget)
     # Old placeholder class no longer exists.
     assert not hasattr(main_mod, "_CellposePanel")
@@ -166,10 +166,10 @@ def test_load_config_is_refused_while_owner_active_and_declined(monkeypatch, tmp
     """Load Config stays clickable during a mode, but a declined prompt must
     not mutate state underneath the active viewer owner."""
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
 
-    cfg = tmp_path / "cellflow_config.json"
+    cfg = tmp_path / "itasc_config.json"
     cfg.write_text('{"metadata": {"pixel_size_um": "0.5"}}')
     w._pos_dir = tmp_path
     # Calibration now lives in the positions panel's Setup section.
@@ -198,11 +198,11 @@ def test_config_load_failure_surfaces_via_notification(monkeypatch, tmp_path):
     """A corrupt config must report through a GUI notification, not a bare
     print to the console the user never sees."""
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     errors: list[str] = []
     monkeypatch.setattr(main_mod, "show_error", lambda m: errors.append(m))
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     bad = tmp_path / "bad.json"
     bad.write_text("{not valid json")
     w._load_config(str(bad))
@@ -213,11 +213,11 @@ def test_config_load_failure_surfaces_via_notification(monkeypatch, tmp_path):
 
 def test_config_save_failure_surfaces_via_notification(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     errors: list[str] = []
     monkeypatch.setattr(main_mod, "show_error", lambda m: errors.append(m))
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     # A directory path can't be opened for writing → save fails.
     w._save_config(str(tmp_path))
 
@@ -227,10 +227,10 @@ def test_config_save_failure_surfaces_via_notification(monkeypatch, tmp_path):
 
 def test_context_change_during_correction_exits_owner_when_confirmed(monkeypatch, tmp_path):
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
 
-    cfg = tmp_path / "cellflow_config.json"
+    cfg = tmp_path / "itasc_config.json"
     cfg.write_text('{"metadata": {"pixel_size_um": "0.5"}}')
     w._pos_dir = tmp_path
     # Calibration now lives in the positions panel's Setup section.
@@ -261,10 +261,10 @@ def test_context_change_during_correction_exits_owner_when_confirmed(monkeypatch
 
 def test_main_widget_theme_picker_restyles_stage_subheaders():
     app = QApplication.instance() or QApplication([])
-    ui_style = importlib.import_module("cellflow.napari.ui_style")
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    ui_style = importlib.import_module("itasc.napari.ui_style")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
     ui_style.set_active_theme("Cividis")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
 
     w._on_theme_selected("Sunset")
 
@@ -308,9 +308,9 @@ def test_main_widget_theme_picker_restyles_stage_subheaders():
 
 def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    divergence_mod = importlib.import_module("cellflow.napari.divergence_maps_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    divergence_mod = importlib.import_module("itasc.napari.divergence_maps_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
 
     assert not hasattr(w, "_divergence_maps_widget")
     assert not hasattr(w, "divergence_maps_section")
@@ -339,8 +339,8 @@ def test_main_widget_keeps_divergence_maps_inside_cellpose(tmp_path):
 
 def test_main_widget_state_round_trips_cellpose():
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     cellpose_state = {
         "nucleus": {
             "layout": "3D+t",
@@ -363,8 +363,8 @@ def test_main_widget_state_round_trips_cellpose():
 
 def test_main_widget_pipeline_status_uses_output_files_tracker(tmp_path):
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     # Should reach pipeline_status_from_files without error (tracker exists).
     assert w._cellpose_widget.output_files_tracker is not None
     w._update_section_statuses()
@@ -380,14 +380,14 @@ def test_catalog_rail_updates_when_a_stage_output_appears(tmp_path):
     widget listens for that to re-read on-disk status per row.
     """
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    from itasc.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
     (pos / "0_input" / "nucleus.tif").touch()
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))
     (row,) = w._positions_panel._rows
     # Nothing on disk yet → no stage reads as done.
@@ -415,13 +415,13 @@ def test_catalog_rail_updates_when_divergence_maps_built(tmp_path):
     land.
     """
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
     (pos / "0_input" / "nucleus.tif").touch()
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))
     w._positions_panel.set_active(str(pos))
     (row,) = w._positions_panel._rows
@@ -448,13 +448,13 @@ def test_cellpose_section_dot_reaches_done_from_divergence_maps(tmp_path):
     could never reach "done" no matter how many maps were written.
     """
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
+    main_mod = importlib.import_module("itasc.napari.main_widget")
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
     (pos / "0_input" / "nucleus.tif").touch()
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))
     w._positions_panel.set_active(str(pos))
     assert w.cellpose_section.status != "done"
@@ -479,14 +479,14 @@ def test_catalog_rail_updates_when_contact_analysis_completes(tmp_path):
     fired and the catalog circles stayed stale until a manual Refresh.
     """
     app = QApplication.instance() or QApplication([])
-    main_mod = importlib.import_module("cellflow.napari.main_widget")
-    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+    main_mod = importlib.import_module("itasc.napari.main_widget")
+    from itasc.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
 
     pos = tmp_path / "WT" / "p1"
     (pos / "0_input").mkdir(parents=True)
     (pos / "0_input" / "nucleus.tif").touch()
 
-    w = main_mod.CellFlowMainWidget(_fake_viewer())
+    w = main_mod.ITASCMainWidget(_fake_viewer())
     w._positions_panel.discover(str(tmp_path))
     # Activating the row drives set_context, so the contact widget knows which
     # position dir its Pipeline Files panel (and thus the rail) tracks.

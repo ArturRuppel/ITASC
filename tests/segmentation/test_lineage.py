@@ -1,9 +1,9 @@
-"""Unit tests for cellflow.segmentation.lineage."""
+"""Unit tests for itasc.segmentation.lineage."""
 from __future__ import annotations
 
 import numpy as np
 
-from cellflow.segmentation.lineage import build_lineage
+from itasc.segmentation.lineage import build_lineage
 
 
 def _stack(t: int = 4, size: int = 8) -> np.ndarray:

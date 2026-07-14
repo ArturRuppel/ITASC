@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis import (
+from itasc.contact_analysis import (
     discover_contact_batch_jobs,
     run_contact_batch,
 )

@@ -3,7 +3,7 @@ import json
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis.pixel_size import (
+from itasc.contact_analysis.pixel_size import (
     pixel_size_from_config,
     pixel_size_from_tiff,
     resolve_pixel_size_um,
@@ -12,7 +12,7 @@ from cellflow.contact_analysis.pixel_size import (
 
 def _write_config(position_dir, pixel_size_um):
     config = {"metadata": {"pixel_size_um": pixel_size_um}}
-    (position_dir / "cellflow_config.json").write_text(json.dumps(config))
+    (position_dir / "itasc_config.json").write_text(json.dumps(config))
 
 
 def test_pixel_size_from_config_reads_metadata(tmp_path):
@@ -24,8 +24,24 @@ def test_pixel_size_from_config_rejects_nonpositive_and_missing(tmp_path):
     assert pixel_size_from_config(tmp_path) is None  # no file
     _write_config(tmp_path, 0)
     assert pixel_size_from_config(tmp_path) is None
-    (tmp_path / "cellflow_config.json").write_text("{not json")
+    (tmp_path / "itasc_config.json").write_text("{not json")
     assert pixel_size_from_config(tmp_path) is None
+
+
+def test_pixel_size_reads_legacy_cellflow_config(tmp_path):
+    # Data written before the ITASC rename carries cellflow_config.json; it is
+    # read as a fallback when no itasc_config.json is present.
+    config = {"metadata": {"pixel_size_um": 0.42}}
+    (tmp_path / "cellflow_config.json").write_text(json.dumps(config))
+    assert pixel_size_from_config(tmp_path) == 0.42
+
+
+def test_pixel_size_current_config_wins_over_legacy(tmp_path):
+    (tmp_path / "cellflow_config.json").write_text(
+        json.dumps({"metadata": {"pixel_size_um": 0.42}})
+    )
+    _write_config(tmp_path, 0.325)  # writes itasc_config.json
+    assert pixel_size_from_config(tmp_path) == 0.325
 
 
 def test_pixel_size_from_imagej_unit_and_resolution(tmp_path):

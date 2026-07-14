@@ -1,7 +1,7 @@
 """write_config — the inverse of load_config (round-trips through TOML)."""
 from __future__ import annotations
 
-from cellflow.contact_analysis.config import load_config, write_config
+from itasc.contact_analysis.config import load_config, write_config
 
 
 def test_round_trip_minimal(tmp_path):

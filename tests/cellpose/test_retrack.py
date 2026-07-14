@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.retrack — the DB-free standalone retracker.
+"""Tests for itasc.cellpose.retrack — the DB-free standalone retracker.
 
 Pure numpy/scipy/skimage, so everything is exercised directly with no viewer.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.cellpose import retrack as rt
+from itasc.cellpose import retrack as rt
 
 
 def _block(frame, label, y0, x0, size=4):

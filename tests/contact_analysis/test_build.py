@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.contact_analysis.contacts.build import (
+from itasc.contact_analysis.contacts.build import (
     build_contacts,
     build_position_contacts,
     ensure_contacts,
@@ -163,7 +163,7 @@ def test_build_position_contacts_writes_schema_and_references_label_paths(tmp_pa
         assert len(h5["t1_events/table/t1_event_id"]) == 0
 
 
-def test_build_position_contacts_accepts_cellflow_v2_label_paths(tmp_path):
+def test_build_position_contacts_accepts_itasc_v2_label_paths(tmp_path):
     pos_dir = tmp_path / "pos00"
     (pos_dir / "2_nucleus").mkdir(parents=True)
     (pos_dir / "3_cell").mkdir()

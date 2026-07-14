@@ -50,8 +50,8 @@ def test_inserts_outgoing_and_incoming_edges_within_max_distance(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import ensure_anchor_incident_links
 
     engine = _make_engine(tmp_path / "data.db")
 
@@ -85,8 +85,8 @@ def test_skips_existing_link_pair(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import ensure_anchor_incident_links
 
     engine = _make_engine(tmp_path / "data.db")
 
@@ -114,8 +114,8 @@ def test_does_not_insert_duplicate_pair_when_adjacent_anchors_share_edge(tmp_pat
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import ensure_anchor_incident_links
 
     engine = _make_engine(tmp_path / "data.db")
 
@@ -148,8 +148,8 @@ def test_removes_existing_duplicate_link_pairs_before_solve(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB, VarAnnotation
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import ensure_anchor_incident_links
 
     engine = _make_engine(tmp_path / "data.db")
 
@@ -189,8 +189,8 @@ def test_no_anchors_no_inserts(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.corrections import ensure_anchor_incident_links
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.corrections import ensure_anchor_incident_links
 
     engine = _make_engine(tmp_path / "data.db")
 

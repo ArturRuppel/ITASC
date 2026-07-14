@@ -2,11 +2,11 @@
 import numpy as np
 import pytest
 
-from cellflow.contact_analysis.contacts.neighborhood import (
+from itasc.contact_analysis.contacts.neighborhood import (
     cell_density,
     cell_neighbor_counts,
 )
-from cellflow.contact_analysis.contacts.reader import PositionContactAnalysis
+from itasc.contact_analysis.contacts.reader import PositionContactAnalysis
 
 
 def _analysis(cells, edges) -> PositionContactAnalysis:

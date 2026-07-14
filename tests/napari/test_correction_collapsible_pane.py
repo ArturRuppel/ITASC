@@ -19,8 +19,8 @@ import pytest
 pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication, QLabel, QToolButton  # noqa: E402
 
-from cellflow.napari.correction._correction_ui import CollapsiblePane, _PANE_STRIP_W  # noqa: E402
-from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget  # noqa: E402
+from itasc.napari.correction._correction_ui import CollapsiblePane, _PANE_STRIP_W  # noqa: E402
+from itasc.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget  # noqa: E402
 
 
 @pytest.fixture(scope="module")

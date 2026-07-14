@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.core import label_store
-from cellflow.core.label_store import (
+from itasc.core import label_store
+from itasc.core.label_store import (
     read_full_tracked_stack,
     write_full_tracked_stack,
 )

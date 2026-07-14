@@ -7,7 +7,7 @@ pytest.importorskip("qtpy")
 from qtpy.QtCore import QSize  # noqa: E402
 from qtpy.QtWidgets import QApplication, QWidget  # noqa: E402
 
-from cellflow.napari._flow_layout import FlowLayout  # noqa: E402
+from itasc.napari._flow_layout import FlowLayout  # noqa: E402
 
 
 @pytest.fixture(scope="module")

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from cellflow.tracking_ultrack.validation_state import (
+from itasc.tracking_ultrack.validation_state import (
     add_correction,
     add_corrections,
     invalidate_frame,
@@ -20,7 +20,7 @@ from cellflow.tracking_ultrack.validation_state import (
     validate_track,
     write_validated_frames,
 )
-from cellflow.tracking_ultrack.corrections import Correction
+from itasc.tracking_ultrack.corrections import Correction
 
 
 @pytest.fixture()
@@ -41,7 +41,7 @@ def test_read_corrections_caches_parse_between_calls(pos_dir, monkeypatch):
     add_correction(pos_dir, Correction(cell_id=1, t=0, kind="validated", y=1.0, x=1.0))
     read_corrections(pos_dir)  # prime the cache
 
-    import cellflow.tracking_ultrack.validation_state as vs
+    import itasc.tracking_ultrack.validation_state as vs
     calls = []
     real = json.loads
     monkeypatch.setattr(vs.json, "loads", lambda s: calls.append(1) or real(s))
@@ -69,7 +69,7 @@ def test_cache_invalidates_when_stat_signature_cannot_distinguish_writes(
     neither mtime nor size ever changes between the two writes. Regression for
     the Windows-CI failure in test_add_correction_replaces_same_cell_frame_kind.
     """
-    import cellflow.tracking_ultrack.validation_state as vs
+    import itasc.tracking_ultrack.validation_state as vs
 
     monkeypatch.setattr(vs, "_stat_signature", lambda p: (0, 0))
 

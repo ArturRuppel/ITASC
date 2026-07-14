@@ -1,4 +1,4 @@
-"""Tests for cellflow.tracking_ultrack.extend (LinkDB-driven extend)."""
+"""Tests for itasc.tracking_ultrack.extend (LinkDB-driven extend)."""
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack._node_geometry import make_node_pickle
+from itasc.tracking_ultrack._node_geometry import make_node_pickle
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ class TestExtendTrackFromDb:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         y0, x0, y1, x1 = 8, 9, 14, 15
@@ -95,7 +95,7 @@ class TestExtendTrackFromDb:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         y0, x0, y1, x1 = 8, 9, 14, 15
@@ -126,7 +126,7 @@ class TestExtendTrackFromDb:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         with Session(engine) as session:
@@ -158,7 +158,7 @@ class TestExtendTrackFromDb:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         y0, x0, y1, x1 = 8, 9, 14, 15
@@ -185,7 +185,7 @@ class TestExtendTrackFromDb:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         with Session(engine) as session:
@@ -211,7 +211,7 @@ class TestExtendTrackFromDb:
         from ultrack.core.database import NodeDB
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         engine = _make_engine(tmp_path / "data.db")
         y0, x0, y1, x1 = 8, 9, 14, 15
@@ -250,7 +250,7 @@ class TestExtendTrackFromDb:
 
     def test_none_when_db_missing(self, tmp_path):
         """A missing DB yields None rather than raising."""
-        from cellflow.tracking_ultrack.extend import extend_track_from_db
+        from itasc.tracking_ultrack.extend import extend_track_from_db
 
         tracked = np.zeros((2, 24, 24), dtype=np.uint32)
         tracked[0, 5:10, 5:10] = 7
@@ -286,7 +286,7 @@ class TestListExtendCandidates:
     def test_lists_ranked_candidates_with_masks(self, tmp_path):
         """The gallery API returns linked candidates, best-first, with masks."""
         pytest.importorskip("ultrack")
-        from cellflow.tracking_ultrack.extend import list_extend_candidates
+        from itasc.tracking_ultrack.extend import list_extend_candidates
 
         self._seed_two_links(tmp_path)
         tracked = np.zeros((2, 32, 32), dtype=np.uint32)
@@ -314,7 +314,7 @@ class TestListExtendCandidates:
     def test_winner_matches_extend_track_from_db(self, tmp_path):
         """The top gallery candidate is the one extend_track_from_db would apply."""
         pytest.importorskip("ultrack")
-        from cellflow.tracking_ultrack.extend import (
+        from itasc.tracking_ultrack.extend import (
             extend_track_from_db,
             list_extend_candidates,
         )
@@ -341,7 +341,7 @@ class TestListExtendCandidates:
         from sqlalchemy.orm import Session
         from tests.tracking_ultrack.test_reseed import _make_engine
 
-        from cellflow.tracking_ultrack.extend import list_extend_candidates
+        from itasc.tracking_ultrack.extend import list_extend_candidates
 
         engine = _make_engine(tmp_path / "data.db")
         with Session(engine) as session:
@@ -369,7 +369,7 @@ class TestListExtendCandidates:
     def test_empty_when_target_frame_out_of_range(self, tmp_path):
         """Backward from frame 0 has no target frame: empty, but target_frame kept."""
         pytest.importorskip("ultrack")
-        from cellflow.tracking_ultrack.extend import list_extend_candidates
+        from itasc.tracking_ultrack.extend import list_extend_candidates
 
         self._seed_two_links(tmp_path)
         tracked = np.zeros((2, 32, 32), dtype=np.uint32)
@@ -387,7 +387,7 @@ class TestListExtendCandidates:
 
     def test_empty_when_db_missing(self, tmp_path):
         """A missing DB yields an empty shortlist rather than raising."""
-        from cellflow.tracking_ultrack.extend import list_extend_candidates
+        from itasc.tracking_ultrack.extend import list_extend_candidates
 
         tracked = np.zeros((2, 32, 32), dtype=np.uint32)
         tracked[0, 5:11, 5:11] = 7

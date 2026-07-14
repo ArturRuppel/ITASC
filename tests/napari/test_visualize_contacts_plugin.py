@@ -7,11 +7,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication
 
-from cellflow.napari.contact_analysis.plugins import (
+from itasc.napari.contact_analysis.plugins import (
     AnalysisContext,
     available_analysis_plugins,
 )
-from cellflow.napari.contact_analysis.plugins.visualize_contacts import (
+from itasc.napari.contact_analysis.plugins.visualize_contacts import (
     VisualizeContactsPlugin,
 )
 

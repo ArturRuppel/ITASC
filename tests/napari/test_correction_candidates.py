@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from cellflow.napari.correction._correction_candidates import (
+from itasc.napari.correction._correction_candidates import (
     CandidateSpec,
     CandidateStrip,
     build_candidate_strip,

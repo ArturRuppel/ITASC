@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.flow_following (Qt-free, numpy/scipy only).
+"""Tests for itasc.cellpose.flow_following (Qt-free, numpy/scipy only).
 
 Covers the integrator capture behaviour, foreground masking, label preservation,
 the bounded orphan drop, and the movie orchestration (cell ids inherit nucleus
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.cellpose import flow_following as ff
+from itasc.cellpose import flow_following as ff
 
 
 def _inward_flow(H: int, W: int, cy: float, cx: float) -> np.ndarray:

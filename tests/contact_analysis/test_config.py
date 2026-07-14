@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from cellflow.contact_analysis.config import RunConfig, load_config
+from itasc.contact_analysis.config import RunConfig, load_config
 
 
 def _write(tmp: Path, text: str, name: str = "config.toml") -> Path:

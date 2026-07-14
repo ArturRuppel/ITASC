@@ -29,8 +29,8 @@ class _NoSizeHintIndex:
 
 def test_layer_delegate_loading_indicator_tolerates_missing_size_hint():
     app = QApplication.instance() or QApplication([])
-    sys.modules.pop("cellflow.napari", None)
-    importlib.import_module("cellflow.napari")
+    sys.modules.pop("itasc.napari", None)
+    importlib.import_module("itasc.napari")
     from napari._qt.containers._layer_delegate import LayerDelegate
 
     delegate = LayerDelegate()
@@ -44,7 +44,7 @@ def test_layer_delegate_loading_indicator_tolerates_missing_size_hint():
 def test_padded_units_scale_extends_to_cover_displayed_dims():
     # Bug 28: a 2-tuple units scale on a layer whose displayed dims are [1, 2]
     # would overrun at index 2; pad with the no-calibration default (1.0).
-    from cellflow.napari._napari_compat import _padded_units_scale
+    from itasc.napari._napari_compat import _padded_units_scale
 
     assert _padded_units_scale((1.0, 1.0), [1, 2]) == (1.0, 1.0, 1.0)
     # Already long enough -> returned unchanged (and as a tuple).
@@ -55,8 +55,8 @@ def test_padded_units_scale_extends_to_cover_displayed_dims():
 
 
 def test_units_scale_guard_is_installed_on_import():
-    sys.modules.pop("cellflow.napari", None)
-    importlib.import_module("cellflow.napari")
+    sys.modules.pop("itasc.napari", None)
+    importlib.import_module("itasc.napari")
     from napari._vispy.layers.base import VispyBaseLayer
 
-    assert getattr(VispyBaseLayer, "_cellflow_units_scale_guard", False) is True
+    assert getattr(VispyBaseLayer, "_itasc_units_scale_guard", False) is True

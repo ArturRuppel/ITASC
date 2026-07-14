@@ -5,7 +5,7 @@ import pytest
 import tifffile
 from skimage.draw import disk
 
-from cellflow.contact_analysis.shape.core import (
+from itasc.contact_analysis.shape.core import (
     DESCRIPTOR_COLUMNS,
     compute_object_shape,
 )

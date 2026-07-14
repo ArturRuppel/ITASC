@@ -28,15 +28,15 @@ class _FakeViewer:
 
 
 def _load_widget(monkeypatch):
-    """Bypass cellflow.napari.__init__ (which imports main_widget) so the
+    """Bypass itasc.napari.__init__ (which imports main_widget) so the
     widget module can be loaded standalone in tests.
     """
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
+    napari_pkg = types.ModuleType("itasc.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.divergence_maps_widget", None)
-    return importlib.import_module("cellflow.napari.divergence_maps_widget")
+    monkeypatch.setitem(sys.modules, "itasc.napari", napari_pkg)
+    sys.modules.pop("itasc.napari.divergence_maps_widget", None)
+    return importlib.import_module("itasc.napari.divergence_maps_widget")
 
 
 def _qapp():
@@ -213,7 +213,7 @@ def test_stage_row_buttons_are_clustered_and_use_header_style(monkeypatch):
         w.cell_preview_btn,
         w.cell_run_btn,
     ):
-        assert button.property("cellflow_stage_header_action") is True
+        assert button.property("itasc_stage_header_action") is True
         assert "border: none" in button.styleSheet()
         assert "text-align: center" in button.styleSheet()
 
@@ -309,7 +309,7 @@ def test_widget_state_roundtrip(monkeypatch):
 def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
-    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
+    from itasc.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     pos = tmp_path / "pos00"
@@ -386,7 +386,7 @@ def test_run_invokes_build_divergence_maps(tmp_path, monkeypatch):
 def test_worker_emits_granular_progress_for_nucleus_and_cell(tmp_path, monkeypatch):
     _qapp()
     mod = _load_widget(monkeypatch)
-    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
+    from itasc.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -461,7 +461,7 @@ def test_completed_run_emits_maps_built(tmp_path, monkeypatch):
     """
     _qapp()
     mod = _load_widget(monkeypatch)
-    from cellflow.cellpose.divergence_maps import DivergenceMapsReport
+    from itasc.cellpose.divergence_maps import DivergenceMapsReport
     import tifffile
 
     monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
@@ -630,7 +630,7 @@ def test_preview_fills_each_frame_slice_on_scrub(monkeypatch, tmp_path):
 def _write_prob_dp_squeezed(pos_dir: Path, channel: str, *, T=3, Y=8, X=8) -> None:
     """Single-z (``Z=1``) prob/dp written the way Cellpose does — with axes
     metadata, which makes TIFF squeeze the singleton ``Z`` on disk."""
-    from cellflow.core.tiff import imwrite_grayscale
+    from itasc.core.tiff import imwrite_grayscale
 
     rng = np.random.default_rng(0)
     cp = pos_dir / "1_cellpose"

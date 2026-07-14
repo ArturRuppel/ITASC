@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.tracking_ultrack.config import TrackingConfig
-from cellflow.tracking_ultrack.corrections import (
+from itasc.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.corrections import (
     Correction,
     apply_post_solve_corrections,
 )

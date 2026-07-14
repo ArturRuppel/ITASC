@@ -1,8 +1,8 @@
 """Tests for propagating NLS subpopulation labels onto contacts."""
 import numpy as np
 
-from cellflow.contact_analysis.contacts.contact_labels import label_contacts
-from cellflow.contact_analysis.contacts.reader import PositionContactAnalysis
+from itasc.contact_analysis.contacts.contact_labels import label_contacts
+from itasc.contact_analysis.contacts.reader import PositionContactAnalysis
 
 
 def _analysis(edges) -> PositionContactAnalysis:

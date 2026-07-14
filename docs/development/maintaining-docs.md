@@ -1,7 +1,7 @@
 # Maintaining the docs
 
 These docs are built so that they **cannot quietly drift** from the code. Three
-rules keep them honest as CellFlow evolves.
+rules keep them honest as ITASC evolves.
 
 ## 1. The API reference is generated, never written
 

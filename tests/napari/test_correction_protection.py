@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_protection import (
+from itasc.napari.correction._correction_protection import (
     protected_cell_ids_at_frame,
     protected_cell_mask,
 )
-from cellflow.tracking_ultrack.corrections import Correction
+from itasc.tracking_ultrack.corrections import Correction
 
 
 def test_protected_cell_ids_at_frame_combines_validated_tracks_and_anchors() -> None:

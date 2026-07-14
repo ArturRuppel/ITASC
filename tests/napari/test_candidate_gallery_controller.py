@@ -15,7 +15,7 @@ import pytest
 pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from cellflow.napari.candidate_gallery_controller import (  # noqa: E402
+from itasc.napari.candidate_gallery_controller import (  # noqa: E402
     CandidateGalleryController,
 )
 

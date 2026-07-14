@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_centroids import (
+from itasc.napari.correction._correction_centroids import (
     NEUTRAL_OVERLAY_COLOR,
     correction_label_color_map,
     ensure_label_colormap_entries,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import types
 
-from cellflow.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
+from itasc.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 
 
 def _stub():

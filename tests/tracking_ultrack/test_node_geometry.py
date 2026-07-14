@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from cellflow.tracking_ultrack._node_geometry import (
+from itasc.tracking_ultrack._node_geometry import (
     centroid_gate,
     node_bbox_and_mask,
     node_pickle_ndim,

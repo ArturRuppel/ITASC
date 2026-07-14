@@ -4,7 +4,7 @@ import types
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack.config import TrackingConfig
+from itasc.tracking_ultrack.config import TrackingConfig
 
 
 def test_tracking_config_exposes_seed_prior_defaults():
@@ -31,7 +31,7 @@ def test_tracking_config_exposes_node_probability_weights():
 
 
 def test_build_ultrack_config_forwards_bias_to_tracking_config(monkeypatch, tmp_path):
-    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    from itasc.tracking_ultrack.ingest import _build_ultrack_config
 
     captured = {}
 
@@ -70,7 +70,7 @@ def test_build_ultrack_config_forwards_bias_to_tracking_config(monkeypatch, tmp_
 
 
 def test_signed_power_transform_preserves_negative_edge_penalties():
-    from cellflow.tracking_ultrack.ingest import _signed_power_transform
+    from itasc.tracking_ultrack.ingest import _signed_power_transform
 
     values = np.array([-2.0, -0.5, 0.0, 0.5, 2.0])
 
@@ -82,7 +82,7 @@ def test_signed_power_transform_preserves_negative_edge_penalties():
 def test_build_ultrack_config_uses_signed_power_transform(tmp_path):
     pytest.importorskip("ultrack")
 
-    from cellflow.tracking_ultrack.ingest import _build_ultrack_config
+    from itasc.tracking_ultrack.ingest import _build_ultrack_config
 
     ultrack_cfg = _build_ultrack_config(TrackingConfig(power=4), tmp_path)
 

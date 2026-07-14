@@ -1,9 +1,9 @@
-"""Tests for cellflow.segmentation.nucleus_segmentation."""
+"""Tests for itasc.segmentation.nucleus_segmentation."""
 from __future__ import annotations
 
 import numpy as np
 
-from cellflow.segmentation.nucleus_segmentation import _fill_and_close_labels
+from itasc.segmentation.nucleus_segmentation import _fill_and_close_labels
 
 
 def test_fill_and_close_labels_fills_per_label_holes():

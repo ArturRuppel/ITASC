@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from cellflow.tracking_ultrack.swap_candidate import (
+from itasc.tracking_ultrack.swap_candidate import (
     SwapCandidate,
     cycle_index,
     list_swap_candidates,
@@ -299,7 +299,7 @@ class TestMatchMaskToNodeCentroidGate:
         pytest.importorskip("ultrack")
         from sqlalchemy.orm import Session
 
-        from cellflow.tracking_ultrack._node_geometry import match_mask_to_node
+        from itasc.tracking_ultrack._node_geometry import match_mask_to_node
 
         engine = _make_engine(tmp_path / "data.db")
         # Tall node overlapping the left end of a wide source bar. Its centroid

@@ -1,8 +1,8 @@
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis.contacts.reader import PositionContactAnalysis, read_position_contacts
-from cellflow.contact_analysis.contacts.build import build_position_contacts
+from itasc.contact_analysis.contacts.reader import PositionContactAnalysis, read_position_contacts
+from itasc.contact_analysis.contacts.build import build_position_contacts
 
 
 def _write_position(tmp_path, cell_stack, nucleus_stack):

@@ -86,10 +86,10 @@ jobs:
 
       - name: Build extracted distributions
         run: |
-          python -m build --wheel packages/cellflow-core --outdir dist
-          python -m build --wheel packages/cellflow-aggregate --outdir dist
-          python -m build --wheel packages/cellflow-tracking --outdir dist
-          python -m build --wheel packages/cellflow-cellpose --outdir dist
+          python -m build --wheel packages/itasc-core --outdir dist
+          python -m build --wheel packages/itasc-aggregate --outdir dist
+          python -m build --wheel packages/itasc-tracking --outdir dist
+          python -m build --wheel packages/itasc-cellpose --outdir dist
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
         run: |
@@ -102,12 +102,12 @@ jobs:
           # can't replace its own running pip.exe and errors out.
           python -m pip install --upgrade pip
           python -m pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
-          python -m pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_cellpose-*.whl
+          python -m pip install --no-deps dist/itasc_core-*.whl dist/itasc_aggregate-*.whl dist/itasc_tracking-*.whl dist/itasc_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
-          import cellflow            # PEP 420 namespace, no orchestrator present
-          import cellflow.core.tiff
-          from cellflow.contact_analysis import build_contacts
+          import itasc            # PEP 420 namespace, no orchestrator present
+          import itasc.core.tiff
+          from itasc.contact_analysis import build_contacts
           d = tempfile.mkdtemp()
           labels = np.zeros((2, 5, 6), dtype=np.uint16)
           labels[:, :, :3] = 1
@@ -117,30 +117,30 @@ jobs:
           out = build_contacts(cell_labels_path=cp, output_path=os.path.join(d, "ca.h5"))
           with h5py.File(out) as h5:
               assert h5["cells/table/cell_id"][:].tolist() == [1, 2, 1, 2]
-          print("isolated cellflow-aggregate install OK")
+          print("isolated itasc-aggregate install OK")
 
-          # cellflow-tracking composes into the same namespace without the
+          # itasc-tracking composes into the same namespace without the
           # orchestrator or the contact piece, and its headless backend imports.
-          import cellflow.tracking_ultrack.db_build  # noqa: F401
-          import cellflow.tracking_ultrack.validation_state as v
-          import cellflow.correction.labels  # noqa: F401
-          from cellflow.core.lineage import build_lineage
-          from cellflow.core.cancellation import CancelledError  # noqa: F401
-          from cellflow.tracking_ultrack.corrections import Correction
+          import itasc.tracking_ultrack.db_build  # noqa: F401
+          import itasc.tracking_ultrack.validation_state as v
+          import itasc.correction.labels  # noqa: F401
+          from itasc.core.lineage import build_lineage
+          from itasc.core.cancellation import CancelledError  # noqa: F401
+          from itasc.tracking_ultrack.corrections import Correction
           nd = tempfile.mkdtemp()
           v.add_correction(nd, Correction(cell_id=7, t=0, kind="validated", y=1.0, x=2.0))
           assert v.read_validated_tracks(nd) == {7: {0}}
           assert os.path.exists(os.path.join(nd, "corrections.json"))
           lanes = build_lineage(labels)
           assert {lane.cell_id for lane in lanes.lanes} == {1, 2}
-          print("isolated cellflow-tracking backend OK")
+          print("isolated itasc-tracking backend OK")
 
-          # cellflow-cellpose composes into the same namespace on cellflow-core
+          # itasc-cellpose composes into the same namespace on itasc-core
           # alone. The Cellpose model lib is an optional extra (lazy import), so
           # the runner module imports without it, and the divergence-map builder
           # runs headlessly on synthetic prob/dp stacks.
-          import cellflow.cellpose.cellpose_runner  # noqa: F401  (no cellpose lib needed to import)
-          from cellflow.cellpose import build_divergence_maps
+          import itasc.cellpose.cellpose_runner  # noqa: F401  (no cellpose lib needed to import)
+          from itasc.cellpose import build_divergence_maps
           cp_dir = tempfile.mkdtemp()
           prob = np.zeros((2, 2, 10, 10), dtype="float32")          # (T, Z, Y, X)
           dp = np.zeros((2, 2, 2, 10, 10), dtype="float32")         # (T, Z, 2, Y, X)
@@ -159,7 +159,7 @@ jobs:
           )
           assert report.frames == 2
           assert os.path.exists(os.path.join(cp_dir, "nucleus_foreground.tif"))
-          print("isolated cellflow-cellpose backend OK")
+          print("isolated itasc-cellpose backend OK")
           PY
 
       - name: Verify napari manifests validate
@@ -168,26 +168,26 @@ jobs:
           python - <<'PY'
           from npe2 import PluginManifest
           for path, name in [
-              ("src/cellflow/napari.yaml", "cellflow"),
-              ("src/cellflow/contact_analysis/napari.yaml", "cellflow-aggregate"),
-              ("src/cellflow/tracking_ultrack/napari.yaml", "cellflow-tracking"),
-              ("src/cellflow/cellpose/napari.yaml", "cellflow-cellpose"),
+              ("src/itasc/napari.yaml", "itasc"),
+              ("src/itasc/contact_analysis/napari.yaml", "itasc-aggregate"),
+              ("src/itasc/tracking_ultrack/napari.yaml", "itasc-tracking"),
+              ("src/itasc/cellpose/napari.yaml", "itasc-cellpose"),
           ]:
               m = PluginManifest.from_file(path)
               assert m.name == name, (m.name, name)
               print("manifest OK:", m.name)
 
           # The full install folds each extracted piece's widget factory into the
-          # single cellflow manifest; assert it mirrors the standalone factories.
+          # single itasc manifest; assert it mirrors the standalone factories.
           def factories(path):
               m = PluginManifest.from_file(path)
               return {c.python_name for c in m.contributions.commands}
 
-          folded = factories("src/cellflow/napari.yaml")
+          folded = factories("src/itasc/napari.yaml")
           for path in (
-              "src/cellflow/contact_analysis/napari.yaml",
-              "src/cellflow/tracking_ultrack/napari.yaml",
-              "src/cellflow/cellpose/napari.yaml",
+              "src/itasc/contact_analysis/napari.yaml",
+              "src/itasc/tracking_ultrack/napari.yaml",
+              "src/itasc/cellpose/napari.yaml",
           ):
               assert factories(path) <= folded, path
           print("folded manifest mirrors standalone factories OK")

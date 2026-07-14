@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from cellflow.tracking_ultrack.track_quality import (
+from itasc.tracking_ultrack.track_quality import (
     compute_track_scores,
     quality_order,
 )

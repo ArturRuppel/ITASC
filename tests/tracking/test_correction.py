@@ -1,5 +1,5 @@
 
-from cellflow.correction.labels import (
+from itasc.correction.labels import (
     _free_label,
     add_cell,
     carve_into_selected,
@@ -15,7 +15,7 @@ import pytest
 
 
 def test_correction_package_does_not_reexport_apply_gamma():
-    import cellflow.correction as correction
+    import itasc.correction as correction
 
     assert not hasattr(correction, "apply_gamma")
 

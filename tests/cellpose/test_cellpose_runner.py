@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.cellpose_runner.
+"""Tests for itasc.cellpose.cellpose_runner.
 
 The cellpose package is mocked at import time so these tests run without
 torch/GPU.
@@ -40,18 +40,18 @@ def _mock_cellpose(monkeypatch):
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
 
     # Ensure the runner module is freshly imported under the mock.
-    monkeypatch.delitem(sys.modules, "cellflow.cellpose.cellpose_runner", raising=False)
+    monkeypatch.delitem(sys.modules, "itasc.cellpose.cellpose_runner", raising=False)
     yield
 
 
 def _runner():
     import importlib
 
-    parent = sys.modules.get("cellflow.cellpose")
+    parent = sys.modules.get("itasc.cellpose")
     if parent is not None and hasattr(parent, "cellpose_runner"):
         delattr(parent, "cellpose_runner")
-    sys.modules.pop("cellflow.cellpose.cellpose_runner", None)
-    runner = importlib.import_module("cellflow.cellpose.cellpose_runner")
+    sys.modules.pop("itasc.cellpose.cellpose_runner", None)
+    runner = importlib.import_module("itasc.cellpose.cellpose_runner")
     return importlib.reload(runner)
 
 

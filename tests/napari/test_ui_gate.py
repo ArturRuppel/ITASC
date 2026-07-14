@@ -1,4 +1,4 @@
-"""Policy-table tests for :mod:`cellflow.napari.ui_gate`.
+"""Policy-table tests for :mod:`itasc.napari.ui_gate`.
 
 These exercise the gate with lightweight fake controls (no Qt widgets, no GL),
 so they run anywhere.
@@ -9,7 +9,7 @@ import importlib
 
 import pytest
 
-ui_gate = importlib.import_module("cellflow.napari.ui_gate")
+ui_gate = importlib.import_module("itasc.napari.ui_gate")
 ControlClass = ui_gate.ControlClass
 UiGate = ui_gate.UiGate
 

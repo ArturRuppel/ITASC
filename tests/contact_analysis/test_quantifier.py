@@ -1,18 +1,18 @@
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis.contacts.reader import PositionContactAnalysis
-from cellflow.contact_analysis.quantifier import (
+from itasc.contact_analysis.contacts.reader import PositionContactAnalysis
+from itasc.contact_analysis.quantifier import (
     PositionInputs,
     Quantifier,
     available_quantifiers,
 )
-from cellflow.contact_analysis.quantifiers.contacts import ContactsQuantifier
-from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
-from cellflow.contact_analysis.quantifiers.nucleus_shape import (
+from itasc.contact_analysis.quantifiers.contacts import ContactsQuantifier
+from itasc.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+from itasc.contact_analysis.quantifiers.nucleus_shape import (
     NucleusShapeQuantifier,
 )
-from cellflow.contact_analysis.quantifiers.shape_relational import (
+from itasc.contact_analysis.quantifiers.shape_relational import (
     ShapeRelationalQuantifier,
 )
 
@@ -107,7 +107,7 @@ def test_subclassing_registers_quantifier():
         assert _FakeQuantifier in available_quantifiers()
     finally:
         # Keep the global registry clean for other tests.
-        from cellflow.contact_analysis import quantifier as mod
+        from itasc.contact_analysis import quantifier as mod
 
         mod._REGISTRY.pop("fake_for_test", None)
 
@@ -137,7 +137,7 @@ def test_contacts_quantifier_default_output_name(tmp_path):
 
 
 def test_compute_object_table_default_raises():
-    from cellflow.contact_analysis.quantifier import PositionInputs, Quantifier
+    from itasc.contact_analysis.quantifier import PositionInputs, Quantifier
 
     class _Bare(Quantifier):
         quantity_id = ""  # not registered
@@ -170,8 +170,8 @@ def test_contacts_quantifier_build_and_read(tmp_path):
 
 
 def test_output_subdir_is_stage_numbered():
-    from cellflow.contact_analysis.quantifier import OUTPUT_SUBDIR
-    from cellflow.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
+    from itasc.contact_analysis.quantifier import OUTPUT_SUBDIR
+    from itasc.contact_analysis.catalog import CONTACT_ANALYSIS_RELPATH
     # The dynamics quantifiers still persist under the stage-numbered folder…
     assert OUTPUT_SUBDIR == "4_contact_analysis"
     # …but the contacts h5 lives in the position base folder, beside the
@@ -186,7 +186,7 @@ def test_supported_quantities_gates_on_inputs_and_params(tmp_path):
     """A pooled quantity is 'supported' only when a record satisfies both its
     ``requires`` inputs and its ``required_build_params`` — the same gate
     ``build_table`` applies, so an enabled checkbox never promises an empty table."""
-    from cellflow.contact_analysis.records import supported_quantities
+    from itasc.contact_analysis.records import supported_quantities
 
     # Cell labels + pixel size, but no nucleus, no FOV area, no contacts file.
     rec = {

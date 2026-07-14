@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.joint orchestration.
+"""Tests for itasc.cellpose.joint orchestration.
 
 The model-backed steps (nucleus masks, cell flows) and the laptrack tracker are
 monkeypatched at the seam, so the test runs without cellpose/laptrack and asserts
@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.cellpose import joint
-from cellflow.cellpose.cellpose_runner import CellParams, NucleusParams
-from cellflow.cellpose.flow_following import FlowFollowingParams
+from itasc.cellpose import joint
+from itasc.cellpose.cellpose_runner import CellParams, NucleusParams
+from itasc.cellpose.flow_following import FlowFollowingParams
 
 
 def test_cell_foreground_from_prob_uses_sigmoid_threshold():

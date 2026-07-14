@@ -103,12 +103,12 @@ class _FakeViewer:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
+    napari_pkg = types.ModuleType("itasc.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.cell_workflow_widget", None)
-    return importlib.import_module("cellflow.napari.cell_workflow_widget")
+    monkeypatch.setitem(sys.modules, "itasc.napari", napari_pkg)
+    sys.modules.pop("itasc.napari.cell_workflow_widget", None)
+    return importlib.import_module("itasc.napari.cell_workflow_widget")
 
 
 def _make_sync_thread_worker():
@@ -268,7 +268,7 @@ def test_inline_contour_edit_marks_panel_dirty_and_prompts_on_exit(monkeypatch):
     assert c._correction_dirty is True
 
     # Leaving correction mode with unsaved edits prompts the save/discard dialog.
-    import cellflow.napari.correction.cell_correction_widget as ccw_mod
+    import itasc.napari.correction.cell_correction_widget as ccw_mod
     calls = []
     monkeypatch.setattr(
         ccw_mod, "confirm_unsaved_before_deactivate",

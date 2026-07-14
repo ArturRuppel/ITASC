@@ -1,10 +1,10 @@
-"""Generic image-op primitives shared across CellFlow pieces."""
+"""Generic image-op primitives shared across ITASC pieces."""
 from __future__ import annotations
 
 import numpy as np
 
-from cellflow.core import imageops
-from cellflow.core.imageops import residual
+from itasc.core import imageops
+from itasc.core.imageops import residual
 
 
 def test_residual_strength_zero_is_clipped_raw_map_without_gaussian(monkeypatch):

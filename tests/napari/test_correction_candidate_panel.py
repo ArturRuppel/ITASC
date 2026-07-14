@@ -7,11 +7,11 @@ import pytest
 pytest.importorskip("qtpy")
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from cellflow.napari.correction._correction_candidates import (  # noqa: E402
+from itasc.napari.correction._correction_candidates import (  # noqa: E402
     CandidateSpec,
     build_candidate_strip,
 )
-from cellflow.napari.correction._correction_candidate_panel import (  # noqa: E402
+from itasc.napari.correction._correction_candidate_panel import (  # noqa: E402
     CandidateGalleryPanel,
 )
 
@@ -86,7 +86,7 @@ def test_set_tile_size_resizes_thumbnails_and_clamps(_app):
 
 
 def test_blocks_stack_vertically_and_tiles_wrap(_app):
-    from cellflow.napari._flow_layout import FlowLayout
+    from itasc.napari._flow_layout import FlowLayout
 
     panel = CandidateGalleryPanel()
     cols = [

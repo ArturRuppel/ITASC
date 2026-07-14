@@ -46,8 +46,8 @@ def test_shape_correct_candidate_wins_over_closer_wrong_shape(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.linking import run_linking
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.linking import run_linking
 
     engine = _make_engine(tmp_path / "data.db")
 
@@ -90,8 +90,8 @@ def test_area_ratio_prefilter_removes_candidate(tmp_path):
     from sqlalchemy.orm import Session
     from ultrack.core.database import LinkDB
 
-    from cellflow.tracking_ultrack.config import TrackingConfig
-    from cellflow.tracking_ultrack.linking import run_linking
+    from itasc.tracking_ultrack.config import TrackingConfig
+    from itasc.tracking_ultrack.linking import run_linking
 
     engine = _make_engine(tmp_path / "data.db")
 

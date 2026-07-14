@@ -14,19 +14,19 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python < 3.11
 
 def _run_isolated_import_probe() -> dict:
     script = """
-import cellflow
+import itasc
 import json
 import sys
 
 print(json.dumps({
-    "all": cellflow.__all__,
-    "has_version": hasattr(cellflow, "__version__"),
-    "version": cellflow.__version__,
-    "has_cellflow_widget": hasattr(cellflow, "CellFlowWidget"),
-    "has_tracking_config": hasattr(cellflow, "TrackingConfig"),
+    "all": itasc.__all__,
+    "has_version": hasattr(itasc, "__version__"),
+    "version": itasc.__version__,
+    "has_itasc_widget": hasattr(itasc, "ITASCWidget"),
+    "has_tracking_config": hasattr(itasc, "TrackingConfig"),
     "imports": sorted(
         name for name in sys.modules
-        if name in {"napari", "cellpose", "torch", "ultrack", "cellflow.napari"}
+        if name in {"napari", "cellpose", "torch", "ultrack", "itasc.napari"}
     ),
 }))
 """
@@ -40,32 +40,32 @@ print(json.dumps({
 
 
 def test_top_level_public_api_is_intentionally_small() -> None:
-    cellflow = _run_isolated_import_probe()
+    itasc = _run_isolated_import_probe()
 
-    assert cellflow["all"] == ["__version__"]
-    assert cellflow["has_version"]
-    assert not cellflow["has_cellflow_widget"]
-    assert not cellflow["has_tracking_config"]
+    assert itasc["all"] == ["__version__"]
+    assert itasc["has_version"]
+    assert not itasc["has_itasc_widget"]
+    assert not itasc["has_tracking_config"]
 
 
 def test_top_level_version_matches_project_metadata() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
-    cellflow = importlib.import_module("cellflow")
+    itasc = importlib.import_module("itasc")
 
-    assert cellflow.__version__ == project["version"]
+    assert itasc.__version__ == project["version"]
 
 
 def test_top_level_import_does_not_import_ui_or_optional_workflow_modules() -> None:
-    cellflow = _run_isolated_import_probe()
+    itasc = _run_isolated_import_probe()
 
-    assert cellflow["imports"] == []
+    assert itasc["imports"] == []
 
 
 def test_readme_documents_public_api_boundary() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "## Programmatic use" in readme
-    assert "`import cellflow` exposes only `__version__`" in readme
+    assert "`import itasc` exposes only `__version__`" in readme
     assert "napari plugin" in readme
     assert "provisional" in readme
 

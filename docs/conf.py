@@ -1,4 +1,4 @@
-"""Sphinx configuration for the CellFlow documentation.
+"""Sphinx configuration for the ITASC documentation.
 
 The narrative pages are authored in Markdown (MyST); the API reference is
 generated from the package's own docstrings via autosummary, so it cannot drift
@@ -15,14 +15,14 @@ from datetime import datetime
 sys.path.insert(0, os.path.abspath("../src"))
 
 # -- Project information ------------------------------------------------------
-project = "CellFlow"
+project = "ITASC"
 author = "Artur Ruppel"
 copyright = f"{datetime.now():%Y}, {author}"
 
 try:
     from importlib.metadata import version as _pkg_version
 
-    release = _pkg_version("cellflow")
+    release = _pkg_version("itasc")
 except Exception:  # pragma: no cover - best effort during local builds
     release = "0.2.0"
 version = release
@@ -95,10 +95,10 @@ intersphinx_mapping = {
 
 # -- HTML output --------------------------------------------------------------
 html_theme = "pydata_sphinx_theme"
-html_title = "CellFlow"
+html_title = "ITASC"
 html_static_path = ["_static"]
 html_theme_options = {
-    "github_url": "https://github.com/ArturRuppel/CellFlow",
+    "github_url": "https://github.com/ArturRuppel/ITASC",
     "navbar_align": "content",
     "show_prev_next": True,
     "navigation_with_keys": True,

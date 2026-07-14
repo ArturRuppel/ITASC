@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from cellflow.napari._stage_status import (
+from itasc.napari._stage_status import (
     CONTACT_STAGES,
     DONE,
     MISSING,
@@ -97,7 +97,7 @@ def test_stages_are_independent(tmp_path: Path) -> None:
     assert status[STAGE_CELLPOSE] == MISSING
 
 
-# -- contact-analysis-only vocabulary (the standalone cellflow-aggregate app) ----
+# -- contact-analysis-only vocabulary (the standalone itasc-aggregate app) ----
 
 
 def test_contact_status_none_position_all_unknown() -> None:

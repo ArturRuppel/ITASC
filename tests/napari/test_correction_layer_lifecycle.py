@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from cellflow.napari.correction._correction_layer_lifecycle import (
+from itasc.napari.correction._correction_layer_lifecycle import (
     capture_layer_view_state,
     detach_higher_dim_stacks,
     hide_all_layers,

@@ -1,6 +1,6 @@
 import numpy as np
 
-from cellflow import segmentation
+from itasc import segmentation
 
 
 def test_fill_and_close_labels_fills_per_label_bounding_boxes(monkeypatch):

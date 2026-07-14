@@ -3,15 +3,15 @@ import numpy as np
 import tifffile
 from skimage.draw import disk
 
-from cellflow.contact_analysis.dynamics import read_track_dynamics
-from cellflow.contact_analysis.quantifier import (
+from itasc.contact_analysis.dynamics import read_track_dynamics
+from itasc.contact_analysis.quantifier import (
     PositionInputs,
     available_quantifiers,
 )
-from cellflow.contact_analysis.quantifiers.cell_dynamics import (
+from itasc.contact_analysis.quantifiers.cell_dynamics import (
     CellDynamicsQuantifier,
 )
-from cellflow.contact_analysis.quantifiers.nucleus_dynamics import (
+from itasc.contact_analysis.quantifiers.nucleus_dynamics import (
     NucleusDynamicsQuantifier,
 )
 

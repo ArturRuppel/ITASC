@@ -1,4 +1,4 @@
-"""Tests for cellflow.cellpose.native_masks.
+"""Tests for itasc.cellpose.native_masks.
 
 cellpose is mocked at import time (no torch/GPU). The fake model returns simple
 labelled masks as ``eval`` index 0 so the mask-capturing path is exercised.
@@ -37,7 +37,7 @@ def _mock_cellpose(monkeypatch):
     fake_cellpose.models = fake_models
     monkeypatch.setitem(sys.modules, "cellpose", fake_cellpose)
     monkeypatch.setitem(sys.modules, "cellpose.models", fake_models)
-    for mod in ("cellflow.cellpose.cellpose_runner", "cellflow.cellpose.native_masks"):
+    for mod in ("itasc.cellpose.cellpose_runner", "itasc.cellpose.native_masks"):
         monkeypatch.delitem(sys.modules, mod, raising=False)
     yield
 
@@ -45,9 +45,9 @@ def _mock_cellpose(monkeypatch):
 def _mod():
     import importlib
 
-    runner = importlib.import_module("cellflow.cellpose.cellpose_runner")
+    runner = importlib.import_module("itasc.cellpose.cellpose_runner")
     importlib.reload(runner)
-    nm = importlib.import_module("cellflow.cellpose.native_masks")
+    nm = importlib.import_module("itasc.cellpose.native_masks")
     return importlib.reload(nm), runner
 
 

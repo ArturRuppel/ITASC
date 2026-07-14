@@ -1,4 +1,4 @@
-"""Config autosave + project-catalog CSV behavior in the full CellFlow app."""
+"""Config autosave + project-catalog CSV behavior in the full ITASC app."""
 from __future__ import annotations
 
 import os
@@ -11,13 +11,13 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from napari.qt import get_qapp
-from cellflow.napari._stage_status import STAGE_CELL, STAGE_CONTACTS
-from cellflow.napari.main_widget import CellFlowMainWidget
+from itasc.napari._stage_status import STAGE_CELL, STAGE_CONTACTS
+from itasc.napari.main_widget import ITASCMainWidget
 
 
 def _fake_viewer():
     # Mirrors ``tests/napari/test_main_widget_cellpose_integration.py``: this repo
-    # constructs ``CellFlowMainWidget`` against a lightweight stand-in rather than
+    # constructs ``ITASCMainWidget`` against a lightweight stand-in rather than
     # a real ``napari.Viewer`` (no pytest-qt / ``make_napari_viewer`` fixture here).
     class _Sel:
         active = None
@@ -45,17 +45,17 @@ def _fake_viewer():
 @pytest.fixture
 def widget():
     get_qapp()
-    return CellFlowMainWidget(_fake_viewer())
+    return ITASCMainWidget(_fake_viewer())
 
 
 def test_save_config_quiet_suppresses_toast(widget, tmp_path):
-    cfg = tmp_path / "cellflow_config.json"
-    with patch("cellflow.napari.main_widget.show_info") as info:
+    cfg = tmp_path / "itasc_config.json"
+    with patch("itasc.napari.main_widget.show_info") as info:
         widget._save_config(str(cfg), quiet=True)
     assert cfg.exists()
     info.assert_not_called()
     # And the loud path still notifies.
-    with patch("cellflow.napari.main_widget.show_info") as info:
+    with patch("itasc.napari.main_widget.show_info") as info:
         widget._save_config(str(cfg))
     info.assert_called_once()
 
@@ -80,7 +80,7 @@ def test_run_button_attr_exists(widget, widget_attr, btn_attr):
 def test_autosave_writes_config_into_pos_dir(widget, tmp_path):
     widget._pos_dir = tmp_path
     widget._autosave_config()
-    assert (tmp_path / "cellflow_config.json").exists()
+    assert (tmp_path / "itasc_config.json").exists()
 
 
 def test_autosave_noop_without_pos_dir(widget):
@@ -88,7 +88,7 @@ def test_autosave_noop_without_pos_dir(widget):
     widget._autosave_config()  # must not raise
 
 
-from cellflow.contact_analysis.catalog import (
+from itasc.contact_analysis.catalog import (
     CONTACT_ANALYSIS_RELPATH,
     REQUIRED_CSV_COLUMNS,
     load_catalog,
@@ -135,7 +135,7 @@ def test_save_project_writes_loadable_catalog(widget, tmp_path):
     _seed_two_rows(widget, tmp_path)
     csv_path = tmp_path / "catalog.csv"
     with patch(
-        "cellflow.napari.main_widget.QFileDialog.getSaveFileName",
+        "itasc.napari.main_widget.QFileDialog.getSaveFileName",
         return_value=(str(csv_path), ""),
     ):
         widget._on_save_project()
@@ -152,7 +152,7 @@ def test_save_project_appends_csv_suffix(widget, tmp_path):
     _seed_two_rows(widget, tmp_path)
     chosen = tmp_path / "myproject"  # no extension
     with patch(
-        "cellflow.napari.main_widget.QFileDialog.getSaveFileName",
+        "itasc.napari.main_widget.QFileDialog.getSaveFileName",
         return_value=(str(chosen), ""),
     ):
         widget._on_save_project()
@@ -163,14 +163,14 @@ def test_load_project_repopulates_panel(widget, tmp_path):
     a, b = _seed_two_rows(widget, tmp_path)
     csv_path = tmp_path / "catalog.csv"
     with patch(
-        "cellflow.napari.main_widget.QFileDialog.getSaveFileName",
+        "itasc.napari.main_widget.QFileDialog.getSaveFileName",
         return_value=(str(csv_path), ""),
     ):
         widget._on_save_project()
     widget._positions_panel.set_records([])
     assert widget._positions_panel.keys() == []
     with patch(
-        "cellflow.napari.main_widget.QFileDialog.getOpenFileName",
+        "itasc.napari.main_widget.QFileDialog.getOpenFileName",
         return_value=(str(csv_path), ""),
     ):
         widget._on_load_project()
@@ -209,7 +209,7 @@ def test_contacts_dot_skips_retarget_when_already_selected(widget, tmp_path):
 def test_non_contacts_dot_loads_stage_into_viewer(widget, tmp_path):
     pos = tmp_path / "posA"
     pos.mkdir()
-    with patch("cellflow.napari.main_widget.load_stage") as load_stage:
+    with patch("itasc.napari.main_widget.load_stage") as load_stage:
         widget._on_position_stage_load({"position_path": pos}, STAGE_CELL)
     load_stage.assert_called_once_with(widget.viewer, pos, STAGE_CELL)
 

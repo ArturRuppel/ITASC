@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from cellflow.contact_analysis.curation import (
+from itasc.contact_analysis.curation import (
     CURATION_COLUMNS,
     append_exclusion,
     empty_curation,

@@ -6,7 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from cellflow.napari.aggregate_widget import partition_ready
+from itasc.napari.aggregate_widget import partition_ready
 
 
 def _record(pos_dir: Path, *, ready: bool) -> dict:
@@ -46,8 +46,8 @@ def test_partition_ready_empty():
     assert partition_ready([]) == ([], [])
 
 
-from cellflow.contact_analysis import load_catalog
-from cellflow.napari import aggregate_widget as aw
+from itasc.contact_analysis import load_catalog
+from itasc.napari import aggregate_widget as aw
 
 
 def test_pool_positions_authors_ready_subset_and_runs(tmp_path, monkeypatch):
@@ -86,7 +86,7 @@ from napari.qt import get_qapp
 
 def test_widget_readout_reports_ready_split_and_names_not_ready(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.set_records([
@@ -101,7 +101,7 @@ def test_widget_readout_reports_ready_split_and_names_not_ready(tmp_path):
 
 def test_widget_run_button_disabled_when_nothing_ready(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.set_records([_record(tmp_path / "posA", ready=False)])
@@ -110,7 +110,7 @@ def test_widget_run_button_disabled_when_nothing_ready(tmp_path):
 
 
 def test_aggregate_stage_accent_resolves():
-    from cellflow.napari.ui_style import stage_accent
+    from itasc.napari.ui_style import stage_accent
 
     accent = stage_accent("aggregate")
     assert isinstance(accent, str) and accent.startswith("#")
@@ -121,7 +121,7 @@ def test_aggregate_stage_accent_resolves():
 
 def test_widget_has_checkbox_per_pooled_quantifier():
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget, pooled_quantifiers
+    from itasc.napari.aggregate_widget import AggregateWidget, pooled_quantifiers
 
     w = AggregateWidget()
     expected = {cls.quantity_id for cls in pooled_quantifiers()}
@@ -131,7 +131,7 @@ def test_widget_has_checkbox_per_pooled_quantifier():
 
 def test_widget_greys_unsupported_quantities(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     # The bare _record has cell+nucleus labels and an existing contacts.h5, but no
     # pixel size / FOV area — so contacts-derived quantities are supported and the
@@ -153,7 +153,7 @@ def test_widget_greys_unsupported_quantities(tmp_path):
 
 def test_selected_quantities_collapses_and_respects_unchecks(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.set_records([_record(tmp_path / "posA", ready=True)])
@@ -200,7 +200,7 @@ def _ready_record_with_labels(tmp_path, name, shape=(2, 6, 8), pixel_size=None):
 
 def test_fov_autofills_from_image_size_and_pixel_size(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     # 6x8 lateral pixels, 0.5 µm/px -> 48 px * 0.25 µm² = 12 µm² (field is µm²).
@@ -213,7 +213,7 @@ def test_fov_autofills_from_image_size_and_pixel_size(tmp_path):
 
 def test_fov_autofill_backs_off_after_user_edit(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.fov_field.setValue(3.0)  # user edit sets the sticky flag
@@ -223,7 +223,7 @@ def test_fov_autofill_backs_off_after_user_edit(tmp_path):
 
 def test_manual_fov_lights_up_density_without_pixel_size(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.set_records([_record(tmp_path / "posA", ready=True)])  # no pixel size, no labels on disk
@@ -235,7 +235,7 @@ def test_manual_fov_lights_up_density_without_pixel_size(tmp_path):
 
 def test_current_params_carries_calibration_and_fov(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     rec = _record(tmp_path / "posA", ready=True)
@@ -264,7 +264,7 @@ def test_run_params_reach_the_authored_config(tmp_path, monkeypatch):
 
 def test_disabled_quantity_tooltip_has_no_em_dash(tmp_path):
     get_qapp()
-    from cellflow.napari.aggregate_widget import AggregateWidget
+    from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
     w.set_records([_record(tmp_path / "posA", ready=True)])  # cell_shape unsupported

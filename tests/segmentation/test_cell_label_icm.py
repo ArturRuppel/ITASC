@@ -1,10 +1,10 @@
-"""Tests for ``cellflow.segmentation.cell_label_icm`` (unary-only API)."""
+"""Tests for ``itasc.segmentation.cell_label_icm`` (unary-only API)."""
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from cellflow.segmentation.cell_label_icm import (
+from itasc.segmentation.cell_label_icm import (
     _INF,
     CellICMState,
     CellLabelICMParams,
@@ -46,7 +46,7 @@ def test_read_unary_cache_missing_is_silent_cold_miss(tmp_path, caplog):
 def test_read_unary_cache_corrupt_warns_and_recomputes(tmp_path, caplog):
     """A present-but-unreadable cache must warn (distinct from a cold miss) and
     still degrade gracefully to None."""
-    from cellflow.segmentation.cell_label_icm import _unary_cache_path
+    from itasc.segmentation.cell_label_icm import _unary_cache_path
 
     path = _unary_cache_path(tmp_path, "bad")
     path.write_bytes(b"not an hdf5 file")

@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import tifffile
 
-from cellflow.core.commit import commit_state, promote_labels
+from itasc.core.commit import commit_state, promote_labels
 
 
 def _write_labels(path, value=1):

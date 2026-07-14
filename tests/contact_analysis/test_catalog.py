@@ -1,4 +1,4 @@
-"""Tests for cellflow.contact_analysis.catalog – CSV catalog + name-based discovery.
+"""Tests for itasc.contact_analysis.catalog – CSV catalog + name-based discovery.
 
 The catalog holds exactly the structural path columns plus the *classification
 columns* the widget defined (whatever they are named) — no privileged
@@ -19,7 +19,7 @@ def _structural_header():
 def test_saved_catalog_header_is_structural_plus_widget_columns(tmp_path):
     """The CSV header is the fixed path columns followed by the record's columns —
     one column per widget column, verbatim, and nothing else."""
-    from cellflow.contact_analysis.catalog import save_catalog
+    from itasc.contact_analysis.catalog import save_catalog
 
     pos = tmp_path / "WT" / "p1"
     pos.mkdir(parents=True)
@@ -46,7 +46,7 @@ def test_saved_catalog_header_is_structural_plus_widget_columns(tmp_path):
 def test_columns_are_named_exactly_as_the_widget(tmp_path):
     """Renamed widget columns land in the CSV under their own names — the point of
     the whole change: as many columns as the widget shows, named as it names them."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     pos = tmp_path / "study" / "p1"
     pos.mkdir(parents=True)
@@ -65,7 +65,7 @@ def test_columns_are_named_exactly_as_the_widget(tmp_path):
 
 
 def test_catalog_roundtrip(tmp_path):
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     pos = tmp_path / "ctrl" / "p1"
     pos.mkdir(parents=True)
@@ -90,7 +90,7 @@ def test_catalog_roundtrip(tmp_path):
 
 def test_load_requires_position_path(tmp_path):
     import pytest
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     out = tmp_path / "bad.csv"
     out.write_text("condition,pos\nctrl,p1\n")
@@ -100,7 +100,7 @@ def test_load_requires_position_path(tmp_path):
 
 def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
     """Saved catalogs use relative paths and reload them as resolved paths."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "analysis" / "contact_analysis.h5"
     source.parent.mkdir()
@@ -140,7 +140,7 @@ def test_save_and_load_catalog_round_trip_with_relative_paths(tmp_path):
 
 def test_save_catalog_stores_absolute_position_and_relative_files(tmp_path):
     """A record with a position folder stores it absolute and files relative to it."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     position = tmp_path / "expA" / "pos00"
     (position / "4_contact_analysis").mkdir(parents=True)
@@ -179,7 +179,7 @@ def test_save_catalog_stores_absolute_position_and_relative_files(tmp_path):
 
 def test_save_load_round_trip_without_label_paths(tmp_path):
     """A record with no label paths round-trips with empty cells and None paths."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -197,7 +197,7 @@ def test_save_load_round_trip_without_label_paths(tmp_path):
 def test_no_columns_still_saves_and_loads(tmp_path):
     """A record with no classification columns is legal to persist; the CSV is just
     the structural columns. (Aggregating >1 such position is what fails, later.)"""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -213,7 +213,7 @@ def test_no_columns_still_saves_and_loads(tmp_path):
 def test_load_maps_legacy_id_column_to_position_id(tmp_path):
     """A catalog written by the old code carried a privileged ``id`` column; it must
     still load, its value carried under ``position_id`` (which is what it meant)."""
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     (tmp_path / "contact_analysis.h5").touch()
     csv_path = tmp_path / "catalog.csv"
@@ -233,7 +233,7 @@ def test_load_maps_legacy_id_column_to_position_id(tmp_path):
 def test_load_does_not_reject_duplicate_identity(tmp_path):
     """Load is permissive: a catalog may hold more positions than one run pools, so
     identity uniqueness is checked at aggregate time, not on load."""
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     (tmp_path / "a.h5").touch()
     (tmp_path / "b.h5").touch()
@@ -249,7 +249,7 @@ def test_load_does_not_reject_duplicate_identity(tmp_path):
 
 def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
     """A folder's inputs are grouped into one entry; the contact path is derived."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     # Two positions in a nested layout; one missing the nucleus labels.
     p1 = tmp_path / "expA" / "pos01"
@@ -282,7 +282,7 @@ def test_discover_catalog_entries_by_name_and_relative_path(tmp_path):
 def test_discover_entry_id_becomes_position_id_column_on_save(tmp_path):
     """The discovery skeleton's per-folder ``id`` persists as a ``position_id``
     classification column, so a discovered catalog has a usable identity."""
-    from cellflow.contact_analysis.catalog import (
+    from itasc.contact_analysis.catalog import (
         discover_catalog_entries,
         load_catalog,
         save_catalog,
@@ -302,7 +302,7 @@ def test_discover_entry_id_becomes_position_id_column_on_save(tmp_path):
 def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
     """A position with cell labels but no .h5 is still discovered; the contact
     path is derived from the cell labels so it can be computed later."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     pos.mkdir()
@@ -319,7 +319,7 @@ def test_discover_catalog_entries_derives_missing_contact_path(tmp_path):
 
 def test_discover_catalog_entries_by_nucleus_only(tmp_path):
     """Inputs are optional: a folder with only nucleus labels is still a position."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     pos.mkdir()
@@ -337,7 +337,7 @@ def test_discover_catalog_entries_by_nucleus_only(tmp_path):
 
 def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_path):
     """Cell and nucleus inputs in different subfolders collapse to one entry."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     pos = tmp_path / "pos01"
     (pos / "3_cell").mkdir(parents=True)
@@ -359,7 +359,7 @@ def test_discover_catalog_entries_groups_inputs_from_different_subfolders(tmp_pa
 
 def test_discover_catalog_entries_skips_folders_without_inputs(tmp_path):
     """A folder with none of the recognized inputs is not a position."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     (tmp_path / "empty").mkdir()
     (tmp_path / "pos01").mkdir()
@@ -374,7 +374,7 @@ def test_discover_catalog_entries_skips_folders_without_inputs(tmp_path):
 
 def test_discover_catalog_entries_without_any_input_names_is_empty(tmp_path):
     """With no input names supplied there is nothing to anchor discovery on."""
-    from cellflow.contact_analysis.catalog import discover_catalog_entries
+    from itasc.contact_analysis.catalog import discover_catalog_entries
 
     (tmp_path / "pos01").mkdir()
     (tmp_path / "pos01" / "cell_labels.tif").touch()
@@ -384,7 +384,7 @@ def test_discover_catalog_entries_without_any_input_names_is_empty(tmp_path):
 
 def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
     """Relative path cells should be resolved against the catalog file directory."""
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     source = tmp_path / "nested" / "contact_analysis.h5"
     source.parent.mkdir()
@@ -405,7 +405,7 @@ def test_load_catalog_resolves_relative_paths_from_csv_parent(tmp_path):
 def test_load_catalog_preserves_extra_columns(tmp_path):
     """Every non-structural CSV column is a classification column, available both as
     a flat key and in the columns bag."""
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -424,7 +424,7 @@ def test_load_catalog_preserves_extra_columns(tmp_path):
 
 def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
     """Explicit CSV records do not require labels, but missing H5 files are incomplete."""
-    from cellflow.contact_analysis.catalog import load_catalog
+    from itasc.contact_analysis.catalog import load_catalog
 
     csv_path = tmp_path / "catalog.csv"
     csv_path.write_text(
@@ -440,7 +440,7 @@ def test_load_catalog_marks_missing_h5_as_incomplete(tmp_path):
 
 def test_relative_levels_returns_segments_from_root_to_position(tmp_path):
     """The path from root (exclusive) to the position folder (inclusive)."""
-    from cellflow.contact_analysis.catalog import relative_levels
+    from itasc.contact_analysis.catalog import relative_levels
 
     pos = tmp_path / "WT" / "2024-01-15" / "pos3"
     pos.mkdir(parents=True)
@@ -449,7 +449,7 @@ def test_relative_levels_returns_segments_from_root_to_position(tmp_path):
 
 def test_columns_from_levels_zips_names_to_segments(tmp_path):
     """Each level name maps to its folder-name value; blank names drop out."""
-    from cellflow.contact_analysis.catalog import columns_from_levels
+    from itasc.contact_analysis.catalog import columns_from_levels
 
     cols = columns_from_levels(
         ["condition", "experiment_id", "position_id"], ("WT", "2024-01-15", "pos3")
@@ -463,7 +463,7 @@ def test_columns_from_levels_zips_names_to_segments(tmp_path):
 
 def test_discovered_level_depth_uniform_and_mixed(tmp_path):
     """Uniform depth -> that depth; differing depths -> None (caller warns)."""
-    from cellflow.contact_analysis.catalog import discovered_level_depth
+    from itasc.contact_analysis.catalog import discovered_level_depth
 
     a = tmp_path / "WT" / "e1" / "pos1"
     b = tmp_path / "KO" / "e2" / "pos2"
@@ -478,7 +478,7 @@ def test_discovered_level_depth_uniform_and_mixed(tmp_path):
 
 def test_save_catalog_persists_extra_free_form_columns(tmp_path):
     """A record's free-form columns are written to the CSV and reload-preserved."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -511,7 +511,7 @@ def test_save_catalog_persists_extra_free_form_columns(tmp_path):
 def test_legacy_flat_record_gains_a_columns_bag(tmp_path):
     """Old-style flat records (no columns key) still save/load and expose a bag,
     with the legacy ``id`` carried as ``position_id``."""
-    from cellflow.contact_analysis.catalog import load_catalog, save_catalog
+    from itasc.contact_analysis.catalog import load_catalog, save_catalog
 
     source = tmp_path / "contact_analysis.h5"
     source.touch()
@@ -529,7 +529,7 @@ def test_legacy_flat_record_gains_a_columns_bag(tmp_path):
 
 def test_merge_catalog_records_skips_duplicate_resolved_paths(tmp_path):
     """Merging should avoid duplicate H5 sources by resolved contact-analysis path."""
-    from cellflow.contact_analysis.catalog import merge_catalog_records
+    from itasc.contact_analysis.catalog import merge_catalog_records
 
     source = tmp_path / "contact_analysis.h5"
     other = tmp_path / "other.h5"

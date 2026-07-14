@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def test_cellpose_status_panels_track_cell_flow_vectors():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
 
     cellpose_source = (package_root / "cellpose_widget.py").read_text()
 
@@ -12,7 +12,7 @@ def test_cellpose_status_panels_track_cell_flow_vectors():
 
 
 def test_cellpose_status_panels_do_not_track_probability_zavgs():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
 
     cellpose_source = (package_root / "cellpose_widget.py").read_text()
 
@@ -23,7 +23,7 @@ def test_cellpose_status_panels_do_not_track_probability_zavgs():
 
 
 def test_segmentation_widgets_use_cellpose_foregrounds_as_inputs():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
 
     nucleus_source = (package_root / "nucleus_workflow_widget.py").read_text()
     cell_source = (package_root / "cell_workflow_widget.py").read_text()
@@ -36,7 +36,7 @@ def test_segmentation_widgets_use_cellpose_foregrounds_as_inputs():
 
 
 def test_hpc_cellpose_controls_are_not_public_napari_entry_points():
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
 
     main_source = (package_root / "main_widget.py").read_text()
     manifest_source = (package_root / ".." / "napari.yaml").read_text()

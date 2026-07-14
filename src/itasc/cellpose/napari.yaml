@@ -1,0 +1,10 @@
+name: itasc-cellpose
+display_name: ITASC Cellpose
+contributions:
+  commands:
+    - id: itasc-cellpose.segment_track
+      title: "Cellpose Segment + Track"
+      python_name: itasc.napari.cellpose_segment_track_widget:make_cellpose_segment_track_widget
+  widgets:
+    - command: itasc-cellpose.segment_track
+      display_name: "Cellpose Segment + Track"

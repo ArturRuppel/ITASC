@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "itasc-aggregate"
+version = "0.2.0"
+description = "ITASC aggregate quantification: per-position quantifiers (density, shape, dynamics, contacts: cell-cell edges, T1 events) and napari visualization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "AGPL-3.0"}
+authors = [{name = "Artur Ruppel", email = "artur@ruppel.pro"}]
+keywords = ["cell-tracking", "microscopy", "napari", "quantification", "aggregate-quantification"]
+dependencies = [
+    "itasc-core",
+    "napari[all]>=0.4.18",
+    "qtpy>=2.3.0",
+    "h5py",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "scikit-image",
+    "tifffile",
+    "tomli>=2.0; python_version < '3.11'",
+]
+
+[project.urls]
+Homepage = "https://github.com/ArturRuppel/ITASC"
+Repository = "https://github.com/ArturRuppel/ITASC"
+
+[project.entry-points."napari.manifest"]
+itasc-aggregate = "itasc.contact_analysis:napari.yaml"
+
+# Built from the shared source tree without moving files; omits the namespace
+# roots so it composes with itasc-core via PEP 420. See itasc-core for the
+# namespace rationale.
+[tool.hatch.build.targets.wheel]
+bypass-selection = true
+
+[tool.hatch.build.targets.wheel.force-include]
+"../../src/itasc/contact_analysis" = "itasc/contact_analysis"
+"../../src/itasc/napari/contact_analysis_widget.py" = "itasc/napari/contact_analysis_widget.py"
+"../../src/itasc/napari/contact_visualization.py" = "itasc/napari/contact_visualization.py"
+# The catalog app shell. The standalone aggregate app is the full ITASC
+# main widget restricted to the Contact Analysis stage (make_aggregate_app_widget
+# passes upstream_stages=False); its upstream imports are guarded, so shipping
+# main_widget here does not pull in itasc-cellpose / itasc-tracking. These
+# napari modules are not owned by itasc-core (the rail/status/panel cluster is
+# coupled to contact_analysis.catalog) and no sibling wheel ships them, so the
+# aggregate wheel owns them without collision.
+"../../src/itasc/napari/main_widget.py" = "itasc/napari/main_widget.py"
+"../../src/itasc/napari/aggregate_widget.py" = "itasc/napari/aggregate_widget.py"
+"../../src/itasc/napari/_experiments_panel.py" = "itasc/napari/_experiments_panel.py"
+"../../src/itasc/napari/_status_rail.py" = "itasc/napari/_status_rail.py"
+"../../src/itasc/napari/_stage_status.py" = "itasc/napari/_stage_status.py"
+"../../src/itasc/napari/_stage_loader.py" = "itasc/napari/_stage_loader.py"
+"../../src/itasc/napari/_icons.py" = "itasc/napari/_icons.py"

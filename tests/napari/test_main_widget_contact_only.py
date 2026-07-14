@@ -1,6 +1,6 @@
-"""The standalone CellFlow Aggregate app: the main widget in contact-only mode.
+"""The standalone ITASC Aggregate app: the main widget in contact-only mode.
 
-``make_aggregate_app_widget`` builds ``CellFlowMainWidget(upstream_stages=False)``
+``make_aggregate_app_widget`` builds ``ITASCMainWidget(upstream_stages=False)``
 — the full catalog UI (Data folders → Contact Analysis → Aggregate capstone)
 with the three upstream segmentation/tracking stages omitted and a three-dot
 per-position rail (cell labels → nucleus labels → contact analysis).
@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from napari.qt import get_qapp
-from cellflow.napari._stage_status import CONTACT_STAGES
-from cellflow.napari.main_widget import CellFlowMainWidget
+from itasc.napari._stage_status import CONTACT_STAGES
+from itasc.napari.main_widget import ITASCMainWidget
 
 
 def _fake_viewer():
@@ -44,7 +44,7 @@ def _fake_viewer():
 
 def _contact_only_app():
     get_qapp()
-    return CellFlowMainWidget(_fake_viewer(), upstream_stages=False)
+    return ITASCMainWidget(_fake_viewer(), upstream_stages=False)
 
 
 def test_contact_only_omits_the_upstream_stage_widgets():
@@ -83,7 +83,7 @@ def test_contact_only_state_carries_only_calibration_metadata():
 
 def test_full_mode_still_builds_all_four_stages():
     get_qapp()
-    w = CellFlowMainWidget(_fake_viewer())
+    w = ITASCMainWidget(_fake_viewer())
     assert w._has_upstream is True
     assert len(w._stage_sections) == 4
 

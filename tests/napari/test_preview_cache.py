@@ -1,5 +1,5 @@
 """Unit tests for the shared live-preview per-frame cache."""
-from cellflow.napari._preview_cache import FramePreviewCache
+from itasc.napari._preview_cache import FramePreviewCache
 
 
 def test_get_returns_none_before_anything_is_stored():

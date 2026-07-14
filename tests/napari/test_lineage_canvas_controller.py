@@ -16,9 +16,9 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from cellflow.napari import lineage_canvas_controller as lcc
-from cellflow.napari.lineage_canvas_controller import LineageCanvasController
-from cellflow.segmentation.lineage import LineageModel, TrackLane, TrackSegment
+from itasc.napari import lineage_canvas_controller as lcc
+from itasc.napari.lineage_canvas_controller import LineageCanvasController
+from itasc.segmentation.lineage import LineageModel, TrackLane, TrackSegment
 
 
 @pytest.fixture

@@ -6,11 +6,11 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
-from cellflow.napari._stage_loader import (
+from itasc.napari._stage_loader import (
     load_stage,
     stage_load_targets,
 )
-from cellflow.napari._stage_status import (
+from itasc.napari._stage_status import (
     STAGE_CELL,
     STAGE_CELL_LABELS,
     STAGE_CELLPOSE,

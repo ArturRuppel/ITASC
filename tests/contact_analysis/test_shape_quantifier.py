@@ -2,10 +2,10 @@
 import numpy as np
 import tifffile
 
-from cellflow.contact_analysis.quantifier import PositionInputs
-from cellflow.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
-from cellflow.contact_analysis.quantifiers.nucleus_shape import NucleusShapeQuantifier
-from cellflow.contact_analysis.shape import DESCRIPTOR_COLUMNS, compute_object_shape
+from itasc.contact_analysis.quantifier import PositionInputs
+from itasc.contact_analysis.quantifiers.cell_shape import CellShapeQuantifier
+from itasc.contact_analysis.quantifiers.nucleus_shape import NucleusShapeQuantifier
+from itasc.contact_analysis.shape import DESCRIPTOR_COLUMNS, compute_object_shape
 
 
 def _two_cell_stack(tmp_path, name):

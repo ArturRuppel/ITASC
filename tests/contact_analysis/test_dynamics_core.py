@@ -3,25 +3,25 @@ import math
 
 import numpy as np
 
-from cellflow.contact_analysis.dynamics.collective import (
+from itasc.contact_analysis.dynamics.collective import (
     _one_over_e_length,
     _order_parameter,
     collective_tables,
 )
-from cellflow.contact_analysis.dynamics.kinematics import (
+from itasc.contact_analysis.dynamics.kinematics import (
     fit_persistence_time,
     instantaneous_table,
     track_summary_table,
 )
-from cellflow.contact_analysis.dynamics.collective import pooled_corr_length
-from cellflow.contact_analysis.dynamics.msd import (
+from itasc.contact_analysis.dynamics.collective import pooled_corr_length
+from itasc.contact_analysis.dynamics.msd import (
     DEFAULT_MSD_TRACK_WINDOW,
     _default_n_max,
     ensemble_msd,
     fit_msd_power_law,
     per_track_msd_fit,
 )
-from cellflow.contact_analysis.dynamics.trajectories import Trajectory
+from itasc.contact_analysis.dynamics.trajectories import Trajectory
 
 
 def _straight_track(track_id=1, n=6, step=(1.0, 0.0), start_frame=0):

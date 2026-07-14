@@ -59,13 +59,13 @@ class _FakeWorker:
 
 
 def _load_module(monkeypatch):
-    package_root = Path(__file__).resolve().parents[2] / "src" / "cellflow" / "napari"
-    napari_pkg = types.ModuleType("cellflow.napari")
+    package_root = Path(__file__).resolve().parents[2] / "src" / "itasc" / "napari"
+    napari_pkg = types.ModuleType("itasc.napari")
     napari_pkg.__path__ = [str(package_root)]
-    monkeypatch.setitem(sys.modules, "cellflow.napari", napari_pkg)
-    sys.modules.pop("cellflow.napari.contact_analysis_widget", None)
-    sys.modules.pop("cellflow.napari.nls_classification_widget", None)
-    return importlib.import_module("cellflow.napari.contact_analysis_widget")
+    monkeypatch.setitem(sys.modules, "itasc.napari", napari_pkg)
+    sys.modules.pop("itasc.napari.contact_analysis_widget", None)
+    sys.modules.pop("itasc.napari.nls_classification_widget", None)
+    return importlib.import_module("itasc.napari.contact_analysis_widget")
 
 
 def _make_sync_thread_worker():
@@ -187,7 +187,7 @@ def test_contact_analysis_widget_does_not_embed_personal_nls_classification(monk
     _set_pos(widget, pos_dir)
 
     assert not hasattr(widget, "nls_classification_widget")
-    assert "cellflow.napari.nls_classification_widget" not in sys.modules
+    assert "itasc.napari.nls_classification_widget" not in sys.modules
 
     widget.deleteLater()
     app.processEvents()

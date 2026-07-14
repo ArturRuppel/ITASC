@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import pandas as pd
 
-from cellflow.napari.contact_analysis.curation_controller import (
+from itasc.napari.contact_analysis.curation_controller import (
     CurationController,
 )
-from cellflow.contact_analysis.curation import read_curation
+from itasc.contact_analysis.curation import read_curation
 
 
 def test_loads_empty_when_file_absent(tmp_path):
