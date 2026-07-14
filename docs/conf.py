@@ -2,7 +2,7 @@
 
 The narrative pages are authored in Markdown (MyST); the API reference is
 generated from the package's own docstrings via autosummary, so it cannot drift
-from the code. See ``development/maintaining-docs.md`` for the maintenance model.
+from the code.
 """
 from __future__ import annotations
 

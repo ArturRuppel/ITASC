@@ -78,12 +78,14 @@ depends on one, please cite it:
   [doi:10.64898/2026.03.27.714683](https://doi.org/10.64898/2026.03.27.714683)
   · [Image-Analysis-Hub/Epicure](https://github.com/Image-Analysis-Hub/Epicure)
 
+<!-- docs-nav-start -->
 ## Documentation
 
 - [User guide](https://arturruppel.github.io/ITASC/): install, the staged workflow, and driving the
   plugin.
 - [API reference](https://arturruppel.github.io/ITASC/api/index.html): the programmatic API, generated
   from the source.
+<!-- docs-nav-end -->
 
 ## Status
 

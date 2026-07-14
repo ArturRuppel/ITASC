@@ -13,6 +13,13 @@
 :relative-docs: docs/
 :relative-images:
 :start-after: <!-- hero-end -->
+:end-before: <!-- docs-nav-start -->
+```
+
+```{include} ../README.md
+:relative-docs: docs/
+:relative-images:
+:start-after: <!-- docs-nav-end -->
 ```
 
 ```{toctree}
@@ -32,12 +39,4 @@ manual/core
 :caption: Reference
 
 api/index
-```
-
-```{toctree}
-:hidden:
-:caption: Development
-
-development/architecture
-development/maintaining-docs
 ```
