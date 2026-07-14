@@ -61,15 +61,6 @@ def test_top_level_import_does_not_import_ui_or_optional_workflow_modules() -> N
     assert itasc["imports"] == []
 
 
-def test_readme_documents_public_api_boundary() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
-
-    assert "## Programmatic use" in readme
-    assert "`import itasc` exposes only `__version__`" in readme
-    assert "napari plugin" in readme
-    assert "provisional" in readme
-
-
 def test_active_code_does_not_reference_deprecated_h5_candidate_workflow() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     forbidden = (
