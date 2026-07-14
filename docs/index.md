@@ -41,6 +41,7 @@ manual/core
 explanation/index
 explanation/input-maps
 explanation/nucleus-tracking
+explanation/cell-segmentation
 ```
 
 ```{toctree}
