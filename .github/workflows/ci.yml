@@ -68,7 +68,18 @@ jobs:
         run: python -m ruff check .
 
       - name: Test
-        run: python -m pytest
+        # napari's Viewer canvas needs an OpenGL context. The Linux runner has
+        # software GL (Mesa/llvmpipe via the Qt libs above), so the full suite
+        # runs there; GitHub's Windows and macOS runners have no GL fallback and
+        # segfault on canvas creation, so the GUI tests are deselected on them.
+        # Every non-GUI test — the actual install-correctness surface — still
+        # runs on all three OSes. GUI coverage on Windows/macOS is by manual VM.
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            python -m pytest
+          else
+            python -m pytest --ignore=tests/napari
+          fi
 
       - name: Build package
         run: python -m build --sdist --wheel --outdir dist

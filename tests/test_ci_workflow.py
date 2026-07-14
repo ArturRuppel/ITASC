@@ -24,7 +24,13 @@ def test_ci_workflow_runs_on_push_and_pull_request() -> None:
 def test_ci_workflow_tests_declared_python_range() -> None:
     workflow = _workflow_text()
 
-    assert "python-version: [\"3.10\", \"3.13\"]" in workflow
+    # Linux carries the full supported-Python sweep; Windows and macOS each run
+    # one job so the pip-install path is exercised on every OS (JOSS readiness).
+    assert "python-version: \"3.10\"" in workflow
+    assert "python-version: \"3.13\"" in workflow
+    assert "ubuntu-latest" in workflow
+    assert "windows-latest" in workflow
+    assert "macos-latest" in workflow
     assert "actions/checkout@v6" in workflow
     assert "actions/setup-python@v6" in workflow
 
