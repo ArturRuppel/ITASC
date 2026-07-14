@@ -604,7 +604,17 @@ class CorrectionWidget(QWidget):
             frame = self._intensity_frame_callback(t)
         except Exception:
             return None
-        return None if frame is None else np.asarray(frame)
+        if frame is None:
+            return None
+        frame = np.asarray(frame)
+        # For a 3D+t stack the callback hands back the whole (Z, Y, X) volume for
+        # this timepoint; reduce it to the plane currently shown so it lines up
+        # with the 2D segmentation frame.
+        if frame.ndim > 2:
+            step = self.viewer.dims.current_step
+            idx = tuple(int(step[a + 1]) for a in range(frame.ndim - 2))
+            frame = frame[idx]
+        return frame
 
     def select_label(self, t: int, label: int, *, notify: bool = True) -> None:
         self._update_highlight(t, label, notify=notify)
@@ -685,16 +695,20 @@ class CorrectionWidget(QWidget):
             lambda seg2d: clean_stranded_pixels(seg2d),
         )
 
-    @staticmethod
-    def _frame_view(layer, t: int) -> np.ndarray:
-        if layer.data.ndim == 2:
-            return layer.data
-        v = layer.data[t]
-        while v.ndim > 2:
-            if v.shape[0] != 1:
-                raise ValueError(f"non-singleton dim in frame slice: shape={v.shape}")
-            v = v[0]
-        return v
+    def _frame_view(self, layer, t: int) -> np.ndarray:
+        data = layer.data
+        if data.ndim == 2:
+            return data
+        v = data[t]
+        if v.ndim == 2:
+            return v
+        # A 3D+t stack leaves extra axes (e.g. Z) between time and the 2D plane.
+        # Draw on whichever slice the viewer is currently showing rather than
+        # demanding those axes be singleton. Basic indexing keeps this a view,
+        # so in-place edits still write back to layer.data.
+        step = self.viewer.dims.current_step
+        idx = tuple(int(step[a + 1]) for a in range(v.ndim - 2))
+        return v[idx]
 
     def _next_free_label(self) -> int:
         if self._layer is None:
@@ -707,9 +721,14 @@ class CorrectionWidget(QWidget):
         if not changed[0].size:
             return
         n = changed[0].size
-        extra = layer.data.ndim - 1 - 2
+        step = self.viewer.dims.current_step
+        # Reconstruct the full index of each changed pixel: time on axis 0, the
+        # current step on any middle axes (e.g. Z), then the 2D coordinates.
+        lead = layer.data.ndim - 2
         parts = [np.full(n, t, dtype=layer.data.dtype)]
-        parts.extend(np.zeros(n, dtype=layer.data.dtype) for _ in range(extra))
+        parts.extend(
+            np.full(n, int(step[a]), dtype=layer.data.dtype) for a in range(1, lead)
+        )
         parts.extend(changed)
         layer._save_history((tuple(parts), before[changed], after[changed]))
         if self._edit_callback is not None:
