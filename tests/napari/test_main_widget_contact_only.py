@@ -86,3 +86,60 @@ def test_full_mode_still_builds_all_four_stages():
     w = CellFlowMainWidget(_fake_viewer())
     assert w._has_upstream is True
     assert len(w._stage_sections) == 4
+
+
+def _add_positions(panel, positions):
+    panel.set_records(
+        [
+            {"key": str(p), "columns": {}, "payload": {"position_path": p}}
+            for p in positions
+        ]
+    )
+
+
+def test_run_all_row_hidden_until_positions_are_listed(tmp_path):
+    # The widget tree is never shown in the test, so isVisible() is always
+    # False; assert the explicit hidden flag the row toggles instead.
+    w = _contact_only_app()
+    assert w._run_all_row.isHidden() is True
+    _add_positions(w._positions_panel, [tmp_path / "pos01"])
+    assert w._run_all_row.isHidden() is False
+
+
+def test_missing_contact_jobs_covers_only_runnable_unbuilt_positions(tmp_path):
+    import numpy as np
+    import tifffile
+
+    def _write(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tifffile.imwrite(str(path), np.zeros((2, 4, 4), dtype=np.uint16))
+
+    ready = tmp_path / "ready"          # cell labels, no result → a job
+    with_nucleus = tmp_path / "nuc"     # cell + nucleus, no result → a job w/ nucleus
+    done = tmp_path / "done"            # already has a result → skipped
+    no_cell = tmp_path / "empty"        # no cell labels → skipped
+    _write(ready / "cell_labels.tif")
+    _write(with_nucleus / "cell_labels.tif")
+    _write(with_nucleus / "nucleus_labels.tif")
+    _write(done / "cell_labels.tif")
+    (done / "contact_analysis.h5").write_bytes(b"")
+    no_cell.mkdir()
+
+    w = _contact_only_app()
+    _add_positions(w._positions_panel, [ready, with_nucleus, done, no_cell])
+
+    jobs = {j.group_dir: j for j in w._missing_contact_jobs()}
+    assert set(jobs) == {ready, with_nucleus}
+    assert jobs[ready].nucleus_labels is None
+    assert jobs[with_nucleus].nucleus_labels == with_nucleus / "nucleus_labels.tif"
+    assert jobs[ready].output == ready / "contact_analysis.h5"
+
+
+def test_run_all_with_nothing_to_do_reports_and_does_not_launch(tmp_path):
+    # A listed position with no cell labels: the batch has no runnable jobs, so
+    # clicking must leave a message and start no worker.
+    w = _contact_only_app()
+    _add_positions(w._positions_panel, [tmp_path / "empty"])
+    w._on_run_all_contacts()
+    assert w._run_all_worker is None
+    assert "Nothing to run" in w._run_all_status.text()

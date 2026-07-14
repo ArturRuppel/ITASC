@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import napari
+from napari.qt.threading import thread_worker
 from napari.utils.notifications import show_error, show_info, show_warning
 from qtpy.QtCore import QSize, Qt, Signal
 from qtpy.QtWidgets import (
@@ -13,6 +14,8 @@ from qtpy.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMenu,
+    QProgressBar,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QToolButton,
@@ -20,6 +23,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from cellflow.contact_analysis import ContactBatchJob, run_contact_batch
 from cellflow.contact_analysis.catalog import (
     CONTACT_ANALYSIS_RELPATH,
     columns_from_levels,
@@ -39,7 +43,10 @@ from cellflow.napari._stage_status import (
     position_contact_status,
     position_stage_status,
 )
-from cellflow.napari.contact_analysis_widget import ContactAnalysisWidget
+from cellflow.napari.contact_analysis_widget import (
+    ContactAnalysisWidget,
+    _ProgressEmitter,
+)
 from cellflow.napari.widgets import (
     CollapsibleSection,
     PipelineFilesWidget,
@@ -225,6 +232,12 @@ class CellFlowMainWidget(QWidget):
         # project root or position index.
         self._pos_dir: Path | None = None
 
+        # In-flight "Run all contact analyses" batch worker (None when idle) and
+        # its worker-thread → UI-thread progress bridge.
+        self._run_all_worker = None
+        self._run_all_progress_emitter = _ProgressEmitter(self)
+        self._run_all_progress_emitter.progress.connect(self._on_run_all_progress)
+
         # Single app-wide UI gate shared by all sections. It is the one source
         # of truth for control enablement: viewer-owner mutual exclusion (only
         # one of correction / db-browser / live preview at a time) and the
@@ -344,6 +357,7 @@ class CellFlowMainWidget(QWidget):
         self._positions_panel.discover_requested.connect(self._on_discover_positions)
         self._positions_panel.stage_load_requested.connect(self._on_position_stage_load)
         self._positions_panel.records_changed.connect(self._refresh_aggregate)
+        self._positions_panel.records_changed.connect(self._update_run_all_row)
         # Editing the Setup calibration after folders are added must re-stamp the
         # aggregate records, or param-gated quantities filled in afterwards stay grey.
         self._positions_panel.calibration_changed.connect(
@@ -367,6 +381,7 @@ class CellFlowMainWidget(QWidget):
         self.scroll_layout.addWidget(self.viewer_activity_banner)
 
         self.scroll_layout.addWidget(self._positions_panel)
+        self.scroll_layout.addWidget(self._build_run_all_contacts_row())
         if self._has_upstream:
             self.scroll_layout.addWidget(self.cellpose_section)
             self.scroll_layout.addWidget(self.nucleus_section)
@@ -819,6 +834,145 @@ class CellFlowMainWidget(QWidget):
         self.aggregate_scope_band.setVisible(bool(records))
         self.aggregate_section.setVisible(bool(records))
         self.aggregate_section.set_status(self.aggregate_widget.section_status())
+
+    # -- run all contact analyses ----------------------------------------
+    def _build_run_all_contacts_row(self) -> QWidget:
+        """A catalog-scoped action: build the contact analysis for every listed
+        position that is missing one, in one headless batch.
+
+        It lives directly under the Data folders list (not inside the per-position
+        Contact Analysis section, which is a selected-position detail pane that
+        hides when nothing is selected): the operation ranges over the whole
+        catalog, so it stays visible whenever there are positions.
+        """
+        container = QWidget()
+        col = QVBoxLayout(container)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(2)
+
+        self._run_all_btn = QPushButton("Run all contact analyses")
+        self._run_all_btn.setToolTip(
+            "Build the contact-analysis .h5 for every listed position that has "
+            "cell labels but no result yet. Positions already built are skipped."
+        )
+        self._run_all_btn.clicked.connect(self._on_run_all_contacts)
+        col.addWidget(self._run_all_btn)
+
+        self._run_all_progress = QProgressBar()
+        self._run_all_progress.setRange(0, 100)
+        self._run_all_progress.setValue(0)
+        self._run_all_progress.setVisible(False)
+        self._run_all_progress.setTextVisible(True)
+        col.addWidget(self._run_all_progress)
+
+        self._run_all_status = QLabel("")
+        self._run_all_status.setWordWrap(True)
+        muted_label(self._run_all_status)
+        col.addWidget(self._run_all_status)
+
+        self._run_all_row = container
+        self._update_run_all_row()
+        return container
+
+    def _update_run_all_row(self) -> None:
+        """Show the Run-all action only with positions listed; disable while busy."""
+        has_positions = bool(self._positions_panel.keys())
+        self._run_all_row.setVisible(has_positions)
+        if self._run_all_worker is None:
+            self._run_all_btn.setEnabled(has_positions)
+
+    def _missing_contact_jobs(self) -> list[ContactBatchJob]:
+        """One :class:`ContactBatchJob` per listed position that can and must run.
+
+        A position qualifies when its committed ``cell_labels.tif`` is present
+        (the only required input) but its ``contact_analysis.h5`` is not — the
+        "doesn't have it yet" set. The nucleus is attached only when its committed
+        file exists; otherwise the job runs cell-only.
+        """
+        jobs: list[ContactBatchJob] = []
+        for rec in self._positions_panel.records():
+            position = rec.get("position_path") if isinstance(rec, dict) else None
+            if not position:
+                continue
+            pos = Path(position)
+            cell = pos / _CELL_LABELS_RELPATH
+            out = pos / CONTACT_ANALYSIS_RELPATH
+            if not cell.is_file() or out.is_file():
+                continue
+            nucleus = pos / _NUCLEUS_LABELS_RELPATH
+            jobs.append(
+                ContactBatchJob(
+                    group_dir=pos,
+                    cell_labels=cell,
+                    output=out,
+                    nucleus_labels=nucleus if nucleus.is_file() else None,
+                )
+            )
+        return jobs
+
+    def _on_run_all_contacts(self) -> None:
+        """Batch-build contact analyses for every listed, unbuilt position."""
+        if self._run_all_worker is not None:
+            return
+        jobs = self._missing_contact_jobs()
+        if not jobs:
+            self._run_all_status.setText(
+                "Nothing to run: every listed position already has a contact "
+                "analysis (or is missing its cell labels)."
+            )
+            return
+
+        self._run_all_progress.setRange(0, len(jobs))
+        self._run_all_progress.setValue(0)
+        self._run_all_progress.setVisible(True)
+        self._run_all_status.setText(
+            f"Running contact analysis on {len(jobs)} position(s)…"
+        )
+        self._run_all_btn.setEnabled(False)
+
+        emit = self._run_all_progress_emitter.progress.emit
+
+        @thread_worker(
+            connect={
+                "returned": self._on_run_all_done,
+                "errored": self._on_run_all_error,
+            }
+        )
+        def _worker():
+            # overwrite=False so the batch itself also honours the missing-only
+            # contract, even if a result appeared on disk since the jobs were built.
+            return run_contact_batch(jobs, overwrite=False, progress_cb=emit)
+
+        self._run_all_worker = _worker()
+        self._update_run_all_row()
+
+    def _on_run_all_progress(self, done: int, total: int, label: str) -> None:
+        if total > 0:
+            self._run_all_progress.setRange(0, total)
+            self._run_all_progress.setValue(done)
+        self._run_all_status.setText(f"Contact analysis: {done}/{total} ({label})")
+
+    def _on_run_all_done(self, results: list) -> None:
+        self._run_all_worker = None
+        self._run_all_progress.setVisible(False)
+        built = sum(1 for r in results if r.status == "built")
+        skipped = sum(1 for r in results if r.status == "skipped")
+        failed = sum(1 for r in results if r.status == "failed")
+        parts = [f"built {built}"]
+        if skipped:
+            parts.append(f"skipped {skipped}")
+        if failed:
+            parts.append(f"failed {failed}")
+        self._run_all_status.setText("Run all contact analyses: " + " / ".join(parts))
+        self._update_run_all_row()
+        # New .h5 files appeared: repaint every section dot and the catalog rail.
+        self._refresh_all()
+
+    def _on_run_all_error(self, exc: Exception) -> None:
+        self._run_all_worker = None
+        self._run_all_progress.setVisible(False)
+        self._run_all_status.setText(f"Run all contact analyses: error: {exc}")
+        self._update_run_all_row()
 
     def _on_save_config_as(self) -> None:
         """Save current configuration to a specific file."""
