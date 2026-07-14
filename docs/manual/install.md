@@ -1,181 +1,158 @@
 # Install
 
-ITASC is a napari plugin, so running it takes three things: a Python, an
-isolated environment to keep that Python clean, and the ITASC package installed
-into it. One tool, [uv](https://docs.astral.sh/uv/), does all three. You do not
-need Python already, you do not need to know what an environment is, and nothing
-here touches software you already have.
+ITASC runs inside napari, a free program for viewing microscopy images. This
+page installs both on a computer with nothing set up yet. It takes about ten
+minutes, most of it waiting for one large download.
 
-This page is written for a Windows machine with nothing installed yet. macOS and
-Linux differ only in the first command, noted where it matters. It installs the
-full pipeline, `itasc[all]`; installing a single stage instead changes one word
-in the final command, listed under [Other distributions](#other-distributions).
-The uv setup is the same for every one of them, so start here.
+You do not need Python or any programming to do this. You type three commands
+into a terminal, one at a time. A terminal is a window where you type commands
+instead of clicking; the steps below open it for you.
 
-> **Already have a Python environment?** Run `uv pip install "itasc[all]"` (or
-> `pip install "itasc[all]"`) into it and jump to [Launch and
-> check](#launch-and-check). The rest of this page sets up that environment for
-> you.
+This installs the full ITASC pipeline. Installing a single stage instead changes
+one word in the last command, covered at the end under [Other
+stages](#other-stages).
 
 ## Install uv
 
-uv is a single small program that installs Pythons, builds environments, and
-installs packages. Install it once and it manages the rest.
+uv is a small free program that does the setup: it installs its own copy of
+Python and the ITASC software, without changing anything else on your computer.
+You install it once.
 
-On **Windows**, open PowerShell: press the Start key, type `PowerShell`, and
-press Enter. In the window that opens, paste this line and press Enter:
+On **Windows**, open PowerShell, which is a kind of terminal: press the Start
+key, type `PowerShell`, and press Enter. Paste this line into the window and
+press Enter:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-On **macOS or Linux**, open a terminal and run:
+On **macOS or Linux**, open the Terminal app and run:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-The installer edits your `PATH`, which the terminal only reads at startup. Close
-this terminal window and open a new one, then confirm uv is there:
+When it finishes, close the terminal window and open a new one. uv only becomes
+available in terminals you open after installing it. Check that it is there:
 
 ```bash
 uv --version
 ```
 
-A version number means uv is installed. A "command not found" means the terminal
-is still the old one: close every terminal window and open a fresh one.
+A version number means it worked. `command not found` means the window is still
+an old one: close every terminal window, open a fresh one, and try again.
 
 ## Install ITASC
 
-One command installs everything:
+This one command installs napari and ITASC together:
 
 ```bash
-uv tool install napari --with "itasc[all]"
+uv tool install napari --torch-backend=auto --with "itasc[all] @ git+https://github.com/ArturRuppel/ITASC.git"
 ```
 
-This downloads a Python for you, builds an isolated environment, installs napari
-together with ITASC and every stage's engine (Cellpose-SAM for segmentation, the
-Ultrack solver for tracking) into it, and puts a `napari` command on your
-`PATH`. The `[all]` extra is what pulls in those engines; without it you get the
-plugin but not the heavy machine-learning dependencies.
+It downloads its own copy of Python, then napari, ITASC, and the tools each stage
+needs. One of those tools, used for finding cells, is over a gigabyte, so this
+runs for several minutes and shows little while it works. Let it finish.
 
-The download is large: the segmentation engine ships PyTorch, which is over a
-gigabyte, so the first install runs for several minutes and is quiet while it
-works. Let it finish.
+Once ITASC is published, this command will be shorter: `uv tool install napari
+--torch-backend=auto --with "itasc[all]"`. Until then, use the one above, which
+installs the current version from the source.
 
-The environment it builds is isolated: it will not disturb any other Python on
-your machine, and removing ITASC later is one command (see [Update and
-remove](#update-and-remove)).
+## Open ITASC
 
-> **Before the first release.** ITASC is not yet published on PyPI, so the
-> command above cannot find it yet. Until the release, install the current
-> version straight from the source repository, which produces the same result:
->
-> ```bash
-> uv tool install napari --with "itasc[all] @ git+https://github.com/ArturRuppel/ITASC.git"
-> ```
-
-## Launch and check
-
-Start napari from the terminal:
+Start napari by typing:
 
 ```bash
 napari
 ```
 
-An empty napari window opens. In its menu bar, open **Plugins → ITASC → ITASC**.
-The ITASC workflow widget docks on the right of the viewer. That widget appearing
-is the check that the install worked.
+An empty napari window opens. In the menu bar at the top, click **Plugins →
+ITASC → ITASC**. A panel appears on the right of the window: that panel is ITASC.
+If it is there, the install worked.
 
 > 📷 **Screenshot:** the napari window just after opening the plugin, the ITASC
-> workflow widget docked on the right with its stage sections collapsed.
+> panel docked on the right with its stage sections collapsed.
 
-If `napari` reports "command not found", the terminal has not picked up the new
-`PATH`: close it and open a fresh one. If napari opens but **ITASC** is missing
-from the **Plugins** menu, the `--with "itasc[all]"` part did not take: rerun the
-install command from the previous section.
+If typing `napari` gives `command not found`, the terminal is an old one: close
+it and open a new one. If napari opens but there is no **ITASC** under
+**Plugins**, run the install command again.
 
-With the plugin open, the [full-app guide](full-app.md) walks through the project
-layout on disk and the five stages in order.
+With the panel open, the [full-app guide](full-app.md) walks through where your
+files live on disk and the five stages in order.
 
-## GPU
+## Graphics card (GPU)
 
-The GPU matters only for the distributions that segment: `itasc[all]` and
-`itasc-cellpose`. The tracking and aggregate stages run no deep-learning
-inference, so this section does not apply to them.
+One step, finding the cells, runs far faster on an NVIDIA graphics card than on
+the computer's main processor. The other stages do not use the card. So the card
+matters if you segment, and not otherwise.
 
-ITASC runs on the CPU with no extra setup, and everything works there.
-Segmentation with Cellpose-SAM is the one heavy step, and on an NVIDIA GPU it
-runs many times faster. The GPU is used automatically whenever PyTorch detects a
-CUDA-capable card, so on most NVIDIA machines the default install already uses
-it.
+The `--torch-backend=auto` in the install command sets this up for you. uv checks
+whether the computer has an NVIDIA card and installs the version that uses it. If
+there is a card, segmentation uses it with nothing further to do. If there is
+not, segmentation still runs on the main processor, only slower. The install
+command is the same either way.
 
-If segmentation stays slow and you have an NVIDIA GPU, PyTorch has fallen back to
-CPU and needs a CUDA build matched to your driver. Two guides give the exact
-command for your setup:
+This applies to NVIDIA cards only. Other graphics chips, including Apple's, fall
+back to the main processor.
 
-- PyTorch's [Get Started](https://pytorch.org/get-started/locally/) selector,
-  which builds the install command for your CUDA version.
-- Cellpose's [GPU installation
-  notes](https://cellpose.readthedocs.io/en/latest/installation.html#gpu-version-cuda-on-windows-and-linux),
-  which cover the same for the segmentation engine specifically.
+To see which one is in use: when segmentation runs, napari's terminal window
+prints whether it found the graphics card or is using the processor.
 
-Install the PyTorch they specify into the same environment, and segmentation
-picks up the GPU on the next run.
-
-## Other distributions
-
-The command above installs the whole pipeline. Each stage also ships on its own,
-for running one job on its own data. The uv setup is identical; only the package
-in the `--with` changes, along with the extras that carry its engine:
-
-```bash
-# Sparse cells: Cellpose-SAM segmentation, then laptrack linking
-uv tool install napari --with "itasc-cellpose[cellpose,laptrack]"
-
-# Foreground/contour maps to Ultrack tracks, plus correction
-uv tool install napari --with "itasc-tracking[solve]"
-
-# Tracked labels to contacts and T1 events (HDF5, CSV)
-uv tool install napari --with "itasc-aggregate"
-```
-
-The extras hold the heavy engines, so you can drop one when you do not need it:
-`itasc-tracking` without `[solve]` browses and corrects existing tracks but
-cannot run the Ultrack solver, and `itasc-cellpose` without `[cellpose]` keeps
-the tracking helpers but not the segmentation model. Each distribution's guide,
-linked from the [overview](../index.md#what-it-does), says which extras
-its widgets need. Launch and check works the same: open napari, then open that
-distribution's widget from the **Plugins** menu.
-
-Each command sets up the single `napari` tool with that one distribution, so
-installing a second one replaces the first. To have every stage available at
-once, use the full app, `itasc[all]`.
-
-### itasc-core is a library
-
-`itasc-core` is the shared substrate, not an app: you import it from your own
-Python rather than launch it, so it belongs in a project rather than in a tool.
-In a uv project, add it as a dependency:
-
-```bash
-uv add itasc-core
-```
-
-The [core guide](core.md) covers what it exposes.
+If you have an NVIDIA card and segmentation still runs slowly, its driver is
+probably too old for the version uv installed. Update the graphics driver from
+NVIDIA, then run the install command again. If it is still slow, you can name the
+version yourself instead of letting uv choose: PyTorch's [Get
+Started](https://pytorch.org/get-started/locally/) page shows which one matches
+your card, and you replace `auto` in the install command with it (for example,
+`cu124`).
 
 ## Update and remove
 
-ITASC is registered as a uv tool under the name `napari`. Update it, engines and
-all, with:
+ITASC comes bundled with napari, so both are managed under the name `napari`.
+Update them, graphics support and all, with:
 
 ```bash
 uv tool upgrade napari
 ```
 
-Remove it and its entire environment, leaving the rest of your system untouched,
-with:
+Remove them and everything they installed, leaving the rest of your computer
+untouched, with:
 
 ```bash
 uv tool uninstall napari
 ```
+
+## Other stages
+
+Most people want the full pipeline and can stop here. Each stage also ships on
+its own, for running one kind of job on its own data. The setup is the same; only
+the name after `--with` changes:
+
+```bash
+# Finding cells (sparse), then linking them across frames
+uv tool install napari --torch-backend=auto --with "itasc-cellpose[cellpose,laptrack]"
+
+# Turning cell maps into tracks, plus manual correction
+uv tool install napari --with "itasc-tracking[solve]"
+
+# Turning tracked cells into contacts and T1 events
+uv tool install napari --with "itasc-aggregate"
+```
+
+Each command sets up napari with that one stage, so installing a second one
+replaces the first. To have every stage at once, install the full pipeline,
+`itasc[all]`, from the top of this page. Each stage's own guide, linked from the
+[overview](../index.md#what-it-does), says what to open from the **Plugins** menu.
+
+### For people who write Python
+
+`itasc-core` is the shared code underneath the stages, meant to be imported from
+your own Python rather than opened as an app. Add it to a project with:
+
+```bash
+uv add itasc-core
+```
+
+The [core guide](core.md) covers what it provides. If you already have a Python
+environment, you can install any of the packages above into it directly with
+`pip install` or `uv pip install` and skip the uv setup entirely.
