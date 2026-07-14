@@ -23,11 +23,14 @@ one table per quantity.*
 ## What it needs
 
 Point **Find data folders** at a parent directory, and it lists every position
-below it that holds a committed `cell_labels.tif` (a `nucleus_labels.tif` is used
-too when present). Each position gets a status rail: **click a dot to load that
-stage's output into the viewer**. Select a position to run or re-run its contact
-analysis, then **Pool ready positions** writes the project-level tables, one CSV
-per quantity, to the project root.
+below it that holds any committed labels. Partial data is fine: a position may have
+only nucleus labels, only cell labels, or cell labels plus a contact analysis. It
+runs what the present labels allow and pools whatever quantities come out, so a
+project of unevenly finished positions still aggregates, each contributing what it
+has. Each position gets a status rail: **click a dot to load that stage's output
+into the viewer**. Select a position to run or re-run its contact analysis, then
+**Pool ready positions** writes the project-level tables, one CSV per quantity, to
+the project root.
 
 ## Install
 
