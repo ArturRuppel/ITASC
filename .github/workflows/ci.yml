@@ -9,15 +9,34 @@ permissions:
 
 jobs:
   checks:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} · Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.13"]
+        # Linux carries the full supported-Python sweep; Windows and macOS
+        # each run one job on 3.12 (the version most scientific users are on,
+        # and the least likely to be missing native wheels for torch/numba/
+        # pymaxflow) so JOSS reviewers' `pip install` path is covered on every
+        # OS without a 3x CI-minute bill.
+        include:
+          - os: ubuntu-latest
+            python-version: "3.10"
+          - os: ubuntu-latest
+            python-version: "3.13"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: macos-latest
+            python-version: "3.12"
 
     env:
       QT_QPA_PLATFORM: offscreen
+
+    # Git Bash ships on the Windows runner, so a single shell keeps the
+    # heredocs and line-continuations below identical across all three OSes.
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Check out repository
@@ -30,6 +49,7 @@ jobs:
           cache: pip
 
       - name: Install Qt/OpenGL system libraries
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -62,8 +82,11 @@ jobs:
 
       - name: Verify isolated install (PEP 420 namespace + headless core)
         run: |
-          python -m venv /tmp/cf-verify
-          . /tmp/cf-verify/bin/activate
+          python -m venv cf-verify
+          # venv puts its scripts in bin/ on Linux+macOS, Scripts/ on Windows.
+          VENV_BIN=cf-verify/bin
+          [ -d "$VENV_BIN" ] || VENV_BIN=cf-verify/Scripts
+          . "$VENV_BIN/activate"
           pip install --upgrade pip
           pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
           pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_cellpose-*.whl
