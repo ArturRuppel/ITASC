@@ -8,8 +8,12 @@ time, lets you correct the result by hand where the automatics miss, and
 measures what the tracked cells do. It is a [napari](https://napari.org) plugin
 built for dense, motile monolayers, where segmentation and tracking are often difficult.
 
-<!-- hero screenshot: the ITASC workflow widget docked in napari, its stages
-     stacked in run order over a tracked monolayer. Pending capture. -->
+<!-- hero-start -->
+<p align="center">
+  <img src="docs/_static/napari_timelapse_last.png"
+       alt="ITASC tracking a monolayer in napari" width="100%">
+</p>
+<!-- hero-end -->
 
 ## What it does
 
@@ -31,7 +35,7 @@ The full ITASC app moves through four stages:
   - aggregate analysis of tracked nuclei, cell bodies, and cell-cell contacts
     (shape and dynamics over time), exported to `.csv` tables.
 
-ITACS is also distributed as smaller, simplified napari tools for a subset of these steps.
+ITASC is also distributed as smaller, simplified napari tools for a subset of these steps.
 Pick the one that matches the data you have. Each row links to that tool's guide,
 which covers how to install it and how to use it.
 
@@ -81,13 +85,13 @@ the release and its accompanying manuscript.
 
 ## Citing ITASC
 
-Cite the software using the metadata in [`CITATION.cff`](CITATION.cff). A DOI
+Cite the software using the metadata in [`CITATION.cff`](https://github.com/ArturRuppel/ITASC/blob/main/CITATION.cff). A DOI
 and manuscript citation will be added with the public release. For
 pre-publication citation questions, contact Artur Ruppel at `artur@ruppel.pro`.
 
 ## License
 
-AGPL-3.0. See [`LICENSE`](LICENSE).
+AGPL-3.0. See [`LICENSE`](https://github.com/ArturRuppel/ITASC/blob/main/LICENSE).
 
 ## AI usage
 

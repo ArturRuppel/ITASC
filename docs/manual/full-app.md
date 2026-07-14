@@ -13,15 +13,17 @@ distribution, or resume from any point.
 ## Install
 
 ```bash
-pip install itasc[all]
+uv tool install napari --with "itasc[all]"
 ```
 
 The `[all]` extra pulls the core scientific stack plus the two workflow engines:
-Cellpose-SAM (`cellpose`, `torch`, `torchvision`) and the Ultrack solver. From a
-local checkout:
+Cellpose-SAM (`cellpose`, `torch`, `torchvision`) and the Ultrack solver. If you
+have never installed Python before, the [install guide](install.md) walks
+through it from an empty machine, and covers GPU setup, updating, and removal.
+From a local checkout, for development:
 
 ```bash
-python -m pip install -e .[all]
+python -m pip install -e ".[all]"
 ```
 
 ## The project on disk
@@ -70,7 +72,7 @@ distribution that owns the same stage, for running it on other data on its own.
 
 If your data already sits at a later stage, skip ahead: foreground and contour
 maps let you start at step 3, tracked cell labels let you start at step 5. The
-[distribution overview](../index.md#how-it-is-organized) maps each entry point to
+[distribution overview](../index.md#what-it-does) maps each entry point to
 its standalone distribution.
 
 ## Drive the plugin
@@ -96,5 +98,5 @@ In the main `ITASC` widget:
 > channel selectors and **Run** button visible.
 
 To run one of these stages on its own data, outside the full app, install that
-piece on its own: the [distribution overview](../index.md#how-it-is-organized)
+piece on its own: the [distribution overview](../index.md#what-it-does)
 lists the single-stage distributions and what each one needs.
