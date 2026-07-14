@@ -85,7 +85,10 @@ The panel before any folder is added: pixel size, frame length, and the names of
 the nucleus and cell input stacks.
 ```
 
-**Find data folders…** scans the project for positions and lists them. The stage
+**Find data folders…** scans the project for positions and lists them. Each
+position carries a status rail, one dot per stage: a hollow dot for not started,
+amber while a stage runs, green once its output is committed, red when that output
+is stale. Click a dot to load that stage's output into the viewer. The stage
 sections appear below once at least one folder is present, each collapsed and
 ready to run. **Run all contact analyses** runs the final contact-analysis stage
 across every listed position at once. That is the only stage that runs start to
