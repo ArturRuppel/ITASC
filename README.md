@@ -13,7 +13,7 @@ built for dense, motile monolayers, where segmentation and tracking are often di
 
 ## What it does
 
-An ITASC run moves through four stages, each usable on its own:
+The full ITASC app moves through four stages:
 
 - **Segment** each frame with [Cellpose-SAM](https://github.com/MouseLand/cellpose).
   For sparse, well-separated cells its masks are the result; for a dense
@@ -31,22 +31,7 @@ An ITASC run moves through four stages, each usable on its own:
   - aggregate analysis of tracked nuclei, cell bodies, and cell-cell contacts
     (shape and dynamics over time), exported to `.csv` tables.
 
-## How it is organized
-
-ITASC comes in two forms.
-
-The **full app** is the integrated pipeline. A project is a directory with one
-subfolder per position, and the four stages hand off through the `.tif` and HDF5
-files on disk, so you can enter wherever your data already sits or pick up a
-project someone else started.
-
-The **solo distributions** are separate, smaller napari tools, each built for one
-job with its own interface: `itasc-cellpose` segments and tracks channels
-straight into viewer layers, `itasc-tracking` turns foreground and contour maps
-into corrected Ultrack tracks, and `itasc-aggregate` quantifies contacts and T1
-events from finished labels. They are not the full app with stages switched off:
-each ships only the code its job needs and a leaner interface to match.
-
+ITACS is also distributed as smaller, simplified napari tools for a subset of these steps.
 Pick the one that matches the data you have. Each row links to that tool's guide,
 which covers how to install it and how to use it.
 
