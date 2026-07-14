@@ -87,6 +87,15 @@ depends on one, please cite it:
   from the source.
 <!-- docs-nav-end -->
 
+## Programmatic use
+
+ITASC is published primarily as a napari plugin, but its stages are scriptable.
+The top-level namespace is intentionally small: `import itasc` exposes only `__version__`,
+and pulls in no UI, Cellpose, Torch, or Ultrack. Import the stage
+you need from its subpackage (for example `itasc.tracking_ultrack`,
+`itasc.segmentation`, `itasc.contact_analysis`). The subpackage layout and the
+functions it exposes are provisional until the public release stabilizes.
+
 ## Status
 
 ITASC is approaching its first public release and JOSS submission. The four
