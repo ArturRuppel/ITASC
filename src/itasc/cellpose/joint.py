@@ -5,8 +5,10 @@ into one nucleus-anchored path:
 
 1. **Nucleus native masks** (:func:`native_masks.run_nucleus_masks_stack`) →
    **track** them (:func:`track_laptrack.track_masks`) → tracked nucleus labels.
-2. **Cell flows** (:func:`cellpose_runner.run_cell_stack` → ``prob``, ``dp``);
-   the cell foreground is ``sigmoid(prob) > fg_threshold``.
+2. **Cell flows** (:func:`cellpose_runner.run_cell_stack_joint` → ``prob``,
+   ``dp``, from a single two-channel pass over the cell **and** nucleus channels
+   so the nucleus guides the cell-body flow); the cell foreground is
+   ``sigmoid(prob) > fg_threshold``.
 3. Per z-plane, **flow-follow** each cell-foreground pixel to a nucleus
    (:func:`flow_following.flow_follow_movie`). Cell labels inherit the *tracked*
    nucleus ids, so the cell stack is tracked by construction — one cell per
@@ -75,10 +77,11 @@ def joint_segment_track(
         nuc_masks, max_distance=max_distance, max_frame_gap=max_frame_gap,
     ).astype(np.int32)
 
-    # 2. Cell flows + foreground.
+    # 2. Cell flows + foreground, from a two-channel (cell + nucleus) pass so the
+    #    nucleus channel guides the cell-body flow field.
     _report(2, 4, "Cell flows...")
-    prob, dp = cellpose_runner.run_cell_stack(
-        cell_stack, cell_params, cancel_cb=cancel_cb,
+    prob, dp = cellpose_runner.run_cell_stack_joint(
+        cell_stack, nucleus_stack, cell_params, cancel_cb=cancel_cb,
     )
     foreground = cell_foreground_from_prob(prob, flow_params.fg_threshold)
 

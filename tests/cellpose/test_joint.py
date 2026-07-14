@@ -51,14 +51,23 @@ def test_joint_segment_track_pairs_cell_ids_to_tracked_nucleus_ids(monkeypatch):
     )
 
     # Cell flows: high prob everywhere (all foreground), flow toward (10,10).
+    # The joint path segments the cell body from BOTH channels together, so it
+    # calls run_cell_stack_joint(cell_stack, nucleus_stack, ...); record the
+    # stacks it receives to assert both channels reach the two-channel pass.
     prob = np.full((T, Z, H, W), 10.0, dtype=np.float32)
     dp = np.stack(
         [np.stack([_inward_flow(H, W, 10.0, 10.0)], axis=0) for _ in range(T)],
         axis=0,
     )  # (T, Z, 2, Y, X)
+    seen = {}
+
+    def _fake_joint_flows(cell, nucleus, params, **kw):
+        seen["cell"] = cell
+        seen["nucleus"] = nucleus
+        return prob.copy(), dp.copy()
+
     monkeypatch.setattr(
-        joint.cellpose_runner, "run_cell_stack",
-        lambda stack, params, **kw: (prob.copy(), dp.copy()),
+        joint.cellpose_runner, "run_cell_stack_joint", _fake_joint_flows,
     )
 
     nuc_out, cell_out = joint.joint_segment_track(
@@ -73,6 +82,9 @@ def test_joint_segment_track_pairs_cell_ids_to_tracked_nucleus_ids(monkeypatch):
     # Cell labels carry the tracked nucleus id, paired 1:1.
     assert set(np.unique(nuc_out)) == {0, 4}
     assert set(np.unique(cell_out)) == {4}  # all foreground assigned to nucleus 4
+    # The two-channel cell pass received BOTH the cell and nucleus stacks.
+    assert seen["cell"] is cell_stack
+    assert seen["nucleus"] is nucleus_stack
 
 
 def test_joint_validates_4d_inputs(monkeypatch):

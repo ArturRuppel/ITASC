@@ -227,6 +227,132 @@ def test_run_cell_frame_runs_2d_slice(monkeypatch):
     assert calls[0]["min_size"] == 10
 
 
+def test_run_cell_frame_joint_passes_two_channel_image(monkeypatch):
+    r = _runner()
+    received = {}
+
+    class _Sniffer:
+        def eval(self, img, **kwargs):
+            received["img"] = np.asarray(img).copy()
+            received["kwargs"] = kwargs
+            arr = np.asarray(img, dtype=np.float32)
+            # Cellpose returns 2D flows regardless of channel count.
+            yx = arr.shape[:2]
+            dp = np.ones((2, *yx), dtype=np.float32)
+            prob = np.full(yx, 0.5, dtype=np.float32)
+            return None, (None, dp, prob), None
+
+    monkeypatch.setattr(r, "_MODEL", _Sniffer())
+    # Distinct per-channel content so channel order is verifiable.
+    cell_frame = np.full((1, 8, 8), 3.0, dtype=np.float32)
+    nucleus_frame = np.full((1, 8, 8), 7.0, dtype=np.float32)
+    params = r.CellParams(diameter=30.0, min_size=10, gamma=1.0)
+    prob, dp = r.run_cell_frame_joint(cell_frame, nucleus_frame, z=0, params=params)
+    # Output shapes match the single-channel cell path.
+    assert prob.shape == (8, 8)
+    assert dp.shape == (2, 8, 8)
+    # A two-channel image was passed, channels last, via explicit channel_axis.
+    img = received["img"]
+    assert img.shape == (8, 8, 2)
+    assert received["kwargs"]["channel_axis"] == 2
+    # Cell is the primary channel (index 0); nucleus is the guide (index 1).
+    np.testing.assert_array_equal(img[..., 0], np.full((8, 8), 3.0, dtype=np.float32))
+    np.testing.assert_array_equal(img[..., 1], np.full((8, 8), 7.0, dtype=np.float32))
+    assert received["kwargs"]["diameter"] == 30.0
+    assert received["kwargs"]["min_size"] == 10
+
+
+def test_run_cell_frame_joint_applies_gamma_to_both_channels(monkeypatch):
+    r = _runner()
+    received = {}
+
+    class _Sniffer:
+        def eval(self, img, **kwargs):
+            received["img"] = np.asarray(img).copy()
+            arr = np.asarray(img, dtype=np.float32)
+            yx = arr.shape[:2]
+            return None, (None, np.ones((2, *yx), dtype=np.float32),
+                          np.full(yx, 0.5, dtype=np.float32)), None
+
+    monkeypatch.setattr(r, "_MODEL", _Sniffer())
+    cell_frame = np.linspace(0.0, 1.0, num=1 * 4 * 4, dtype=np.float32).reshape(1, 4, 4)
+    nucleus_frame = np.linspace(1.0, 2.0, num=1 * 4 * 4, dtype=np.float32).reshape(1, 4, 4)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=2.0)
+    r.run_cell_frame_joint(cell_frame, nucleus_frame, z=0, params=params)
+    img = received["img"]
+    np.testing.assert_allclose(img[..., 0], r._apply_gamma(cell_frame[0], 2.0), atol=1e-6)
+    np.testing.assert_allclose(img[..., 1], r._apply_gamma(nucleus_frame[0], 2.0), atol=1e-6)
+
+
+def _install_joint_recording_model(monkeypatch, r):
+    """Recorder that mimics cpsam: 2D flows regardless of input channel count."""
+    calls = []
+
+    class _Recorder:
+        def eval(self, img, **kwargs):
+            arr = np.asarray(img, dtype=np.float32)
+            calls.append({"shape": arr.shape, **kwargs})
+            yx = arr.shape[:2]  # (Y, X) even for a channels-last (Y, X, C) image
+            dp = np.ones((2, *yx), dtype=np.float32)
+            prob = np.full(yx, 0.5, dtype=np.float32)
+            return None, (None, dp, prob), None
+
+    monkeypatch.setattr(r, "_MODEL", _Recorder())
+    return calls
+
+
+def test_run_cell_stack_joint_matches_single_channel_shapes(monkeypatch):
+    r = _runner()
+    calls = _install_joint_recording_model(monkeypatch, r)
+    cell_stack = np.zeros((2, 3, 6, 6), dtype=np.float32)
+    nucleus_stack = np.zeros((2, 3, 6, 6), dtype=np.float32)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    progress = []
+    prob, dp = r.run_cell_stack_joint(
+        cell_stack, nucleus_stack, params,
+        progress_cb=lambda d, t, msg: progress.append((d, t, msg)),
+    )
+    assert prob.shape == (2, 3, 6, 6)
+    assert dp.shape == (2, 3, 2, 6, 6)
+    assert len(calls) == 2 * 3
+    # Each eval saw a two-channel, channels-last image via explicit channel_axis.
+    assert all(c["shape"] == (6, 6, 2) for c in calls)
+    assert all(c["channel_axis"] == 2 for c in calls)
+    assert progress[0] == (0, 2, "Cell: frame 1/2...")
+
+
+def test_run_cell_stack_joint_rejects_shape_mismatch(monkeypatch):
+    r = _runner()
+    _install_joint_recording_model(monkeypatch, r)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    with pytest.raises(ValueError):
+        r.run_cell_stack_joint(
+            np.zeros((2, 3, 6, 6), dtype=np.float32),
+            np.zeros((2, 3, 6, 5), dtype=np.float32),
+            params,
+        )
+
+
+def test_run_cell_stack_joint_respects_cancel_between_frames(monkeypatch):
+    r = _runner()
+    _install_joint_recording_model(monkeypatch, r)
+    cell_stack = np.zeros((5, 2, 4, 4), dtype=np.float32)
+    nucleus_stack = np.zeros((5, 2, 4, 4), dtype=np.float32)
+    params = r.CellParams(diameter=0.0, min_size=0, gamma=1.0)
+    seen = []
+
+    def _cancel():
+        return len(seen) >= 1
+
+    def _record(done, total, msg):
+        seen.append(done)
+
+    with pytest.raises(r.CancelledError):
+        r.run_cell_stack_joint(
+            cell_stack, nucleus_stack, params, progress_cb=_record, cancel_cb=_cancel,
+        )
+
+
 def test_run_nucleus_frame_applies_gamma(monkeypatch):
     r = _runner()
     received = {}

@@ -267,13 +267,17 @@ def preview_joint(
     max_frame_gap: int,
     progress_cb=None,
     cancel_cb=None,
-) -> np.ndarray:
-    """Joint Channel-2 result for a single current frame, embedded full-size.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Joint Channel-2 result **and its prob/flow maps** for one frame, embedded full-size.
 
     Runs the joint anchor path on just frame ``t`` of both channels (tracking one
-    frame is a no-op) and embeds the Channel-2 result into an otherwise-background
-    ``(T, Z, Y, X)`` stack — so the preview overlays exactly the frame on screen,
-    letting the Channel-2 params be tuned before committing to the whole stack.
+    frame is a no-op) and returns three otherwise-background ``(T, Z, Y, X)``
+    stacks with only frame ``t`` populated: the flow-following ``assignment``
+    ``(T, Z, Y, X)`` int32, the ``prob`` ``(T, Z, Y, X)`` float32 sigmoid map and
+    the ``flow_rgb`` ``(T, Z, Y, X, 3)`` uint8 HSV visualization. The prob/flow
+    come from the **joint two-channel** Cellpose pass (cell guided by the nucleus)
+    on the same frame — the very fields that drive the assignment — coloured
+    exactly like Channel 1's preview, so Channel 2 surfaces the same three maps.
     """
     ch1 = _coerce_stack(ch1_source)
     ch2 = _coerce_stack(ch2_source)
@@ -282,9 +286,21 @@ def preview_joint(
         max_distance=max_distance, max_frame_gap=max_frame_gap,
         progress_cb=progress_cb, cancel_cb=cancel_cb,
     )
-    out = np.zeros(ch1.shape, dtype=np.int32)
-    out[t] = ch2_frame[0]
-    return out
+    assignment = np.zeros(ch1.shape, dtype=np.int32)
+    assignment[t] = ch2_frame[0]
+
+    # Joint two-channel cell prob/flow for the same frame (cell channel guided by
+    # the nucleus channel), coloured through the same helper Channel 1's preview
+    # uses. Same params + inputs → the same deterministic fields that drove the
+    # flow-following assignment above.
+    prob = np.zeros(ch1.shape, dtype=np.float32)
+    flow_rgb = np.zeros((*ch1.shape, 3), dtype=np.uint8)
+    for z in range(int(ch1.shape[1])):
+        prob_logits, dp = cellpose_runner.run_cell_frame_joint(
+            ch2[t], ch1[t], z=z, params=ch2_params,
+        )
+        prob[t, z], flow_rgb[t, z] = native_masks.cell_maps_to_preview(prob_logits, dp)
+    return assignment, prob, flow_rgb
 
 
 def _make_status() -> QLabel:
@@ -949,14 +965,21 @@ class CellposeSegmentTrackWidget(QWidget):
         self._add_image(_layer_name(_CH2_LABEL, "image"), ch2_stack)
         t, _z = self._current_tz(int(ch1_stack.shape[0]), int(ch1_stack.shape[1]))
         preview_name = _layer_name(_CH2_LABEL, "preview")
+        prob_name = _layer_name(_CH2_LABEL, "prob preview")
+        flow_name = _layer_name(_CH2_LABEL, "flow preview")
 
         def _done(result):
+            assignment, prob, flow = result
             self._worker = None
             self._set_running(None)
             self._clear_progress()
-            self._add_labels(preview_name, result)
+            # Mirror Channel 1's stacking order (flow, prob, then labels on top).
+            self._add_image(flow_name, flow)
+            self._add_image(prob_name, prob)
+            self._add_labels(preview_name, assignment)
             self._status(
-                f"Channel 2 joint preview (frame t={t}) → '{preview_name}'."
+                f"Channel 2 joint preview (frame t={t}) → '{preview_name}', "
+                f"'{prob_name}', '{flow_name}'."
             )
 
         @thread_worker(connect={

@@ -212,6 +212,43 @@ def run_cell_frame(
     return prob, dp
 
 
+def run_cell_frame_joint(
+    cell_frame: np.ndarray,
+    nucleus_frame: np.ndarray,
+    z: int,
+    params: CellParams,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Two-channel cell inference on one 2D z-slice, guided by the nucleus channel.
+
+    A single Cellpose-SAM pass runs over a two-channel image (cell + nucleus) so
+    the nucleus channel informs the cell-body flow/probability fields. Returns
+    ``(prob (Y, X), dp (2, Y, X))`` — the same shapes as :func:`run_cell_frame`,
+    so the two-channel result is a drop-in replacement for the single-channel one.
+
+    Channel order matches the classic ``[cytoplasm, nucleus]`` convention and the
+    single-channel cell path (which places the cell channel at index 0): the cell
+    channel is the primary "to-segment" channel (index 0), the nucleus is the
+    auxiliary guide (index 1). ``channel_axis`` is passed explicitly (cpsam
+    zero-pads to 3 channels internally); the same per-plane gamma is applied to
+    both channels and cpsam normalises each channel independently.
+    """
+    model = get_model()
+    diameter = _diameter_kwarg(params.diameter)
+    cell_2d = _apply_gamma(cell_frame[z], params.gamma)
+    nucleus_2d = _apply_gamma(nucleus_frame[z], params.gamma)
+    img = np.stack([cell_2d, nucleus_2d], axis=-1)  # (Y, X, 2), cell first
+    _, flows, _ = model.eval(
+        img,
+        channel_axis=2,
+        diameter=diameter,
+        min_size=params.min_size,
+        normalize=_NORMALIZE,
+    )
+    dp = np.asarray(flows[1], dtype=np.float32)
+    prob = np.asarray(flows[2], dtype=np.float32)
+    return prob, dp
+
+
 def run_nucleus_stack(
     stack: np.ndarray,
     params: NucleusParams,
@@ -282,6 +319,52 @@ def run_cell_stack(
         slice_dps: list[np.ndarray] = []
         for z in range(Z):
             p, d = run_cell_frame(stack[t], z=z, params=params)
+            slice_probs.append(p)
+            slice_dps.append(d)
+        prob_frames.append(np.stack(slice_probs, axis=0))
+        dp_frames.append(np.stack(slice_dps, axis=0))
+        if progress_cb is not None:
+            progress_cb(t + 1, T, f"Cell: frame {t + 1}/{T}...")
+    return np.stack(prob_frames, axis=0), np.stack(dp_frames, axis=0)
+
+
+def run_cell_stack_joint(
+    cell_stack: np.ndarray,
+    nucleus_stack: np.ndarray,
+    params: CellParams,
+    *,
+    progress_cb: Callable[[int, int, str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Two-channel cell inference over paired ``(T, Z, Y, X)`` cell + nucleus stacks.
+
+    Like :func:`run_cell_stack` but each 2D slice is segmented from a two-channel
+    image (cell + nucleus) so the nucleus channel guides the cell-body flow.
+    Returns ``(prob_3dt (T, Z, Y, X), dp_3dt (T, Z, 2, Y, X))`` — identical shapes
+    to :func:`run_cell_stack`, so downstream flow-following is unaffected.
+    """
+    cell_stack = np.asarray(cell_stack)
+    nucleus_stack = np.asarray(nucleus_stack)
+    if cell_stack.ndim != 4 or nucleus_stack.ndim != 4:
+        raise ValueError(
+            f"expected (T, Z, Y, X), got {cell_stack.shape} and {nucleus_stack.shape}"
+        )
+    if cell_stack.shape != nucleus_stack.shape:
+        raise ValueError(
+            "cell_stack and nucleus_stack must have the same shape, got "
+            f"{cell_stack.shape} and {nucleus_stack.shape}"
+        )
+    T, Z = cell_stack.shape[:2]
+    prob_frames: list[np.ndarray] = []
+    dp_frames: list[np.ndarray] = []
+    for t in range(T):
+        _check_cancel(cancel_cb)
+        if progress_cb is not None:
+            progress_cb(t, T, f"Cell: frame {t + 1}/{T}...")
+        slice_probs: list[np.ndarray] = []
+        slice_dps: list[np.ndarray] = []
+        for z in range(Z):
+            p, d = run_cell_frame_joint(cell_stack[t], nucleus_stack[t], z=z, params=params)
             slice_probs.append(p)
             slice_dps.append(d)
         prob_frames.append(np.stack(slice_probs, axis=0))

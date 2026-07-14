@@ -35,6 +35,7 @@ __all__ = [
     "run_cell_masks_frame",
     "run_nucleus_masks_stack",
     "run_cell_masks_stack",
+    "cell_maps_to_preview",
     "run_nucleus_maps_frame",
     "iter_nucleus_maps_stack",
     "write_masks",
@@ -79,18 +80,33 @@ def _flow_to_rgb(dp: np.ndarray) -> np.ndarray:
     return (np.clip(rgb, 0.0, 1.0) * 255.0).astype(np.uint8)
 
 
+def cell_maps_to_preview(
+    prob_logits: np.ndarray, dp: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Turn a raw Cellpose ``(cellprob logits, dp)`` pair into its two preview maps.
+
+    Returns ``(prob (Y, X) float32, flow_rgb (Y, X, 3) uint8)`` — the sigmoid
+    probability map and the HSV→RGB flow visualization the preview surfaces. Both
+    the Channel-1 anchor preview (:func:`run_nucleus_maps_frame`) and the
+    Channel-2 joint preview route through this one helper, so the two channels
+    scale probability and colour flow identically.
+    """
+    return _sigmoid(prob_logits), _flow_to_rgb(dp)
+
+
 def _eval_maps(img: np.ndarray, **eval_kwargs):
     """Run ``model.eval`` once and keep masks **and** the maps it would discard.
 
-    Returns ``(masks int32, prob (sigmoid of cellprob) float32, dp float32)`` —
-    the labelled masks, the probability map and the raw flow field — from a single
-    forward pass, so no channel is segmented twice to surface its intermediates.
+    Returns ``(masks int32, cellprob logits float32, dp float32)`` — the labelled
+    masks and the two raw intermediates (probability logits and flow field) — from
+    a single forward pass, so no channel is segmented twice to surface them. Use
+    :func:`cell_maps_to_preview` to turn the raw pair into display maps.
     """
     model = cellpose_runner.get_model()
     masks, flows, _styles = model.eval(img, normalize=_NORMALIZE, **eval_kwargs)
     dp = np.asarray(flows[1], dtype=np.float32)
     cellprob = np.asarray(flows[2], dtype=np.float32)
-    return np.asarray(masks, dtype=np.int32), _sigmoid(cellprob), dp
+    return np.asarray(masks, dtype=np.int32), cellprob, dp
 
 
 def offset_slice_labels(slices: list[np.ndarray]) -> np.ndarray:
@@ -170,7 +186,7 @@ def run_nucleus_maps_frame(
     """
     diameter = _diameter_kwarg(params.diameter)
     slice_2d = _apply_gamma(frame[z], params.gamma)
-    masks, prob, dp = _eval_maps(
+    masks, prob_logits, dp = _eval_maps(
         slice_2d,
         diameter=diameter,
         min_size=params.min_size,
@@ -178,7 +194,8 @@ def run_nucleus_maps_frame(
         flow_threshold=params.flow_threshold,
         niter=_niter_kwarg(params.niter),
     )
-    return masks, prob, _flow_to_rgb(dp)
+    prob, flow_rgb = cell_maps_to_preview(prob_logits, dp)
+    return masks, prob, flow_rgb
 
 
 def iter_nucleus_maps_stack(

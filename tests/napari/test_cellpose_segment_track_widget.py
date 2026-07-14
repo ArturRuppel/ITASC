@@ -602,8 +602,16 @@ def test_segment_channel_accepts_in_memory_array(_model):
     assert masks.shape == (2, 1, 8, 8)
 
 
+def _fake_joint_cell_frame(cell_frame, nucleus_frame, z, params):
+    """Stand-in for run_cell_frame_joint: distinct prob logits + flow per frame."""
+    yx = cell_frame[z].shape
+    prob_logits = np.zeros(yx, dtype=np.float32)  # sigmoid(0) == 0.5
+    dp = np.ones((2, *yx), dtype=np.float32)
+    return prob_logits, dp
+
+
 def test_preview_joint_embeds_only_current_frame(monkeypatch):
-    """preview_joint runs the joint on one frame and embeds it full-size."""
+    """preview_joint runs the joint on one frame and embeds assignment/prob/flow full-size."""
     ch1 = np.zeros((3, 1, 6, 6), dtype=np.float32)
     ch2 = np.zeros((3, 1, 6, 6), dtype=np.float32)
 
@@ -614,7 +622,10 @@ def test_preview_joint_embeds_only_current_frame(monkeypatch):
         return lab, lab.copy()
 
     monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
-    out = stw.preview_joint(
+    monkeypatch.setattr(
+        stw.cellpose_runner, "run_cell_frame_joint", _fake_joint_cell_frame
+    )
+    assignment, prob, flow = stw.preview_joint(
         ch1, ch2,
         cellpose_runner.NucleusParams(
             do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
@@ -623,9 +634,49 @@ def test_preview_joint_embeds_only_current_frame(monkeypatch):
         stw.FlowFollowingParams(), t=1,
         max_distance=15.0, max_frame_gap=0,
     )
-    assert out.shape == (3, 1, 6, 6)
-    assert out[1].any()                       # current frame populated
-    assert not out[0].any() and not out[2].any()  # others stay background
+    # Assignment: only the current frame populated.
+    assert assignment.shape == (3, 1, 6, 6)
+    assert assignment[1].any()
+    assert not assignment[0].any() and not assignment[2].any()
+    # Prob/flow maps come from the joint cell pass, embedded on the same frame only.
+    assert prob.shape == (3, 1, 6, 6)
+    assert flow.shape == (3, 1, 6, 6, 3)
+    np.testing.assert_allclose(prob[1], 0.5)   # sigmoid(0) from the fake joint pass
+    assert prob[0].sum() == 0 and prob[2].sum() == 0
+    assert flow[1].any() and not flow[0].any() and not flow[2].any()
+
+
+def test_preview_joint_sources_maps_from_joint_two_channel_pass(monkeypatch):
+    """The prob/flow shown come from run_cell_frame_joint fed BOTH channels."""
+    ch1 = np.full((2, 1, 5, 5), 7.0, dtype=np.float32)   # nucleus channel
+    ch2 = np.full((2, 1, 5, 5), 3.0, dtype=np.float32)   # cell channel
+
+    def _fake_joint(ch1_s, ch2_s, *a, **k):
+        lab = np.zeros((1, 1, 5, 5), dtype=np.int32)
+        return lab, lab.copy()
+
+    seen = {}
+
+    def _record_cell_frame(cell_frame, nucleus_frame, z, params):
+        seen["cell"] = np.asarray(cell_frame).copy()
+        seen["nucleus"] = np.asarray(nucleus_frame).copy()
+        yx = cell_frame[z].shape
+        return np.zeros(yx, dtype=np.float32), np.ones((2, *yx), dtype=np.float32)
+
+    monkeypatch.setattr(stw.joint_mod, "joint_segment_track", _fake_joint)
+    monkeypatch.setattr(stw.cellpose_runner, "run_cell_frame_joint", _record_cell_frame)
+    stw.preview_joint(
+        ch1, ch2,
+        cellpose_runner.NucleusParams(
+            do_3d=False, anisotropy=1.0, diameter=0.0, min_size=0, gamma=1.0
+        ),
+        cellpose_runner.CellParams(diameter=0.0, min_size=0, gamma=1.0),
+        stw.FlowFollowingParams(), t=0,
+        max_distance=15.0, max_frame_gap=0,
+    )
+    # Cell channel (ch2) is the primary; nucleus channel (ch1) is the guide.
+    np.testing.assert_array_equal(seen["cell"], ch2[0])
+    np.testing.assert_array_equal(seen["nucleus"], ch1[0])
 
 
 def test_set_running_ch2_actions_swap_glyph():
