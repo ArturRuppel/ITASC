@@ -98,9 +98,11 @@ jobs:
           VENV_BIN=cf-verify/bin
           [ -d "$VENV_BIN" ] || VENV_BIN=cf-verify/Scripts
           . "$VENV_BIN/activate"
-          pip install --upgrade pip
-          pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
-          pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_cellpose-*.whl
+          # Use `python -m pip` throughout: on Windows `pip install --upgrade pip`
+          # can't replace its own running pip.exe and errors out.
+          python -m pip install --upgrade pip
+          python -m pip install h5py numpy scipy scikit-image tifffile sqlalchemy pydantic pandas "tomli>=2.0; python_version < '3.11'"
+          python -m pip install --no-deps dist/cellflow_core-*.whl dist/cellflow_aggregate-*.whl dist/cellflow_tracking-*.whl dist/cellflow_cellpose-*.whl
           python - <<'PY'
           import os, tempfile, numpy as np, tifffile, h5py
           import cellflow            # PEP 420 namespace, no orchestrator present
@@ -162,7 +164,7 @@ jobs:
 
       - name: Verify napari manifests validate
         run: |
-          pip install npe2
+          python -m pip install npe2
           python - <<'PY'
           from npe2 import PluginManifest
           for path, name in [
