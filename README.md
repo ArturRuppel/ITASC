@@ -26,16 +26,31 @@ An ITASC run moves through four stages, each usable on its own:
 - **Correct** tracks and labels interactively, with editing tools adapted from
   [EpiCure](https://github.com/Image-Analysis-Hub/Epicure), where the automatic
   result is wrong.
-- **Quantify** cell-cell contacts, T1 transitions, shape, and dynamics, written
-  to a self-describing HDF5 file.
+- **Quantify** what the tracked cells do, in two outputs:
+  - cell-cell contacts and edges, identified and tracked through T1 transitions,
+    written to a self-describing HDF5 (`.h5`) file.
+  - aggregate analysis of tracked nuclei, cell bodies, and cell-cell contacts
+    (shape and dynamics over time), exported to `.csv` tables.
 
 ## How it is organized
 
-ITASC is one pipeline you can install whole or in parts: pull the full app, or
-install only the stage your data needs. The stages hand off through files on
-disk: a project is a directory with one subfolder per position, and each stage
-reads the `.tif` and HDF5 files the previous stage wrote. You can enter the
-pipeline wherever your data already sits.
+ITASC comes in two forms.
+
+The **full app** is the integrated pipeline. A project is a directory with one
+subfolder per position, and the four stages hand off through the `.tif` and HDF5
+files on disk, so you can enter wherever your data already sits or pick up a
+project someone else started.
+
+The **solo distributions** are separate, smaller napari tools, each built for one
+job with its own interface: `itasc-cellpose` segments and tracks channels
+straight into viewer layers, `itasc-tracking` turns foreground and contour maps
+into corrected Ultrack tracks, and `itasc-aggregate` quantifies contacts and T1
+events from finished labels. They are not the full app with stages switched off:
+each ships only the code its job needs and a leaner interface to match. Reach for
+one when a single stage is all you want.
+
+Not sure which fits your data? See
+[choosing your install](docs/reference/install.md).
 
 ## Install
 
