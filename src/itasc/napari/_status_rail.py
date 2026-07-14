@@ -6,7 +6,7 @@ lays them out left→right and repaints them from a status dict on refresh. The
 stage set is configurable: the full app passes the four-stage default
 (Cellpose → Nucleus → Cell → Contacts); the standalone aggregate app passes the
 three-stage :data:`~itasc.napari._stage_status.CONTACT_STAGES`
-(cell labels → nucleus labels → contact analysis). Rendering only.
+(nucleus labels → cell labels → contact analysis). Rendering only.
 """
 from __future__ import annotations
 

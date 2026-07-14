@@ -424,6 +424,41 @@ def test_add_contact_analysis_layers_uses_native_vector_layers(monkeypatch, tmp_
     assert "[Contact Analysis] T1 edges" in viewer.layers
 
 
+def test_add_contact_analysis_layers_tolerates_missing_nucleus(monkeypatch, tmp_path):
+    # A contact-analysis position carries cell labels but no nucleus channel:
+    # the nucleus path is stored as the empty string. Loading it must skip the
+    # nucleus layer + tracks (not read Path("") as a directory and crash).
+    mod = _load_module(monkeypatch)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis["nucleus_tracked_labels_path"] = ""
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
+
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+
+    names = [layer.name for layer in layers]
+    assert "[Contact Analysis] Cell labels" in names
+    assert "[Contact Analysis] Nucleus labels" not in names
+    assert "[Contact Analysis] Nucleus tracks" not in names
+    assert not any(call[0] == "tracks" for call in viewer.calls)
+
+
+def test_add_contact_analysis_layers_tolerates_missing_cells(monkeypatch, tmp_path):
+    # The mirror case: only a nucleus channel is present (nucleus-size runs).
+    # The cell path is empty; the cell layer is skipped, nucleus layer kept.
+    mod = _load_module(monkeypatch)
+    contact_analysis = _make_contact_analysis_with_label_paths(tmp_path)
+    contact_analysis["cell_tracked_labels_path"] = ""
+    viewer = _FakeViewer()
+    viewer.dims.current_step = (0, 0, 0)
+
+    layers = mod.add_contact_analysis_layers(viewer, contact_analysis, prefix="[Contact Analysis] ")
+
+    names = [layer.name for layer in layers]
+    assert "[Contact Analysis] Cell labels" not in names
+    assert "[Contact Analysis] Nucleus labels" in names
+
+
 def test_nucleus_tracks_use_native_tracks_layer(monkeypatch, tmp_path):
     mod = _load_module(monkeypatch)
     contact_analysis = _make_track_contact_analysis_with_label_paths(tmp_path)

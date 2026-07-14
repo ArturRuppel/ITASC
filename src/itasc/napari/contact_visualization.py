@@ -289,6 +289,9 @@ def add_contact_analysis_layers(
     t1_cache = _frame_shape_cache(*build_t1_edge_shapes(contact_analysis))
 
     # --- label images --------------------------------------------------------
+    # Either channel may be absent for a position: contact analysis needs only
+    # cell labels, and a nucleus-only run carries no cell labels. Missing inputs
+    # load as ``None`` and simply omit their layer below, rather than crashing.
     if cell_labels is None:
         cell_labels = _read_label_image(
             _contact_analysis_label_path(contact_analysis, "cell_tracked_labels_path")
@@ -311,11 +314,12 @@ def add_contact_analysis_layers(
         nucleus_kwargs["colormap"] = cell_cmap
 
     # --- nucleus tracks as a native GPU Tracks layer -------------------------
-    track_centroids = (
-        nucleus_track_centroids
-        if nucleus_track_centroids is not None
-        else _nucleus_centroids_by_track(nucleus_labels)
-    )
+    if nucleus_track_centroids is not None:
+        track_centroids = nucleus_track_centroids
+    elif nucleus_labels is not None:
+        track_centroids = _nucleus_centroids_by_track(nucleus_labels)
+    else:
+        track_centroids = {}
     tracks_data, tracks_props = _nucleus_tracks_data(track_centroids)
     tail = max(1, int(track_tail_length))
     track_styling = _track_label_color_styling(
@@ -330,22 +334,29 @@ def add_contact_analysis_layers(
             "colormaps_dict": {"label_pos": track_cmap},
         }
 
-    layers: list[Any] = [
-        viewer.add_labels(
-            cell_labels,
-            name=f"{prefix}Cell labels",
-            opacity=0.55,
-            blending="translucent",
-            **cell_kwargs,
-        ),
-        viewer.add_labels(
-            nucleus_labels,
-            name=f"{prefix}Nucleus labels",
-            opacity=0.65,
-            blending="translucent",
-            **nucleus_kwargs,
-        ),
-    ]
+    # Add each label layer only when its image is present, so a position missing
+    # one channel still shows the layers it does have.
+    layers: list[Any] = []
+    if cell_labels is not None:
+        layers.append(
+            viewer.add_labels(
+                cell_labels,
+                name=f"{prefix}Cell labels",
+                opacity=0.55,
+                blending="translucent",
+                **cell_kwargs,
+            )
+        )
+    if nucleus_labels is not None:
+        layers.append(
+            viewer.add_labels(
+                nucleus_labels,
+                name=f"{prefix}Nucleus labels",
+                opacity=0.65,
+                blending="translucent",
+                **nucleus_kwargs,
+            )
+        )
     # napari's Tracks layer rejects empty data, so only add it when present.
     if len(tracks_data):
         layers.append(
@@ -789,11 +800,24 @@ def _value(contact_analysis: Any, name: str) -> Any:
     return getattr(contact_analysis, name)
 
 
-def _contact_analysis_label_path(contact_analysis: Any, name: str) -> Path:
-    return Path(_value(contact_analysis, name))
+def _contact_analysis_label_path(contact_analysis: Any, name: str) -> Path | None:
+    """The label-image path recorded under *name*, or ``None`` when unset.
+
+    An unset path is stored as an empty string; ``Path("")`` collapses to
+    ``Path(".")``, which ``tifffile`` would then try to open as a file (reading
+    the current directory and raising ``IsADirectoryError``). Returning ``None``
+    lets callers treat "no such input" as a skip rather than a crash.
+    """
+    value = _value(contact_analysis, name)
+    if not value:
+        return None
+    return Path(value)
 
 
-def _read_label_image(path: Path) -> np.ndarray:
+def _read_label_image(path: Path | None) -> np.ndarray | None:
+    """Load a label TIFF, or ``None`` when *path* is unset or not a real file."""
+    if path is None or not Path(path).is_file():
+        return None
     return np.asarray(tifffile.imread(path))
 
 

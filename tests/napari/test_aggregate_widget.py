@@ -34,12 +34,42 @@ def _record(pos_dir: Path, *, ready: bool) -> dict:
     }
 
 
-def test_partition_ready_splits_by_h5_presence(tmp_path):
+def _nucleus_only_record(pos_dir: Path, *, pixel_size: float = 0.5) -> dict:
+    """A position with only a nucleus label channel — no cell labels, no built
+    ``contact_analysis.h5``. It can still pool the nucleus quantities (which need
+    only nuclear labels + a pixel size), so it must count as ready to pool."""
+    return {
+        "position_path": pos_dir,
+        # The h5 path is stamped by the catalog but the file is never built here.
+        "contact_analysis_path": pos_dir / "4_contact_analysis" / "contact_analysis.h5",
+        "cell_tracked_labels_path": "",  # no cell channel
+        "nucleus_tracked_labels_path": pos_dir / "nucleus_labels.tif",
+        "pixel_size_um": pixel_size,
+        "columns": {
+            "condition": "ctrl",
+            "experiment_id": "exp1",
+            "position_id": pos_dir.name,
+        },
+    }
+
+
+def test_partition_ready_splits_by_poolable_inputs(tmp_path):
+    # A position with a built h5 is ready (contact-derived quantities pool); one
+    # with no h5, no pixel size, no other usable input pools nothing → not ready.
     a = _record(tmp_path / "posA", ready=True)
     b = _record(tmp_path / "posB", ready=False)
     ready, not_ready = partition_ready([a, b])
     assert ready == [a]
     assert not_ready == [b]
+
+
+def test_partition_ready_accepts_nucleus_only_position(tmp_path):
+    # The screenshot case: nucleus labels but no cell labels and no built h5. The
+    # nucleus quantities pool from the nuclear labels alone, so it is ready.
+    rec = _nucleus_only_record(tmp_path / "posN")
+    ready, not_ready = partition_ready([rec])
+    assert ready == [rec]
+    assert not_ready == []
 
 
 def test_partition_ready_empty():
@@ -149,6 +179,23 @@ def test_widget_greys_unsupported_quantities(tmp_path):
     w.set_records([rec])
     assert w._checks["cell_shape"].isEnabled()
     assert w._checks["cell_shape"].isChecked()
+
+
+def test_nucleus_only_position_pools_nucleus_quantities(tmp_path):
+    get_qapp()
+    from itasc.napari.aggregate_widget import AggregateWidget
+
+    # Nucleus labels + pixel size, but no cell labels and no built h5. The nucleus
+    # quantities light up; the cell- and contact-derived ones stay greyed, and the
+    # position is still poolable (run button enabled).
+    w = AggregateWidget()
+    w.set_records([_nucleus_only_record(tmp_path / "posN")])
+    assert w._checks["nucleus_shape"].isEnabled()
+    assert w._checks["nucleus_shape"].isChecked()
+    assert not w._checks["cell_shape"].isEnabled()
+    assert not w._checks["neighbor_count"].isEnabled()  # contact-derived, no h5
+    assert w.run_btn.isEnabled() is True
+    assert "1 of 1" in w.readout.text()
 
 
 def test_selected_quantities_collapses_and_respects_unchecks(tmp_path):

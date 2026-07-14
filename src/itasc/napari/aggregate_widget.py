@@ -63,15 +63,21 @@ def pooled_quantifiers():
     return [cls for cls in available_quantifiers() if cls.table_keys]
 
 
-def partition_ready(records):
-    """Split catalog *records* into ``(ready, not_ready)`` by ``contact_analysis.h5``.
+def partition_ready(records, *, params=None):
+    """Split catalog *records* into ``(ready, not_ready)`` by whether each can pool.
 
-    A record is *ready* when its ``contact_analysis_path`` exists on disk.
+    A record is *ready* when it can produce at least one pooled table — i.e. it
+    carries the inputs (and build params) some pooled quantifier needs, the exact
+    predicate :func:`supported_quantities` applies. Partial positions count: one
+    with only nucleus labels is ready for the nucleus quantities, one with only
+    cell labels for the cell/contact quantities. Only a position that can
+    contribute *nothing* — no usable input at all — is held back. (Formerly this
+    gated on ``contact_analysis.h5`` alone, which wrongly benched every
+    nucleus-only or cell-only position.)
     """
     ready, not_ready = [], []
     for rec in records:
-        path = rec.get("contact_analysis_path")
-        if path is not None and Path(path).exists():
+        if supported_quantities([rec], params=params):
             ready.append(rec)
         else:
             not_ready.append(rec)
@@ -237,26 +243,30 @@ class AggregateWidget(QWidget):
         """A user edit to the FOV field: remember it (so autofill backs off) and
         re-grey, since a non-zero area lifts Cell density into support."""
         self._fov_user_edited = True
-        self._refresh_quantities(partition_ready(self._records)[0])
+        self._refresh_quantities(
+            partition_ready(self._records, params=self._current_params() or None)[0]
+        )
 
     def section_status(self) -> str:
         """Status for the enclosing section dot: not_started / in_progress / done."""
-        ready, _ = partition_ready(self._records)
+        ready, _ = partition_ready(self._records, params=self._current_params() or None)
         if not ready:
             return "not_started"
         return "done" if self._has_run else "in_progress"
 
     # --------------------------------------------------------------- rendering
     def _refresh_readout(self) -> None:
-        ready, not_ready = partition_ready(self._records)
+        ready, not_ready = partition_ready(
+            self._records, params=self._current_params() or None
+        )
         total = len(self._records)
         if total == 0:
             self.readout.setText("No data folders yet.")
         else:
-            message = f"{len(ready)} of {total} positions analyzed"
+            message = f"{len(ready)} of {total} positions ready to pool"
             if not_ready:
                 names = ", ".join(_position_name(r) for r in not_ready)
-                message += f" — not yet ready: {names}"
+                message += f" — no poolable inputs: {names}"
             self.readout.setText(message)
         self._refresh_quantities(ready)
         self.run_btn.setEnabled(bool(ready) and self._worker is None)
@@ -297,7 +307,9 @@ class AggregateWidget(QWidget):
 
     # --------------------------------------------------------------------- run
     def _on_run(self) -> None:
-        ready, not_ready = partition_ready(self._records)
+        ready, not_ready = partition_ready(
+            self._records, params=self._current_params() or None
+        )
         if not ready:
             show_info("No analyzed positions to pool.")
             return

@@ -79,8 +79,8 @@ def test_rail_with_contact_stages_has_three_dots_in_order():
     _app()
     rail = StatusRail(CONTACT_STAGES)
     assert [dot.stage for dot in rail.dots] == [
-        STAGE_CELL_LABELS,
         STAGE_NUCLEUS_LABELS,
+        STAGE_CELL_LABELS,
         STAGE_CONTACTS,
     ]
 

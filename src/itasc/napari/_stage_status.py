@@ -34,12 +34,13 @@ STAGES: tuple[str, ...] = (STAGE_CELLPOSE, STAGE_NUCLEUS, STAGE_CELL, STAGE_CONT
 # The contact-analysis-only vocabulary (the standalone ``itasc-aggregate`` app,
 # which does not run segmentation/tracking). Here the committed label images are
 # *inputs*, not stages this app produces, so the rail reports only their presence:
-# cell labels → nucleus labels → contact analysis.
+# nucleus labels → cell labels → contact analysis. Nucleus leads, mirroring the
+# full pipeline's Nucleus-before-Cell order.
 STAGE_CELL_LABELS = "cell_labels"
 STAGE_NUCLEUS_LABELS = "nucleus_labels"
 CONTACT_STAGES: tuple[str, ...] = (
-    STAGE_CELL_LABELS,
     STAGE_NUCLEUS_LABELS,
+    STAGE_CELL_LABELS,
     STAGE_CONTACTS,
 )
 
@@ -91,9 +92,10 @@ def position_contact_status(pos_dir: Path | str | None) -> dict[str, str]:
     """Return the contact-analysis-only stage status for one position directory.
 
     The standalone aggregate app does not run segmentation/tracking: it consumes
-    the committed ``cell_labels.tif`` (required) and ``nucleus_labels.tif``
-    (optional) as *inputs* and produces the contact-analysis ``.h5``. Each of the
-    three :data:`CONTACT_STAGES` is therefore a plain present/missing check (no
+    the committed ``nucleus_labels.tif`` and ``cell_labels.tif`` as *inputs*
+    (either channel may be absent — a position pools whichever it has) and
+    produces the contact-analysis ``.h5``. Each of the three :data:`CONTACT_STAGES`
+    is therefore a plain present/missing check (no
     working-vs-committed split). ``pos_dir`` of ``None`` yields ``unknown`` for
     every stage (a hand-authored catalog row with no canonical root).
     """
