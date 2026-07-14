@@ -7,13 +7,11 @@
 :hidden:
 :caption: User Manual
 
-manual/index
 manual/full-app
 manual/cellpose
 manual/tracking
 manual/aggregate
 manual/core
-manual/install
 ```
 
 ```{toctree}

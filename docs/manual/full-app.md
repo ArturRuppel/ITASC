@@ -1,4 +1,4 @@
-# Full app (`itasc[all]`)
+# itasc\[all]
 
 The full ITASC plugin runs the whole pipeline in one napari widget: segment,
 track, correct, and quantify, in order, without leaving the viewer. Reach for it
@@ -32,18 +32,23 @@ previous stage wrote and writes its own into the next folder:
 
 ```text
 pos00/
-  0_input/                    raw prepared input stacks
-  1_cellpose/                 Cellpose probability and flow outputs + divergence maps
-  2_nucleus/                  nucleus segmentation, Ultrack database, tracked labels
-  3_cell/                     cell segmentation and tracked labels
-  aggregate_quantification/   quantification output (contact_analysis.h5 + tables)
+  0_input/              raw prepared input stacks
+  1_cellpose/           Cellpose probability and flow outputs + divergence maps
+  2_nucleus/            nucleus segmentation, Ultrack database, tracked labels
+  3_cell/               cell segmentation and tracked labels
+  nucleus_labels.tif    final committed nucleus tracked labels
+  cell_labels.tif       final committed cell tracked labels
+  contact_analysis.h5   final output: contact graph built from the labels
 ```
 
-The layout is plain files, so you read the state of a run by looking at the
-folder.
+The numbered folders hold re-runnable working artifacts; the final committed
+labels and the `contact_analysis.h5` graph built from them sit in the position
+root, beside each other. The layout is plain files, so you read the state of a
+run by looking at the folder.
 
-> 📷 **Screenshot:** a position folder in a file browser, the five stage
-> subdirectories populated after a full run.
+> 📷 **Screenshot:** a position folder in a file browser, the four numbered stage
+> subdirectories plus the committed labels and `contact_analysis.h5` in the root
+> after a full run.
 
 ## The stages in order
 
@@ -60,13 +65,13 @@ distribution that owns the same stage, for running it on other data on its own.
 4. **Cell segmentation.** Turn the cell foreground and contour maps plus the
    tracked nucleus seeds into tracked cell labels under `3_cell/`.
 5. **Aggregate quantification** (`itasc-aggregate`). Extract contacts, edges, and
-   T1 events to HDF5 under `aggregate_quantification/`, and inspect them in
-   napari.
+   T1 events to `contact_analysis.h5` in the position root, beside the committed
+   labels, and inspect them in napari.
 
 If your data already sits at a later stage, skip ahead: foreground and contour
-maps let you start at step 3, tracked cell labels let you start at step 5.
-[Choosing your install](index.md) maps each entry point to its standalone
-distribution.
+maps let you start at step 3, tracked cell labels let you start at step 5. The
+[distribution overview](../index.md#how-it-is-organized) maps each entry point to
+its standalone distribution.
 
 ## Drive the plugin
 
@@ -91,5 +96,5 @@ In the main `ITASC` widget:
 > channel selectors and **Run** button visible.
 
 To run one of these stages on its own data, outside the full app, install that
-piece on its own: [Installation](install.md) covers the single-stage
-distributions and the engine each one needs.
+piece on its own: the [distribution overview](../index.md#how-it-is-organized)
+lists the single-stage distributions and what each one needs.
