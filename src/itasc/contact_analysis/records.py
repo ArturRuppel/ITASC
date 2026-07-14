@@ -37,8 +37,16 @@ def position_inputs_from_record(record: dict) -> PositionInputs:
     cell = record.get("cell_tracked_labels_path")
     nucleus = record.get("nucleus_tracked_labels_path")
     position_dir = record.get("position_path") or (Path(out).parent if out else Path("."))
-    cell_path = Path(cell) if cell else None
-    nucleus_path = Path(nucleus) if nucleus else None
+    # Gate every input on the file actually existing, not merely on a path string
+    # being present. The catalog stamps a position's *expected* label paths
+    # (``cell_labels.tif`` / ``nucleus_labels.tif``) whether or not they have been
+    # produced, so a nucleus-only position still carries a ``cell_tracked_labels_path``
+    # pointing at a missing file. Treating that as an available input lets
+    # cell_shape / cell_dynamics pass their ``requires`` gate and then crash reading
+    # a file that isn't there. An input you cannot read is not available — the same
+    # rule already applied to the produced ``contact_analysis_path`` below.
+    cell_path = Path(cell) if cell and Path(cell).is_file() else None
+    nucleus_path = Path(nucleus) if nucleus and Path(nucleus).is_file() else None
     return PositionInputs(
         position_dir=Path(position_dir),
         cell_labels_path=cell_path,

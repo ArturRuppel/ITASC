@@ -26,6 +26,10 @@ def _record(
 ) -> dict:
     pdir = tmp / condition / pid
     pdir.mkdir(parents=True, exist_ok=True)
+    # position_inputs_from_record gates a label input on the file existing; these
+    # pooling tests stub ``compute_object_table`` (the content is never read), so a
+    # touched file is enough to satisfy the ``requires`` gate.
+    (pdir / "cells.tif").touch()
     # A position's identity is the combination of its classification columns; here
     # ``position_id`` (unique per folder) keeps each position distinct.
     return {

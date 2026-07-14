@@ -189,9 +189,12 @@ def test_supported_quantities_gates_on_inputs_and_params(tmp_path):
     from itasc.contact_analysis.records import supported_quantities
 
     # Cell labels + pixel size, but no nucleus, no FOV area, no contacts file.
+    # The label input is gated on the file existing, so place it.
+    cells = tmp_path / "cells.tif"
+    cells.touch()
     rec = {
         "position_path": tmp_path / "posA",
-        "cell_tracked_labels_path": tmp_path / "cells.tif",
+        "cell_tracked_labels_path": cells,
         "pixel_size_um": 0.5,
     }
     supported = supported_quantities([rec])

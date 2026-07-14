@@ -16,16 +16,24 @@ def _record(pos_dir: Path, *, ready: bool) -> dict:
     (``condition`` / ``experiment_id`` / ``position_id``); ``save_catalog`` writes
     those columns verbatim, and their combination is the position's identity.
     ``ready`` controls whether the per-position ``contacts.h5`` exists on disk.
+    Both label images are placed on disk: ``position_inputs_from_record`` gates a
+    label input on the file existing, so a stamped-but-missing path is not an
+    available input.
     """
     h5 = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
     if ready:
         h5.parent.mkdir(parents=True, exist_ok=True)
         h5.write_bytes(b"")
+    cell = pos_dir / "cell_labels.tif"
+    nucleus = pos_dir / "nucleus_labels.tif"
+    pos_dir.mkdir(parents=True, exist_ok=True)
+    cell.touch()
+    nucleus.touch()
     return {
         "position_path": pos_dir,
         "contact_analysis_path": h5,
-        "cell_tracked_labels_path": pos_dir / "cell_labels.tif",
-        "nucleus_tracked_labels_path": pos_dir / "nucleus_labels.tif",
+        "cell_tracked_labels_path": cell,
+        "nucleus_tracked_labels_path": nucleus,
         "columns": {
             "condition": "ctrl",
             "experiment_id": "exp1",
@@ -38,12 +46,15 @@ def _nucleus_only_record(pos_dir: Path, *, pixel_size: float = 0.5) -> dict:
     """A position with only a nucleus label channel — no cell labels, no built
     ``contact_analysis.h5``. It can still pool the nucleus quantities (which need
     only nuclear labels + a pixel size), so it must count as ready to pool."""
+    pos_dir.mkdir(parents=True, exist_ok=True)
+    nucleus = pos_dir / "nucleus_labels.tif"
+    nucleus.touch()  # the input is gated on the file existing
     return {
         "position_path": pos_dir,
         # The h5 path is stamped by the catalog but the file is never built here.
         "contact_analysis_path": pos_dir / "4_contact_analysis" / "contact_analysis.h5",
         "cell_tracked_labels_path": "",  # no cell channel
-        "nucleus_tracked_labels_path": pos_dir / "nucleus_labels.tif",
+        "nucleus_tracked_labels_path": nucleus,
         "pixel_size_um": pixel_size,
         "columns": {
             "condition": "ctrl",
@@ -273,7 +284,7 @@ def test_manual_fov_lights_up_density_without_pixel_size(tmp_path):
     from itasc.napari.aggregate_widget import AggregateWidget
 
     w = AggregateWidget()
-    w.set_records([_record(tmp_path / "posA", ready=True)])  # no pixel size, no labels on disk
+    w.set_records([_record(tmp_path / "posA", ready=True)])  # labels present, no pixel size, no FOV
     assert not w._checks["cell_density"].isEnabled()  # no FOV -> greyed
     w.fov_field.setValue(1.5)
     assert w._checks["cell_density"].isEnabled()  # typing an area supports density

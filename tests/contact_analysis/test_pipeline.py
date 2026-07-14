@@ -93,12 +93,18 @@ class _ConsumerQuantifier(_RecordingQuantifier):
 def _record(tmp: Path, pid: str, *, with_cell: bool = True) -> dict:
     pdir = tmp / pid
     pdir.mkdir(parents=True, exist_ok=True)
+    cells = pdir / "cells.tif"
+    if with_cell:
+        # position_inputs_from_record gates a label input on the file existing, so
+        # the stub-built tests must actually place the file (the stubbed build never
+        # reads its content — presence is enough to satisfy the ``requires`` gate).
+        cells.touch()
     rec = {
         # A position's identity is the combination of its classification columns;
         # ``position_id`` (unique per folder) keeps each position distinct.
         "columns": {"condition": "ctrl", "position_id": pid},
         "position_path": pdir,
-        "cell_tracked_labels_path": (pdir / "cells.tif") if with_cell else None,
+        "cell_tracked_labels_path": cells if with_cell else None,
         # Pixel size is a global build param stamped on the record (the studio's
         # Parameters bar); quantifiers read it via PositionInputs, not ``params``.
         "pixel_size_um": 0.25,
