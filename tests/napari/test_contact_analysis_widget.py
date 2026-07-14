@@ -106,27 +106,27 @@ def _make_sync_thread_worker():
 
 
 def _set_pos(widget, pos_dir):
-    """Drive the widget the way the orchestrator does: staged paths + status root."""
+    """Drive the widget the way the orchestrator does: committed root labels
+    (``cell_labels.tif`` / ``nucleus_labels.tif``) as inputs and the
+    ``contact_analysis.h5`` output beside them in the position root, plus the
+    status root (see ``main_widget`` ``set_context`` call)."""
     widget.set_context(
-        cell_labels=pos_dir / "3_cell" / "tracked_labels.tif",
-        nucleus_labels=pos_dir / "2_nucleus" / "tracked_labels.tif",
-        out_path=pos_dir / "4_contact_analysis" / "contact_analysis.h5",
+        cell_labels=pos_dir / "cell_labels.tif",
+        nucleus_labels=pos_dir / "nucleus_labels.tif",
+        out_path=pos_dir / "contact_analysis.h5",
         status_root=pos_dir,
     )
 
 
 def _staged_pos(tmp_path, name, *, cell=True, nucleus=True, h5=False):
     pos_dir = tmp_path / name
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
+    pos_dir.mkdir(parents=True)
     if nucleus:
-        (pos_dir / "2_nucleus" / "tracked_labels.tif").touch()
+        (pos_dir / "nucleus_labels.tif").touch()
     if cell:
-        (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+        (pos_dir / "cell_labels.tif").touch()
     if h5:
-        out = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_bytes(b"h5")
+        (pos_dir / "contact_analysis.h5").write_bytes(b"h5")
     return pos_dir
 
 
@@ -138,14 +138,14 @@ def test_contact_analysis_widget_refresh_tracks_inputs_output_and_button_states(
     pos_dir = _staged_pos(tmp_path, "pos00", cell=False, nucleus=True)
     _set_pos(widget, pos_dir)
 
-    assert widget.cell_labels_path == pos_dir / "3_cell" / "tracked_labels.tif"
-    assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
-    assert widget.contact_analysis_out_path == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    assert widget.cell_labels_path == pos_dir / "cell_labels.tif"
+    assert widget.nucleus_labels_path == pos_dir / "nucleus_labels.tif"
+    assert widget.contact_analysis_out_path == pos_dir / "contact_analysis.h5"
     assert hasattr(widget, "_files_widget")
     # Cell labels not on disk yet -> Visualize disabled.
     assert widget.visualize_btn.isEnabled() is False
 
-    (pos_dir / "3_cell" / "tracked_labels.tif").touch()
+    (pos_dir / "cell_labels.tif").touch()
     _set_pos(widget, pos_dir)
 
     assert widget.visualize_btn.isEnabled() is True
@@ -168,7 +168,7 @@ def test_contact_analysis_widget_visualize_enabled_with_only_cell_labels(monkeyp
     pos_dir = _staged_pos(tmp_path, "pos00", cell=True, nucleus=False)
     _set_pos(widget, pos_dir)
 
-    assert widget.nucleus_labels_path == pos_dir / "2_nucleus" / "tracked_labels.tif"
+    assert widget.nucleus_labels_path == pos_dir / "nucleus_labels.tif"
     assert not widget.nucleus_labels_path.exists()
     assert widget._effective_nucleus_path() is None
     assert widget.visualize_btn.isEnabled() is True
@@ -237,9 +237,9 @@ def test_visualize_builds_when_missing_then_shows(monkeypatch, tmp_path):
 
     # Built (missing -> compute) then showed.
     assert progress_events == [(2, 5, "Indexing records")]
-    assert captured["output_path"] == pos_dir / "4_contact_analysis" / "contact_analysis.h5"
-    assert captured["cell_labels_path"] == pos_dir / "3_cell" / "tracked_labels.tif"
-    assert captured["nucleus_labels_path"] == pos_dir / "2_nucleus" / "tracked_labels.tif"
+    assert captured["output_path"] == pos_dir / "contact_analysis.h5"
+    assert captured["cell_labels_path"] == pos_dir / "cell_labels.tif"
+    assert captured["nucleus_labels_path"] == pos_dir / "nucleus_labels.tif"
     assert captured["overwrite"] is False
     assert widget.contact_analysis_out_path.exists()
     assert len(add_calls) == 1
@@ -417,7 +417,7 @@ def test_contact_analysis_widget_shows_and_clears_contact_analysis_layers(monkey
     widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = _staged_pos(tmp_path, "pos08", cell=True, nucleus=True, h5=True)
-    contact_analysis_path = pos_dir / "4_contact_analysis" / "contact_analysis.h5"
+    contact_analysis_path = pos_dir / "contact_analysis.h5"
     _set_pos(widget, pos_dir)
 
     assert widget.visualize_btn.isEnabled() is True
@@ -566,21 +566,20 @@ def test_contact_analysis_widget_show_uses_real_reader_and_visualizer(monkeypatc
     widget = mod.ContactAnalysisWidget(viewer)
 
     pos_dir = tmp_path / "pos09"
-    (pos_dir / "2_nucleus").mkdir(parents=True)
-    (pos_dir / "3_cell").mkdir()
+    pos_dir.mkdir(parents=True)
     labels = np.zeros((1, 4, 4), dtype=np.uint16)
     labels[0, :, :2] = 1
     labels[0, :, 2:] = 2
 
     import tifffile
 
-    tifffile.imwrite(pos_dir / "2_nucleus" / "tracked_labels.tif", labels)
-    tifffile.imwrite(pos_dir / "3_cell" / "tracked_labels.tif", labels)
+    tifffile.imwrite(pos_dir / "nucleus_labels.tif", labels)
+    tifffile.imwrite(pos_dir / "cell_labels.tif", labels)
     _set_pos(widget, pos_dir)
     mod.build_contacts(
-        cell_labels_path=pos_dir / "3_cell" / "tracked_labels.tif",
+        cell_labels_path=pos_dir / "cell_labels.tif",
         output_path=widget.contact_analysis_out_path,
-        nucleus_labels_path=pos_dir / "2_nucleus" / "tracked_labels.tif",
+        nucleus_labels_path=pos_dir / "nucleus_labels.tif",
     )
     _set_pos(widget, pos_dir)
 

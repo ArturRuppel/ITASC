@@ -3,7 +3,7 @@
 The main app's project-level bookend to the per-position sections. Reads the same
 catalog records the ``ExperimentsPanel`` builds, and drives the headless engine
 (``author_config`` then ``pipeline.run``). Pool-only: it aggregates positions
-whose ``contacts.h5`` already exists and never builds missing ones, so ``run`` is
+whose ``contact_analysis.h5`` already exists and never builds missing ones, so ``run`` is
 load-and-pool with no per-position recompute. Plotting is a downstream concern.
 """
 from __future__ import annotations
@@ -64,7 +64,7 @@ def pooled_quantifiers():
 
 
 def partition_ready(records):
-    """Split catalog *records* into ``(ready, not_ready)`` by ``contacts.h5``.
+    """Split catalog *records* into ``(ready, not_ready)`` by ``contact_analysis.h5``.
 
     A record is *ready* when its ``contact_analysis_path`` exists on disk.
     """
@@ -100,7 +100,7 @@ def pool_positions(ready_records, skipped_names, quantities=(), params=None):
     config_path = author_config(
         project_dir, ready_records, quantities=tuple(quantities), params=params or None
     )
-    # Pool-only: read each position's existing contacts.h5 and pool it (plus the
+    # Pool-only: read each position's existing contact_analysis.h5 and pool it (plus the
     # in-memory cheap quantities). build=False skips the producer's unconditional
     # rebuild, so ready positions are loaded, never recomputed.
     tables = run(config_path, build=False)
@@ -116,7 +116,7 @@ class AggregateWidget(QWidget):
 
     Fed catalog records via :meth:`set_records` (the same records the app's
     ``ExperimentsPanel`` builds). Pool-only: Run aggregates positions whose
-    ``contacts.h5`` exists and reports the ones it skipped by name.
+    ``contact_analysis.h5`` exists and reports the ones it skipped by name.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:

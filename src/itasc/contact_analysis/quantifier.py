@@ -23,11 +23,14 @@ from typing import Any, ClassVar
 
 __all__ = ["OUTPUT_SUBDIR", "PositionInputs", "Quantifier", "available_quantifiers"]
 
-#: Per-position subfolder that holds the Contact Analysis output. Numbered to
-#: mirror the staged layout (``0_input`` … ``3_cell``). Only
-#: ``contact_analysis.h5`` is persisted here now — the cheap quantities (shape,
-#: dynamics, relational) are pooled in memory during ``run()`` rather than
-#: written to disk.
+#: Per-position subfolder for quantifier artifacts that persist to disk. Numbered
+#: to mirror the staged layout (``0_input`` … ``3_cell``). The dynamics
+#: quantifiers land here (``cell_dynamics.h5``, ``nucleus_dynamics.h5``); the
+#: cheap quantities (shape, relational, density, neighbor count) are pooled in
+#: memory during ``run()`` rather than written to disk. Note ``contact_analysis.h5``
+#: is *not* here — :class:`~itasc.contact_analysis.quantifiers.contacts.ContactsQuantifier`
+#: overrides :meth:`Quantifier.default_output` to write it to the position root,
+#: beside the committed ``cell_labels.tif`` / ``nucleus_labels.tif``.
 OUTPUT_SUBDIR = "4_contact_analysis"
 
 

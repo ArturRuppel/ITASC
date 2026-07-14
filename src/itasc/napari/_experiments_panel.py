@@ -92,7 +92,7 @@ _MIN_ROWS_HEIGHT = 80
 #: Overall-status word → chip text (kept short so the chip column stays narrow).
 _CHIP_TEXT = {"run": "run", "done": "done", "queued": "queued"}
 
-#: The `?` quickstart, distilled from docs/manual/workflow.md. Self-contained
+#: The `?` quickstart, distilled from docs/manual/full-app.md. Self-contained
 #: (no browser / hosted-docs dependency: the standalone distros mount this too).
 _QUICKSTART_HTML = """
 <h3>One folder per movie</h3>
@@ -120,9 +120,11 @@ columns become the grouping columns of the aggregate table.</p>
 
 <h3>Where results go</h3>
 <p><b>Run</b> processes the selected folders and writes each stage back inside the
-data folder:</p>
+data folder: one numbered working folder per stage, and the final outputs in the
+folder root beside the images:</p>
 <pre>pos01/
-  0_input   1_cellpose   2_nucleus   3_cell   4_contact_analysis</pre>
+  0_input   1_cellpose   2_nucleus   3_cell
+  cell_labels.tif   nucleus_labels.tif   contact_analysis.h5</pre>
 <p>The status rail on each row shows how far that folder got. Run <b>Find data
 folders</b> again on another parent to add more: the list accumulates and skips any
 folder already listed.</p>
