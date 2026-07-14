@@ -2,7 +2,7 @@
 
 Segment, track, correct, and quantify cells in time-lapse microscopy, inside napari.
 
-ITASC — Interactive Tracking And Segmentation of Cells — takes raw time-lapse
+ITASC (Interactive Tracking And Segmentation of Cells) takes raw time-lapse
 stacks to tracked, quantified cells. It segments each frame, links cells across
 time, lets you correct the result by hand where the automatics miss, and
 measures what the tracked cells do. It is a [napari](https://napari.org) plugin
@@ -18,8 +18,8 @@ An ITASC run moves through four stages, each usable on its own:
 
 - **Segment** each frame with [Cellpose-SAM](https://github.com/MouseLand/cellpose).
   For sparse, well-separated cells its masks are the result; for a dense
-  monolayer its probability and flow output feeds a divergence-based
-  segmentation that separates crowded, variable-shape cells.
+  monolayer its probability and flow output becomes divergence images that
+  separate crowded, variable-shape cells and form the input the tracker runs on.
 - **Track** across time: [Ultrack](https://github.com/royerlab/ultrack) for
   dense monolayers, [LapTrack](https://github.com/yfukai/laptrack) for sparse,
   well-separated cells.
@@ -50,15 +50,15 @@ with the engine it needs, see the
 ## Built on
 
 ITASC reuses the published methods of four tools. If you use the stage that
-depends on one, cite it:
+depends on one, please cite it:
 
 - **Cellpose-SAM** (segmentation): Pachitariu M, Rariden M, Stringer C.
   *Cellpose-SAM: superhuman generalization for cellular segmentation.* bioRxiv
   (2025). [doi:10.1101/2025.04.28.651001](https://doi.org/10.1101/2025.04.28.651001)
   · [MouseLand/cellpose](https://github.com/MouseLand/cellpose)
-- **Ultrack** (dense tracking): Bragantini J, Lange M, Royer L. *Large-scale
-  multi-hypotheses cell tracking using ultrametric contour maps.* ECCV (2024).
-  [arXiv:2308.04526](https://arxiv.org/abs/2308.04526)
+- **Ultrack** (dense tracking): Bragantini J, et al. *Ultrack: pushing the
+  limits of cell tracking across biological scales.* Nature Methods (2025).
+  [doi:10.1038/s41592-025-02778-0](https://doi.org/10.1038/s41592-025-02778-0)
   · [royerlab/ultrack](https://github.com/royerlab/ultrack)
 - **LapTrack** (sparse tracking): Fukai YT, Kawaguchi K. *LapTrack: linear
   assignment particle tracking with tunable metrics.* Bioinformatics 39(1),
@@ -97,5 +97,5 @@ AGPL-3.0. See [`LICENSE`](LICENSE).
 
 Generative AI tools (OpenAI GPT and Anthropic Claude) assisted with code
 drafting, refactoring, tests, debugging, and documentation. Human authors made
-the scientific, architectural, and design decisions, and reviewed and validated
-all AI-assisted output before it entered the repository.
+the scientific, architectural, and design decisions, and are fully responsible
+for all code and other content in the repository.
