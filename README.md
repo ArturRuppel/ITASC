@@ -6,8 +6,7 @@ ITASC (Interactive Tracking And Segmentation of Cells) takes raw time-lapse
 stacks to tracked, quantified cells. It segments each frame, links cells across
 time, lets you correct the result by hand where the automatics miss, and
 measures what the tracked cells do. It is a [napari](https://napari.org) plugin
-built for dense, motile monolayers, where segmentation and tracking are the hard
-part.
+built for dense, motile monolayers, where segmentation and tracking are often difficult.
 
 <!-- hero screenshot: the ITASC workflow widget docked in napari, its stages
      stacked in run order over a tracked monolayer. Pending capture. -->
