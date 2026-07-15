@@ -6,6 +6,9 @@ on:
   pull_request:
     paths:
       - "docs/**"
+      # docs/index.md is built from README.md via {include}, sliced on the
+      # hero-* / docs-nav-* comment markers, so a README edit can fail the build.
+      - "README.md"
       - "src/itasc/**"
       - "pyproject.toml"
       - ".github/workflows/docs.yml"
