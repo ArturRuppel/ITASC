@@ -71,11 +71,11 @@ truth and a run can be inspected or resumed between any two stages.
   (`.h5`) file. Across the project: the shape and dynamics of nuclei, cell
   bodies, and contacts over time, pooled into `.csv` tables.
 
-ITASC also ships as smaller napari tools, each one a slice of that pipeline, for
-when the full app is more than the job needs. Pick the row that matches the data
-you have; each links to that tool's guide, which covers installing and using it.
+ITASC ships as five separate installs: four napari tools, and the library they
+share. You install one, not all of them. Pick the row that matches the data you
+have; each links to that tool's guide, which covers installing and using it.
 
-| If you have… | Reach for | It gives you |
+| If you have… | Install | It gives you |
 | --- | --- | --- |
 | **Dense, motile cells of varying shape** (a confluent monolayer), from raw stacks to quantified contacts | [itasc\[all\]](https://arturruppel.github.io/ITASC/manual/full-app.html) | The unified `ITASC` workflow widget, every stage end to end. |
 | **Sparse, well-separated cells** with a cell and/or nucleus marker, to segment and track one or both channels | [itasc-cellpose](https://arturruppel.github.io/ITASC/manual/cellpose.html) | A local Cellpose-SAM runner for segmentation, then `laptrack` linking across time, plus manual correction of tracks and masks (adapted from [EpiCure](https://github.com/Image-Analysis-Hub/Epicure)). One channel or two. |

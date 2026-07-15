@@ -1,10 +1,11 @@
 # itasc-tracking
 
-The nucleus tracking stage on its own, run inside the napari viewer. It takes the
-foreground and contour maps Cellpose produced and turns them into tracked,
-correctable nucleus labels, using the [Ultrack](https://github.com/royerlab/ultrack)
-solver. Reach for it when you already have those maps and want tracks without the
-full pipeline's project folder.
+`itasc-tracking` is the nucleus tracking stage on its own, run inside the napari
+viewer. It takes the foreground and contour maps Cellpose produced and turns them
+into tracked, correctable nucleus labels, using the
+[Ultrack](https://github.com/royerlab/ultrack) solver. Reach for it when you
+already have those maps and want tracks without the full pipeline's project
+folder.
 
 This is [Stage 2 of the full app](https://arturruppel.github.io/ITASC/manual/full-app.html#stage-2-nucleus-segmentation-and-tracking),
 lifted out on its own. Everything it does, from atom extraction through the solve

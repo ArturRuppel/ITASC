@@ -24,9 +24,15 @@
 
 ```{toctree}
 :hidden:
-:caption: How to get started
+:caption: Get started
 
 Install <manual/install>
+```
+
+```{toctree}
+:hidden:
+:caption: Pick one tool
+
 Run the whole pipeline <manual/full-app>
 Segment and track sparse cells <manual/cellpose>
 Track dense cells from maps <manual/tracking>

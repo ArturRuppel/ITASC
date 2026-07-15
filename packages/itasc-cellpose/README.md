@@ -1,9 +1,10 @@
 # itasc-cellpose
 
-The Cellpose stage on its own, run inside the napari viewer. Bind it to an image,
-get tracked labels back, correct them, and keep what you want. Reach for it when
-you already have a stack open and want [Cellpose](https://github.com/MouseLand/cellpose)
-masks and time tracks without the full pipeline's project folder.
+`itasc-cellpose` is the Cellpose stage on its own, run inside the napari viewer.
+Bind it to an image, get tracked labels back, correct them, and keep what you
+want. Reach for it when you already have a stack open and want
+[Cellpose](https://github.com/MouseLand/cellpose) masks and time tracks without
+the full pipeline's project folder.
 
 That absence is the main difference from the full `itasc[all]` app, which works
 through a folder on disk, each stage reading and writing files. This tool touches

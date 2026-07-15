@@ -1,10 +1,10 @@
 # itasc-aggregate
 
-The last two stages of the pipeline on their own: measure the contacts in one
-position, then pool the results across a project. It reads the tracked cell and
-nucleus labels a run already committed and turns them into the contact graph, the
-shared edges between neighbors, the T1 events where neighbors swap partners, and
-the project-level tables that pool all of it.
+`itasc-aggregate` is the last two stages of the pipeline on their own: measure
+the contacts in one position, then pool the results across a project. It reads
+the tracked cell and nucleus labels a run already committed and turns them into
+the contact graph, the shared edges between neighbors, the T1 events where
+neighbors swap partners, and the project-level tables that pool all of it.
 
 This is the full app with its middle removed. Segmentation and tracking are gone;
 what remains is the loop around them: finding the position folders, running contact

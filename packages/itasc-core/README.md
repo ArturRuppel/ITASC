@@ -1,9 +1,10 @@
 # itasc-core
 
-The shared substrate every ITASC distribution is built on: the file conventions
-that make a project folder a source of truth, and the napari UI primitives the
-stage widgets are assembled from. Install it on its own only to script against
-those conventions from your own Python; each stage tool pulls it in for you.
+`itasc-core` is the shared substrate every ITASC distribution is built on: the
+file conventions that make a project folder a source of truth, and the napari UI
+primitives the stage widgets are assembled from. Install it on its own only to
+script against those conventions from your own Python; each stage tool pulls it
+in for you.
 
 One idea runs through it: a run's state lives in files on disk, not in memory.
 Each stage writes tracked labels to its folder, a commit promotes them to a

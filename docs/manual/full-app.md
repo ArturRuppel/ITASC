@@ -19,7 +19,7 @@ both correction tools, and the contact and aggregate stages. The sparse Cellpose
 is a separate tool. Solid chips are shipped; dashed are the rest of the family.
 ```
 
-The full ITASC plugin runs the whole pipeline in one napari widget: segment,
+`itasc[all]` is the full plugin: the whole pipeline in one napari widget, segment,
 track, correct, and quantify, in that order, without leaving the viewer. Reach
 for it when you have dense, motile cells of varying shape and want to go from raw
 stacks to quantified contacts in one place.
