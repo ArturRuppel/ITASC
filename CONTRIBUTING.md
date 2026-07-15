@@ -1,7 +1,8 @@
 # Contributing to ITASC
 
-ITASC is developed in the open, and contributions are welcome! This page covers the three things people usually need: how to
-report a problem, how to get help, and how to send a change.
+ITASC is developed in the open, and contributions are welcome! This page covers
+the three things people usually need: how to report a problem, how to get help,
+and how to send a change.
 
 ## Report a bug or request a feature
 
@@ -22,8 +23,9 @@ positions, that reproduces the problem helps most of all.
 For a usage question that is not clearly a bug, open an issue and label it
 `question`. Read the [documentation](https://arturruppel.github.io/ITASC/) first:
 the [install guide](https://arturruppel.github.io/ITASC/manual/install.html) and
-the per-stage guides cover the common cases. For technical or scientific
-questions, contact Artur Ruppel at `artur@ruppel.pro`.
+the per-stage guides cover the common cases. For questions about the method
+itself, or about whether ITASC suits your system, contact Artur Ruppel at
+`artur@ruppel.pro`.
 
 ## Contribute a change
 
