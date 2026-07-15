@@ -19,12 +19,19 @@ worth keeping is the one that also tracks. That is
 [Ultrack](https://github.com/royerlab/ultrack)'s idea, and ITASC is built on it.
 Rather than commit to a single outline per frame, Ultrack builds a database of
 many candidates and selects the set of outlines and links that is most
-consistent across the whole recording. ITASC feeds it inputs made for dense
-monolayers and hands the result to a person: the alternatives from that
-candidate database are offered as one-click fixes, alongside manual redraw tools
-based on [EpiCure](https://github.com/Image-Analysis-Hub/Epicure). The effort a
-monolayer needs is spent once, at the point of correction, and carried through
-to the numbers. [How ITASC
+consistent across the whole recording.
+
+Around that solver ITASC adds what a dense monolayer still needs. It builds
+Ultrack's input maps from [Cellpose](https://github.com/MouseLand/cellpose)'s
+raw probability map and flow field rather than from its outlines. It tracks the
+nuclei first: they are compact and come apart cleanly where cell bodies do not,
+so each cell body grows outward from its tracked nucleus and takes its identity,
+which is why a cell and its nucleus carry one ID. Then it hands the result to a
+person: the alternatives from the candidate database are offered as one-click
+fixes, alongside manual redraw tools based on
+[EpiCure](https://github.com/Image-Analysis-Hub/Epicure). The effort a monolayer
+needs is spent once, at the point of correction, and carried through to the
+numbers. [How ITASC
 works](https://arturruppel.github.io/ITASC/explanation/index.html) sets out the
 problem and the idea in full.
 
