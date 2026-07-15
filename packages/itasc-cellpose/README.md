@@ -38,6 +38,12 @@ whichever labels are active. Nothing is saved until you save the layers.*
 
 ## Running it
 
+To try it before you have data of your own, open the `nucleus` and `cell` stacks
+from the repository's
+[`sample_data/`](https://github.com/ArturRuppel/ITASC/tree/main/sample_data)
+folder (any `posNN/0_input/`) and bind them as the two channels. The stacks ship
+with the source, not the installed package, so download them from there.
+
 Select an image in the viewer and bind it to a channel with the channel's bind
 button; there is no file to open. **Preview** (▷) tries the current frame so you
 can adjust the controls before committing; it also shows the probability and flow

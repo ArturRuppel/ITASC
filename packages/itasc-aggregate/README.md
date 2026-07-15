@@ -32,6 +32,13 @@ into the viewer**. Select a position to run or re-run its contact analysis, then
 **Pool ready positions** writes the project-level tables, one CSV per quantity, to
 the project root.
 
+To try it before you have data of your own, point **Find data folders** at the
+repository's
+[`sample_data/`](https://github.com/ArturRuppel/ITASC/tree/main/sample_data)
+folder: its three positions carry committed cell and nucleus labels, ready to
+measure and pool. The folder ships with the source, not the installed package, so
+download it from there.
+
 ## Install
 
 ```bash
