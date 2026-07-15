@@ -38,7 +38,7 @@ back into the solver, which re-solves with the confirmed tracks held fixed.
 
 An atom is a fragment smaller than a nucleus, or at most equal to one. The foreground is
 cut into atoms along the ridges of the contour map: the map is flooded inward from the
-centre of each nucleus, and the floods meet at the ridges between nuclei. Each nucleus
+center of each nucleus, and the floods meet at the ridges between nuclei. Each nucleus
 therefore corresponds to a group of whole atoms rather than a partial atom. Over-marking
 boundaries in the previous stage is acceptable for this reason: an extra ridge splits one
 atom into two, which grouping can recombine, whereas a missing ridge merges two nuclei
@@ -49,11 +49,11 @@ brightness threshold separates nucleus from background across the whole frame ra
 only in regions where the image is bright.
 
 ```{figure} ../_static/manual/05-nucleus-atoms.png
-:alt: The napari canvas filled with a monolayer of nuclei, each drawn as one or a few coloured tiles separated by dark ridges. The panel on the right lists the Atom Extraction and Ultrack database settings.
+:alt: The napari canvas filled with a monolayer of nuclei, each drawn as one or a few colored tiles separated by dark ridges. The panel on the right lists the Atom Extraction and Ultrack database settings.
 :width: 100%
 
 The sample nuclei cut into atoms, in the main canvas: each nucleus is one or a few
-coloured tiles, and the dark ridges between tiles fall on the boundaries. The panel on
+colored tiles, and the dark ridges between tiles fall on the boundaries. The panel on
 the right holds the settings described in this page.
 ```
 
@@ -64,13 +64,13 @@ are measured in pixels.
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| **FG window** | The size, in pixels, of the neighbourhood averaged to estimate the local background of the foreground map. | `51` |
+| **FG window** | The size, in pixels, of the neighborhood averaged to estimate the local background of the foreground map. | `51` |
 | **FG cutoff** | How bright a point must be, after that background is subtracted, to count as part of a nucleus. | `0.002` |
 | **FG strength** | How much of the local background to subtract: `1` removes all of it, `0` removes none. | `1` |
-| **Contour window** | The same neighbourhood size for the contour map. | `20` |
+| **Contour window** | The same neighborhood size for the contour map. | `20` |
 | **Contour floor** | How strong a ridge must be to act as a wall between atoms. Lower values cut along fainter boundaries. | `0.05` |
 | **Contour strength** | How much of the contour map's local background to subtract before the ridges are read. | `0.16` |
-| **Min area** | The smallest atom to keep, in pixels. A smaller fragment is folded into the neighbour with which it shares the longest border. | `10` |
+| **Min area** | The smallest atom to keep, in pixels. A smaller fragment is folded into the neighbor with which it shares the longest border. | `10` |
 
 ## Candidates
 
@@ -84,7 +84,7 @@ Selection among the candidates occurs in the solver step.
   <source src="../_static/manual/nucleus-merge.mp4" type="video/mp4">
 </video>
 
-*Atoms merging into candidate outlines. Fragments belonging to one nucleus share a colour
+*Atoms merging into candidate outlines. Fragments belonging to one nucleus share a color
 and are combined into that nucleus's outline, the merge proceeding across the weakest
 boundaries first.*
 
@@ -92,15 +92,15 @@ Candidates are then linked across time. For each candidate in a frame, the candi
 the next frame that could correspond to the same nucleus are identified, and each such
 link is assigned a similarity score. The score is a weighted sum of three terms: the
 agreement in size between the two outlines (weighted by **Area weight**), their overlap
-(weighted by **IoU weight**), and the distance between their centres (weighted by
+(weighted by **IoU weight**), and the distance between their centers (weighted by
 **Distance weight**). The first two terms are rewards and the third is a penalty, so a
 pair of similar outlines lying close together scores higher than a distant or dissimilar
 pair.
 
-Overlap is measured after the later outline is shifted so that its centre coincides with
+Overlap is measured after the later outline is shifted so that its center coincides with
 that of the earlier one, so that translation between frames does not by itself reduce it;
 only differences in shape and size do. Motion is accounted for separately by the distance
-term, the raw separation between the two centres in pixels. The resulting scores are read
+term, the raw separation between the two centers in pixels. The resulting scores are read
 by the solver to follow a nucleus from frame to frame.
 
 These settings are located under the **Ultrack database** step, divided into the
@@ -169,7 +169,7 @@ The **Solver** group controls the scoring and reports the engine in use.
 | --- | --- | --- |
 | **Power** | How sharply outline overlap is rewarded: the overlap is raised to this power, so that a high value strongly favours nearly identical outlines from one frame to the next. | `4` |
 | **Bias** | A constant offset added to every score, which shifts how readily the solver keeps a candidate. Reduce it when too many nuclei are kept, and increase it when too few are kept. | `0` |
-| **Solver** | Read-only. Reports which mathematical engine solves the problem. Ultrack ships with the open-source **CBC** solver; if **Gurobi** is installed and licensed it is used instead. Gurobi requires a licence (free for academic use), is much faster, and tends to find better solutions, so install it if you can. | — |
+| **Solver** | Read-only. Reports which mathematical engine solves the problem. Ultrack ships with the open-source **CBC** solver; if **Gurobi** is installed and licensed it is used instead. Gurobi requires a license (free for academic use), is much faster, and tends to find better solutions, so install it if you can. | — |
 
 The **Track Scope** group limits how much of the movie is solved, for running the pipeline
 on part of it. Set both to `0` to track the whole recording.
@@ -238,7 +238,7 @@ already generated. The solver retains the alternative outlines it built but did 
 and the gallery displays them as clickable thumbnails in three columns: **Extend** backward,
 **Swap**, and **Extend** forward. Clicking a **Swap** thumbnail replaces the current outline
 with that alternative; clicking an **Extend** thumbnail extends the track into the
-neighbouring frame. From the keyboard, `Z` and `C` cycle the selected cell to the next
+neighboring frame. From the keyboard, `Z` and `C` cycle the selected cell to the next
 smaller or larger candidate fragment, moving it up or down the merge tree of groupings built
 in the candidate stage.
 
@@ -267,7 +267,7 @@ A correction to one frame is propagated to others by two independent tools.
 
 **Retrack** operates from the currently selected cell. `Q` and `E` rerun the tracking
 backward or forward from the current frame: the current frame is used as the reference, and
-the unlocked cells in each neighbouring frame are rematched to it in sequence, so that a
+the unlocked cells in each neighboring frame are rematched to it in sequence, so that a
 correction propagates outward from the frame in which it was made. Validated tracks are not
 modified. `A` and `D` **extend** the selected track one frame at a time for manual growth.
 

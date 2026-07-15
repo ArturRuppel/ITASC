@@ -170,7 +170,7 @@ DIAGRAMS = {
             "raw":      {"col": 0, "row": 1, "role": "io",    "main": "Raw frame",     "sub": "one channel"},
             "cellpose": {"col": 1, "row": 1, "role": "seg",   "main": "Cellpose",      "sub": "reads one image"},
             "bright":   {"col": 2, "row": 0, "role": "io",    "main": "Brightness",    "sub": "cell-like?"},
-            "direction":{"col": 2, "row": 2, "role": "io",    "main": "Direction",     "sub": "toward the centre"},
+            "direction":{"col": 2, "row": 2, "role": "io",    "main": "Direction",     "sub": "toward the center"},
             "fg":       {"col": 3, "row": 0, "role": "seg",   "main": "Foreground map", "sub": "where cells are"},
             "contour":  {"col": 3, "row": 2, "role": "seg",   "main": "Contour map",   "sub": "where boundaries run"},
         },
@@ -224,7 +224,7 @@ DIAGRAMS = {
         "nodes": {
             "labels":   {"col": 0, "row": 0.5, "role": "track", "main": "Tracked labels", "sub": "cells + nuclei"},
             "edges":    {"col": 1, "row": 0,   "role": "quant", "main": "Contact graph", "sub": "who touches whom"},
-            "t1":       {"col": 1, "row": 1,   "role": "quant", "main": "T1 events",     "sub": "neighbour swaps"},
+            "t1":       {"col": 1, "row": 1,   "role": "quant", "main": "T1 events",     "sub": "neighbor swaps"},
             "h5":       {"col": 2, "row": 0.5, "role": "io", "w": 186, "main": "contact_analysis.h5", "sub": "per position"},
             "aggregate":{"col": 3, "row": 0.5, "role": "quant", "main": "Aggregator",    "sub": "pool across positions"},
             "csv":      {"col": 4, "row": 0.5, "role": "io",    "main": "Tidy CSVs",     "sub": "one per quantity"},

@@ -2,8 +2,8 @@
 
 This stage turns the corrected labels into numbers. It reads the tracked cell and nucleus
 labels the earlier stages produced and measures what the cells are and what they do: their
-shapes, their motion, which cells touch, and the moments neighbours swap. It runs in two
-steps. For each position, the cell-cell contacts and the neighbour-exchange events are found
+shapes, their motion, which cells touch, and the moments neighbors swap. It runs in two
+steps. For each position, the cell-cell contacts and the neighbor-exchange events are found
 and written to one file. Across all positions, the per-cell measurements are pooled into
 tidy tables ready for statistics.
 
@@ -37,14 +37,14 @@ boundary is an edge, and its length is the length of the boundary between the tw
 Every edge in a frame, taken together, is the contact graph: which cells touch, and how long
 each junction is. A cell's boundary against the image edge or the background is recorded
 separately as a border edge, so that a cell at the edge of the field is not mistaken for one
-fully surrounded by neighbours.
+fully surrounded by neighbors.
 
 ```{figure} ../_static/manual/11-contact-analysis.png
-:alt: The segmented monolayer with cell-cell contact edges drawn as cyan lines along the boundaries and T1 edges highlighted, over the coloured cell labels. The panel on the right holds the Contact Analysis controls.
+:alt: The segmented monolayer with cell-cell contact edges drawn as cyan lines along the boundaries and T1 edges highlighted, over the colored cell labels. The panel on the right holds the Contact Analysis controls.
 :width: 100%
 
 The contact graph for one frame, drawn over the cell labels: each cyan line is an edge, the
-shared boundary between two touching cells, with the edges involved in a neighbour swap
+shared boundary between two touching cells, with the edges involved in a neighbor swap
 highlighted. The panel on the right runs the analysis and controls this overlay.
 ```
 
@@ -55,7 +55,7 @@ analyses** builds it for every position in the project. **Visualize Contact Anal
 the result back over the labels as an **Edges** layer and a **T1 edges** layer, and **Color
 edges by ID**, **Color edges by label**, and **Hide border edges** control that overlay.
 
-## Neighbour swaps
+## Neighbor swaps
 
 The elementary rearrangement of a monolayer is the T1 transition: a junction between two
 cells shrinks to a point and vanishes, and a new junction forms between the two cells that
@@ -78,7 +78,7 @@ that inversion, and the landscape it produces, are downstream of this stage.
 
 ## Pooling across positions
 
-Each analysed position yields per-cell, per-frame measurements. The **Aggregate** step pools
+Each analyzed position yields per-cell, per-frame measurements. The **Aggregate** step pools
 them across the whole project, writing one tidy table per quantity: one row per observation,
 with the position and any classifying columns carried alongside, so every position's cells
 sit in one table keyed the same way. Each quantity is a checkbox; **Pool ready positions**
@@ -100,8 +100,8 @@ Shapes and distances are reported in microns, from the pixel size set for the pr
 | --- | --- | --- |
 | **Cell shape** | Per cell, per frame: the area, perimeter, axis lengths, aspect ratio, circularity, orientation, and related descriptors of the cell body. | `cell_shape.csv` |
 | **Nucleus shape** | The same morphology for each nucleus. | `nucleus_shape.csv` |
-| **Nucleus–cell shape** | Each nucleus measured against its own cell: the area and axis-length ratios between them, how far the nucleus centre sits from the cell centre, and the angle between their long axes. | `shape_relational.csv` |
-| **Cell dynamics** | Per track: velocity and speed, persistence time, mean-square displacement with its power-law fit, and the tissue-scale alignment of neighbouring cells. | `cell_dynamics.csv` |
+| **Nucleus–cell shape** | Each nucleus measured against its own cell: the area and axis-length ratios between them, how far the nucleus center sits from the cell center, and the angle between their long axes. | `shape_relational.csv` |
+| **Cell dynamics** | Per track: velocity and speed, persistence time, mean-square displacement with its power-law fit, and the tissue-scale alignment of neighboring cells. | `cell_dynamics.csv` |
 | **Nucleus dynamics** | The same motion measures from the nucleus tracks. | `nucleus_dynamics.csv` |
 | **Neighbor count** | Per cell, per frame: how many cells it touches, its degree in the contact graph. | `neighbor_count.csv` |
 | **Cell density** | Per frame: the number of cells per unit field-of-view area. Requires the **FOV area** in square microns, set in the panel. | `cell_density.csv` |

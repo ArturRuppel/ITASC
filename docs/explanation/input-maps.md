@@ -33,21 +33,21 @@ the brightness becomes the foreground map, and the direction field becomes the c
 Cellpose reads one image and reports two things at every point in it.
 
 ```{figure} ../_static/manual/cellpose-raw-outputs.png
-:alt: Two panels of the same cluster of nuclei. Left: white blobs on black. Right: the same blobs, each filled with a small wheel of rainbow colour.
+:alt: Two panels of the same cluster of nuclei. Left: white blobs on black. Right: the same blobs, each filled with a small wheel of rainbow color.
 :width: 100%
 
 Cellpose's two outputs, for one frame of the sample nuclei. Left, brightness: pale
 where a point looks like part of a cell, black where it looks like background. Right,
-direction: the colour at each point is the direction toward the centre of the cell that
-point belongs to, so each cell becomes a small wheel of colour turning around its
-centre.
+direction: the color at each point is the direction toward the center of the cell that
+point belongs to, so each cell becomes a small wheel of color turning around its
+center.
 ```
 
 **Brightness** is how cell-like each point looks: pale for cell, dark for background.
 
-**Direction** is an arrow at every point, aimed at the centre of the cell that point
-sits inside. The picture draws those arrows as colours, one colour per direction, so a
-single cell becomes a small colour wheel around its own centre.
+**Direction** is an arrow at every point, aimed at the center of the cell that point
+sits inside. The picture draws those arrows as colors, one color per direction, so a
+single cell becomes a small color wheel around its own center.
 
 ## The two maps
 
@@ -55,9 +55,9 @@ single cell becomes a small colour wheel around its own centre.
 background.
 
 **The contour map** comes from the directions. Inside one cell, every arrow points the
-same way, toward that cell's centre. Where two cells meet, the arrows on the two sides
+same way, toward that cell's center. Where two cells meet, the arrows on the two sides
 point in opposite directions, away from each other. ITASC marks every point where
-neighbouring arrows point apart. Those points land on the line between two touching
+neighboring arrows point apart. Those points land on the line between two touching
 cells and form the contour map: a bright ridge on each boundary, drawn even where the
 brightness map shows one solid blob.
 
@@ -116,7 +116,7 @@ familiar with Cellpose.
 | --- | --- | --- |
 | **Foreground z-reduction** | How the depth slices are collapsed into the flat foreground map: `mean` averages them, `max` keeps the strongest reading at each point. | `mean` |
 | **Contour z-reduction** | The same choice for the contour map. | `mean` |
-| **Contour smoothing sigma** | How much to blur the direction field before the ridges are read, in pixels. Higher hides speckle but can blur neighbouring ridges into one. | `1` |
+| **Contour smoothing sigma** | How much to blur the direction field before the ridges are read, in pixels. Higher hides speckle but can blur neighboring ridges into one. | `1` |
 | **Contour median radius** | A second smoothing that removes stray bright specks from the direction field, in pixels. `0` turns it off. | `0` (off) |
 | **Foreground smoothing sigma** | The same blur applied to the foreground map. Turn it up only to close small holes. | `0` (off) |
 | **Foreground median radius** | The same speckle removal applied to the foreground map. `0` turns it off. | `0` (off) |

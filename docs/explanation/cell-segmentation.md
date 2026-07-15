@@ -64,11 +64,11 @@ much of the frame is filled, is the parameter most likely to require adjustment.
 | --- | --- | --- |
 | **Strength** (foreground) | How much of the foreground map's local background to subtract before thresholding: `1` removes all of it, `0` removes none. | `0` |
 | **Threshold** (foreground) | How bright a cleaned point must be to fall inside the fill territory. Higher values fill less of the frame. | `0.1` |
-| **Window** (foreground) | The neighbourhood size, in pixels, used to estimate that local background. | `51` |
+| **Window** (foreground) | The neighborhood size, in pixels, used to estimate that local background. | `51` |
 | **Strength** (contours) | The same background subtraction applied to the contour map. | `1` |
 | **Floor** (contours) | A noise floor on the normalized contour: values below it are set to zero, so faint speckle does not act as a wall. | `0` |
 | **Norm %** (contours) | The percentile of the contour signal mapped to the top of the `0` to `1` range, which sets the scale of the ridges. | `99` |
-| **Window** (contours) | The neighbourhood size for the contour background. | `51` |
+| **Window** (contours) | The neighborhood size for the contour background. | `51` |
 | **Memory τ** | The contour strength treated as the crossover between trusting the current frame and trusting the carried memory. `0` turns temporal smoothing off. | `0.1` |
 | **Memory floor** | The slowest rate at which a carried boundary fades when it is not renewed, which prevents a permanent ghost. | `0.3` |
 
@@ -90,7 +90,7 @@ contains its seed.
 The weighted cost field for one frame, in the main canvas: dark red where a contour ridge
 makes crossing expensive, blue and purple in the low-cost cell interiors. Each cell body is
 grown from its nucleus through this field and stops where the cost rises, so the red ridges
-are where neighbouring bodies meet. The panel on the right holds the settings described in
+are where neighboring bodies meet. The panel on the right holds the settings described in
 this page.
 ```
 
@@ -126,11 +126,11 @@ identity is its nucleus's and those operations would break that correspondence. 
 corrects is the shape of a boundary the growth placed wrongly.
 
 ```{figure} ../_static/manual/10-cell-segmented.png
-:alt: The monolayer with every cell drawn as a coloured outline around its nucleus, the nuclei shown as purple blobs underneath, one cell selected in yellow. The panel on the right reports the segmentation complete with 125 labels and holds the correction controls.
+:alt: The monolayer with every cell drawn as a colored outline around its nucleus, the nuclei shown as purple blobs underneath, one cell selected in yellow. The panel on the right reports the segmentation complete with 125 labels and holds the correction controls.
 :width: 100%
 
 The finished cell bodies, in the correction tool: each cell is an outline around its
-nucleus, coloured by identity, tiling the monolayer with no gaps. The cell and nucleus
+nucleus, colored by identity, tiling the monolayer with no gaps. The cell and nucleus
 reference images are drawn underneath (the nuclei in purple) so edits are made against the
 signal. One cell is selected in yellow, and the panel reports 125 labels written.
 ```
@@ -152,4 +152,4 @@ labels the final stage reads.
 
 Each cell now has a body and an identity in every frame, aligned with its nucleus. The final
 stage, [measuring the result](contact-analysis.md), reads these bodies to find which cells
-touch, follows each contact through time, and records the moments neighbours swap.
+touch, follows each contact through time, and records the moments neighbors swap.

@@ -3,7 +3,7 @@
 ITASC takes a time-lapse of a cell monolayer and returns, for every cell, an outline
 and an identity that hold across the whole recording: its shape in each frame, and
 the fact that it is the same cell from the first frame to the last. From that it
-measures which cells touch and when neighbours swap. This page states the problem and
+measures which cells touch and when neighbors swap. This page states the problem and
 the idea behind the solution; the later pages detail each step and build on it.
 
 ```{figure} ../_static/diagrams/diagram-overview.svg
@@ -29,7 +29,7 @@ segmentation-and-tracking stages, where a person fixes what the automatics miss.
 
 The monolayers ITASC is built for are dense and highly motile. Cells are packed with
 no clear gap between them, and they travel far between frames, sliding past one
-another and trading neighbours. Two jobs have to be done on this, and they interfere.
+another and trading neighbors. Two jobs have to be done on this, and they interfere.
 
 **Segmentation** draws each cell's outline in each frame. Where two cells touch, the
 boundary between them is uncertain.
@@ -76,5 +76,5 @@ selectable alternatives.
   solve for the consistent set, correct it.
 - **[Growing the cell bodies](cell-segmentation.md).** Extend each cell out from its
   tracked nucleus.
-- **[Measuring the result](contact-analysis.md).** Cell shapes, neighbours, and the
-  moments two cells swap neighbours.
+- **[Measuring the result](contact-analysis.md).** Cell shapes, neighbors, and the
+  moments two cells swap neighbors.
