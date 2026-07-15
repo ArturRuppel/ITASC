@@ -70,6 +70,15 @@ have; each links to that tool's guide, which covers installing and using it.
 | **Tracked labels for a set of positions** (cell and/or nucleus), to quantify and pool them | [itasc-aggregate](https://arturruppel.github.io/ITASC/manual/aggregate.html) | Contact analysis per position (cell-cell edges, border edges, T1 events to HDF5), then aggregate quantification pooled across the project to `.csv`. Partial data is fine. |
 | **Code to build on** | [itasc-core](https://arturruppel.github.io/ITASC/manual/core.html) | TIFF/path/label-IO helpers, the lineage model, and napari UI primitives. |
 
+## Sample data
+
+To try any of them before you have data of your own, download
+[`itasc-sample-data.zip`](https://github.com/ArturRuppel/ITASC/releases/download/sample-data-v1/itasc-sample-data.zip)
+(12 MB). It unzips to a three-position project: raw stacks to start from at the
+Segment stage, and finished cell and nucleus labels to skip straight to Quantify.
+If you cloned the repository you already have it, in
+[`sample_data/`](https://github.com/ArturRuppel/ITASC/tree/main/sample_data).
+
 ## Built on
 
 ITASC reuses the published methods of four tools. If you use the stage that

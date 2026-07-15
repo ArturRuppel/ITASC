@@ -92,9 +92,11 @@ and frame length, and name the nucleus and cell input stacks. The panel writes
 this to `itasc_config.json` in the project, so the metadata travels with the data
 and reloads next time.
 
-To try the app before you have data of your own, point it at the
-[`sample_data/` project](https://github.com/ArturRuppel/ITASC/tree/main/sample_data)
-in the repository: it holds the same three positions shown on this page.
+To try the app before you have data of your own, download
+[`itasc-sample-data.zip`](https://github.com/ArturRuppel/ITASC/releases/download/sample-data-v1/itasc-sample-data.zip)
+(12 MB) and point it at the unzipped `sample_data/` folder: it holds the same
+three positions shown on this page. If you cloned the repository, it is already
+there, in [`sample_data/`](https://github.com/ArturRuppel/ITASC/tree/main/sample_data).
 
 ```{figure} ../_static/manual/01-open-panel.png
 :alt: An empty napari window with the ITASC panel docked on the right, showing the setup fields.
