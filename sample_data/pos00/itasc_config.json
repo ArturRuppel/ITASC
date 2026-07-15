@@ -1,0 +1,119 @@
+{
+    "metadata": {
+        "pixel_size_um": "",
+        "time_interval_s": ""
+    },
+    "cellpose": {
+        "nucleus": {
+            "layout": "3D+t",
+            "do_3d": false,
+            "anisotropy": 1.5,
+            "diameter": 0.0,
+            "min_size": 15,
+            "gamma": 1.0
+        },
+        "cell": {
+            "layout": "3D+t",
+            "diameter": 0.0,
+            "min_size": 0,
+            "gamma": 1.0
+        },
+        "divergence_maps": {
+            "nucleus": {
+                "foreground_z_reduction": "mean",
+                "contour_z_reduction": "mean",
+                "smoothing_sigma": 1.0,
+                "median_radius": 0,
+                "foreground_smoothing_sigma": 0.0,
+                "foreground_median_radius": 0
+            },
+            "cell": {
+                "foreground_z_reduction": "mean",
+                "contour_z_reduction": "mean",
+                "smoothing_sigma": 1.0,
+                "median_radius": 0,
+                "foreground_smoothing_sigma": 0.0,
+                "foreground_median_radius": 0
+            }
+        }
+    },
+    "nucleus": {
+        "db_generation": {
+            "min_area": 20,
+            "max_area": 100000,
+            "min_frontier": 0.0,
+            "ws_hierarchy": "area",
+            "n_workers": 1,
+            "atom_union_max_area": 8000,
+            "overlap_budget": 300000,
+            "max_distance": 30.0,
+            "max_neighbors": 10,
+            "linking_mode": "shape",
+            "area_weight": 1.0,
+            "iou_weight": 1.0,
+            "distance_weight": 0.05,
+            "quality_weight": 1.0,
+            "quality_exponent": 1.0,
+            "circularity_weight": 0.25
+        },
+        "extend": {
+            "area_weight": 1.0,
+            "iou_weight": 1.0,
+            "distance_weight": 0.05,
+            "greedy_overwrite": true
+        },
+        "ultrack": {
+            "max_partitions": 30,
+            "n_frames": 0,
+            "appear_weight": -0.1,
+            "disappear_weight": -0.1,
+            "division_weight": -0.01,
+            "power": 4,
+            "bias": 0.0
+        },
+        "atom_extraction": {
+            "fg_window": 51,
+            "fg_cutoff": 0.002,
+            "fg_strength": 1.0,
+            "contour_window": 20,
+            "contour_floor": 0.05,
+            "contour_strength": 0.16455696202531644,
+            "atom_min_area": 10
+        },
+        "correction": {
+            "retrack_max_distance": 20.0,
+            "show_track_path": true,
+            "show_spotlight": true
+        }
+    },
+    "cell": {
+        "cleanup": {
+            "fg_window": 51,
+            "fg_strength": 0.0,
+            "fg_threshold": 0.1,
+            "contour_window": 51,
+            "contour_strength": 1.0,
+            "contour_threshold": 0.0,
+            "contour_norm_pct": 99.0
+        },
+        "temporal": {
+            "memory_tau": 0.1,
+            "memory_floor": 0.3
+        },
+        "segmentation": {
+            "balance": 0.9,
+            "feature_strength": 250.0,
+            "n_workers": 4
+        },
+        "preview": {
+            "foreground": true,
+            "contours": true,
+            "cost": true,
+            "labels": false
+        },
+        "correction": {
+            "hole_radius": 5,
+            "scope": "Current frame"
+        }
+    }
+}

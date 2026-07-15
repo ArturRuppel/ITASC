@@ -14,8 +14,14 @@ packages/_wheels/
 *.so
 .env
 
-# Local sample/test datasets (image + segmentation data, not code)
-sample_data/
+# Sample dataset: raw inputs and tracked labels are tracked so the pipeline can
+# be run end-to-end from a fresh clone. Everything derivable from those stays
+# out: Cellpose intermediates, the Ultrack working directory, and the contact
+# analysis outputs (which also embed absolute paths in their provenance group).
+sample_data/**/1_cellpose/
+sample_data/**/ultrack_workdir/
+sample_data/**/*.h5
+!sample_data/**/*.tif
 sample_data_dimensionality_test/
 .venv
 .envrc
