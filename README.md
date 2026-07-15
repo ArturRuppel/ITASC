@@ -3,10 +3,7 @@
 Segment, track, correct, and quantify cells in time-lapse microscopy, inside napari.
 
 <!-- docs-home-start -->
-**📖 [Read the full documentation →](https://arturruppel.github.io/ITASC/)** —
-installation, the four-stage workflow, [how ITASC
-works](https://arturruppel.github.io/ITASC/explanation/index.html), and the [API
-reference](https://arturruppel.github.io/ITASC/api/index.html).
+**📖 [Read the full documentation →](https://arturruppel.github.io/ITASC/)**
 <!-- docs-home-end -->
 
 ITASC (Interactive Tracking And Segmentation of Cells) is a
