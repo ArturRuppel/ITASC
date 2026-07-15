@@ -8,7 +8,7 @@ Segment, track, correct, and quantify cells in time-lapse microscopy, inside nap
 
 ITASC (Interactive Tracking And Segmentation of Cells) is a
 [napari](https://napari.org) plugin for **dense, highly motile cell
-monolayers** — the regime where automatic segmentation and tracking break down.
+monolayers**, where automatic segmentation and tracking break down.
 It takes a time-lapse and returns, for every cell, a cell mask and a nucleus
 mask that share one ID and hold across the whole recording, then quantifies
 their shape, dynamics, and topology.
