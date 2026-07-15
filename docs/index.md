@@ -1,6 +1,13 @@
 ```{include} ../README.md
 :relative-docs: docs/
 :relative-images:
+:end-before: <!-- docs-home-start -->
+```
+
+```{include} ../README.md
+:relative-docs: docs/
+:relative-images:
+:start-after: <!-- docs-home-end -->
 :end-before: <!-- hero-start -->
 ```
 
@@ -13,13 +20,6 @@
 :relative-docs: docs/
 :relative-images:
 :start-after: <!-- hero-end -->
-:end-before: <!-- docs-nav-start -->
-```
-
-```{include} ../README.md
-:relative-docs: docs/
-:relative-images:
-:start-after: <!-- docs-nav-end -->
 ```
 
 ```{toctree}

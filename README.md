@@ -2,38 +2,28 @@
 
 Segment, track, correct, and quantify cells in time-lapse microscopy, inside napari.
 
+<!-- docs-home-start -->
+**📖 [Read the full documentation →](https://arturruppel.github.io/ITASC/)** —
+installation, the four-stage workflow, [how ITASC
+works](https://arturruppel.github.io/ITASC/explanation/index.html), and the [API
+reference](https://arturruppel.github.io/ITASC/api/index.html).
+<!-- docs-home-end -->
+
 ITASC (Interactive Tracking And Segmentation of Cells) is a
-[napari](https://napari.org) plugin. It takes a time-lapse of a cell monolayer
-and returns, for every cell, a cell mask and a nucleus mask that share one ID
-and hold across the whole recording. From those it quantifies shape, dynamics,
-and topology.
+[napari](https://napari.org) plugin for **dense, highly motile cell
+monolayers** — the regime where automatic segmentation and tracking break down.
+It takes a time-lapse and returns, for every cell, a cell mask and a nucleus
+mask that share one ID and hold across the whole recording, then quantifies
+their shape, dynamics, and topology.
 
-The monolayers that ITASC is built for are dense and highly motile, and that is
-where automatic methods break down. When cells are packed with no clear gap
-between them, and when they travel far between frames, the outlines come out
-wrong, they come out wrong in a different way in each frame, and the tracks
-built on them break. One broken track spoils every measurement that follows.
-
-A dense monolayer needs the outlines and the links decided together: the outline
-worth keeping is the one that also tracks. That is
-[Ultrack](https://github.com/royerlab/ultrack)'s idea, and ITASC is built on it.
-Rather than commit to a single outline per frame, Ultrack builds a database of
-many candidates and selects the set of outlines and links that is most
-consistent across the whole recording.
-
-Around that solver ITASC adds what a dense monolayer still needs. It builds
-Ultrack's input maps from [Cellpose](https://github.com/MouseLand/cellpose)'s
-raw probability map and flow field rather than from its outlines. It tracks the
-nuclei first: they are compact and come apart cleanly where cell bodies do not,
-so each cell body grows outward from its tracked nucleus and takes its identity,
-which is why a cell and its nucleus carry one ID. Then it hands the result to a
-person: the alternatives from the candidate database are offered as one-click
-fixes, alongside manual redraw tools based on
-[EpiCure](https://github.com/Image-Analysis-Hub/Epicure). The effort a monolayer
-needs is spent once, at the point of correction, and carried through to the
-numbers. [How ITASC
-works](https://arturruppel.github.io/ITASC/explanation/index.html) sets out the
-problem and the idea in full.
+It gets there by deciding outlines and links together rather than frame by
+frame: it feeds [Cellpose](https://github.com/MouseLand/cellpose)'s raw
+probability and flow maps into [Ultrack](https://github.com/royerlab/ultrack)'s
+candidate solver, tracks the compact nuclei first and grows each cell body
+outward from its nucleus (so a cell and its nucleus carry one ID), then turns
+the result over to you: Ultrack's alternatives become one-click fixes, with
+manual redraw tools adapted from
+[EpiCure](https://github.com/Image-Analysis-Hub/Epicure) for the rest.
 
 <!-- hero-start -->
 <p align="center">
@@ -104,15 +94,6 @@ depends on one, please cite it:
   for curation of epithelial segmentation.* bioRxiv (2026).
   [doi:10.64898/2026.03.27.714683](https://doi.org/10.64898/2026.03.27.714683)
   · [Image-Analysis-Hub/Epicure](https://github.com/Image-Analysis-Hub/Epicure)
-
-<!-- docs-nav-start -->
-## Documentation
-
-- [User guide](https://arturruppel.github.io/ITASC/): install, the staged workflow, and driving the
-  plugin.
-- [API reference](https://arturruppel.github.io/ITASC/api/index.html): the programmatic API, generated
-  from the source.
-<!-- docs-nav-end -->
 
 ## Status
 
