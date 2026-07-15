@@ -64,17 +64,21 @@ an old one: close every terminal window, open a fresh one, and try again.
 This one command installs napari and ITASC together:
 
 ```bash
-uv tool install napari --torch-backend=auto --with "itasc[all]==0.2.0.dev0"
+uv tool install napari --python 3.12 --torch-backend=auto --with "itasc[all]==0.2.0.dev0"
 ```
 
 It downloads its own copy of Python, then napari, ITASC, and the tools each stage
 needs. One of those tools, used for finding cells, is over a gigabyte, so this
 runs for several minutes and shows little while it works. Let it finish.
 
-The `==0.2.0.dev0` pins the current pre-release; uv prints a short "is yanked"
-note as it installs, which is expected and harmless. Once a stable version is
-published, this command will be shorter: `uv tool install napari
---torch-backend=auto --with "itasc[all]"`. Until then, keep the pin.
+The `--python 3.12` picks a Python version that every ITASC tool provides
+ready-made. Leave it out and uv may pick the newest Python, which some tools have
+no ready-made files for yet; it then tries to build them from scratch and stops
+with an error asking for a C++ compiler. The `==0.2.0.dev0` pins the current
+pre-release; uv prints a short "is yanked" note as it installs, which is expected
+and harmless. Once a stable version is published, this command will be shorter:
+`uv tool install napari --python 3.12 --torch-backend=auto --with "itasc[all]"`.
+Until then, keep the pin.
 
 ## Open ITASC
 
