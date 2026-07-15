@@ -2,20 +2,29 @@
 
 Segment, track, correct, and quantify cells in time-lapse microscopy, inside napari.
 
-ITASC (Interactive Tracking And Segmentation of Cells) takes raw time-lapse
-stacks to tracked, quantified cells. It segments each frame, links cells across
-time, lets you correct the result by hand where the automatics miss, and
-measures what the tracked cells do. It is a [napari](https://napari.org) plugin
-built for dense, motile monolayers, where segmentation and tracking are often difficult.
+ITASC (Interactive Tracking And Segmentation of Cells) is a
+[napari](https://napari.org) plugin. It takes a time-lapse of a cell monolayer
+and returns, for every cell, an outline and an identity that hold across the
+whole recording: its shape in each frame, and the fact that it is the same cell
+from the first frame to the last. From that it measures which cells touch and
+when neighbors swap.
 
-Dense epithelial monolayers are where automatic segmentation and tracking break
-down: cells are crowded, they change shape frame to frame, and they slide past
-one another, so a fully automatic pipeline leaves errors that corrupt every
-measurement built on top of the tracks. ITASC pairs strong automatic methods
-(Cellpose-SAM, Ultrack) with the interactive correction such data demands, and
-holds the corrected labels and the quantities derived from them in one project
-folder. The effort a monolayer needs is spent once, at the point of correction,
-and carried through to the numbers.
+The monolayers it is built for are dense and highly motile, and that is where
+automatic methods break down. Cells are packed with no clear gap between them,
+and they travel far between frames, sliding past one another. So the outlines
+come out wrong, they come out wrong in a different way in each frame, and the
+tracks built on them break. One broken track spoils every measurement that
+follows.
+
+ITASC answers this in two parts. It does segmentation and tracking together
+rather than one after the other, choosing the outlines and the links across the
+whole recording in one calculation, so the outline it settles on is also the one
+that tracks correctly. It then hands the result to a person, offering the
+alternatives the solver already considered as one-click fixes. The effort a
+monolayer needs is spent once, at the point of correction, and carried through
+to the numbers. [How ITASC
+works](https://arturruppel.github.io/ITASC/explanation/index.html) sets out the
+problem and the idea in full.
 
 <!-- hero-start -->
 <p align="center">
@@ -26,27 +35,33 @@ and carried through to the numbers.
 
 ## What it does
 
-The full ITASC app moves through four stages:
+The full ITASC app moves through four stages. Each writes its result to a project
+folder on disk, and the next stage reads it back, so the folder is the source of
+truth and a run can be inspected or resumed between any two stages.
 
-- **Segment** each frame with [Cellpose-SAM](https://github.com/MouseLand/cellpose).
-  For sparse, well-separated cells its masks are the result; for a dense
-  monolayer its probability and flow output becomes divergence images that
-  separate crowded, variable-shape cells and form the input the tracker runs on.
-- **Track** across time: [Ultrack](https://github.com/royerlab/ultrack) for
-  dense monolayers, [LapTrack](https://github.com/yfukai/laptrack) for sparse,
-  well-separated cells.
-- **Correct** tracks and labels interactively, with editing tools adapted from
-  [EpiCure](https://github.com/Image-Analysis-Hub/Epicure), where the automatic
-  result is wrong.
-- **Quantify** what the tracked cells do, in two outputs:
-  - cell-cell contacts and edges, identified and tracked through T1 transitions,
-    written to a self-describing HDF5 (`.h5`) file.
-  - aggregate analysis of tracked nuclei, cell bodies, and cell-cell contacts
-    (shape and dynamics over time), exported to `.csv` tables.
+- **Segment.** [Cellpose-SAM](https://github.com/MouseLand/cellpose) finds the
+  cells. On sparse, well-separated cells its outlines are the answer. On a dense
+  monolayer they are not, so ITASC keeps its raw output instead and reduces it to
+  two maps: where the cells are, and where their boundaries run. Every later
+  stage reads those maps, never the raw stack.
+- **Track.** [Ultrack](https://github.com/royerlab/ultrack) builds many candidate
+  outlines per frame and selects the set that is most consistent in time, solving
+  the outlines and the links at once. That is what a dense monolayer needs.
+  Sparse cells do not need it, and [LapTrack](https://github.com/yfukai/laptrack)
+  links them frame to frame instead.
+- **Correct.** No solver is perfect on dense, dividing cells, so a person fixes
+  what it missed, with tools adapted from
+  [EpiCure](https://github.com/Image-Analysis-Hub/Epicure). The candidates the
+  tracker already built are offered as selectable alternatives, so most fixes are
+  a click rather than a redraw.
+- **Quantify.** Per position: which cells touch, the edges they share, and the T1
+  events where two neighbors swap partners, written to one self-describing HDF5
+  (`.h5`) file. Across the project: the shape and dynamics of nuclei, cell
+  bodies, and contacts over time, pooled into `.csv` tables.
 
-ITASC is also distributed as smaller, simplified napari tools for a subset of these steps.
-Pick the one that matches the data you have. Each row links to that tool's guide,
-which covers how to install it and how to use it.
+ITASC also ships as smaller napari tools, each one a slice of that pipeline, for
+when the full app is more than the job needs. Pick the row that matches the data
+you have; each links to that tool's guide, which covers installing and using it.
 
 | If you have… | Reach for | It gives you |
 | --- | --- | --- |

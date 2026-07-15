@@ -128,9 +128,11 @@ to bottom.
 
 Cellpose finds the cells. This section runs the nucleus and cell channels through
 Cellpose-SAM to write probability and flow (`dp`) maps under `1_cellpose/`, then
-reduces those to the divergence-based foreground and contour maps that seed
-tracking and segmentation. The Pipeline Files list at the top of every section is
-the ledger: inputs check off, outputs fill in as they are written.
+reduces those to the foreground and contour maps that seed tracking and
+segmentation. [Preparing the input maps](../explanation/input-maps.md) explains what
+the two maps are and how they are built from Cellpose's output. The Pipeline Files
+list at the top of every section is the ledger: inputs check off, outputs fill in as
+they are written.
 
 ```{figure} ../_static/manual/03-cellpose-running.png
 :alt: The Cellpose section mid-run, the viewer showing a nucleus divergence map.
@@ -152,8 +154,9 @@ stage reads these, never the raw stacks.
 
 This section (standalone: `itasc-tracking`) turns the nucleus maps into tracked
 labels under `2_nucleus/`. Segmentation and tracking are solved together, not one
-after the other: this is the [Ultrack](https://github.com/royerlab/ultrack) model,
-and its paper works through the details.
+after the other: this is the [Ultrack](https://github.com/royerlab/ultrack) model.
+[Outlining and tracking the nuclei](../explanation/nucleus-tracking.md) explains why
+that matters and what the solver is doing; the steps below are how you drive it.
 
 **Atom extraction** breaks the nucleus foreground into atoms: the smallest
 fragments an oversegmentation splits it into.
@@ -232,7 +235,8 @@ Cells grow out from the tracked nuclei. This section builds a weighted cost fiel
 from the cell contour and foreground maps and cuts it into cell territories,
 writing tracked cell labels to `3_cell/`. The nuclei are already tracked, so each
 cell inherits the track ID of the nucleus it grew from: nucleus and cell share an
-identity for free. As with the nuclei, a correction step follows, the same tools
+identity for free. [Growing the cell bodies](../explanation/cell-segmentation.md)
+covers why the bodies follow the nuclei rather than being tracked themselves. As with the nuclei, a correction step follows, the same tools
 in the same interactive layer, to fix merged or split cells before the labels are
 committed.
 
