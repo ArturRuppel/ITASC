@@ -95,7 +95,7 @@ packages = ["src/itasc"]
 
 [tool.hatch.build.targets.sdist]
 exclude = [
-    "/docs/superpowers",
+    "/docs/design",
     "/notes",
     "/notebooks",
     "/scripts/__pycache__",
@@ -114,7 +114,7 @@ exclude = [
 target-version = "py310"
 src = ["src", "tests"]
 extend-exclude = [
-    "docs/superpowers",
+    "docs/design",
     "notes",
     "notebooks",
     "scripts/__pycache__",

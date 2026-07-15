@@ -24,7 +24,7 @@ try:
 
     release = _pkg_version("itasc")
 except Exception:  # pragma: no cover - best effort during local builds
-    release = "0.2.0"
+    release = "0.2.0.dev0"
 version = release
 
 # -- General configuration ----------------------------------------------------
@@ -41,7 +41,7 @@ extensions = [
 ]
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "superpowers", "plans"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "design", "plans"]
 
 # -- MyST (Markdown) ----------------------------------------------------------
 myst_enable_extensions = [

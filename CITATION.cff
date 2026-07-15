@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use ITASC, please cite this software using the metadata from this file."
 title: "ITASC"
-version: "0.2.0"
+version: "0.2.0.dev0"
 abstract: "A napari-based research software project for time-lapse cell microscopy, Cellpose-derived segmentation inputs, Ultrack-based tracking, interactive correction, and contact analysis."
 authors:
   - family-names: "Ruppel"

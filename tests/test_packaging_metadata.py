@@ -92,7 +92,7 @@ def test_citation_file_contains_provisional_release_metadata() -> None:
 
     assert "cff-version: 1.2.0" in citation
     assert 'title: "ITASC"' in citation
-    assert 'version: "0.2.0"' in citation
+    assert 'version: "0.2.0.dev0"' in citation
     assert "repository-code: https://github.com/ArturRuppel/ITASC" in citation
     assert "email: artur@ruppel.pro" in citation
 
@@ -101,7 +101,7 @@ def test_sdist_excludes_internal_development_material() -> None:
     sdist = _pyproject()["tool"]["hatch"]["build"]["targets"]["sdist"]
 
     assert sdist["exclude"] == [
-        "/docs/superpowers",
+        "/docs/design",
         "/notes",
         "/notebooks",
         "/scripts/__pycache__",
@@ -129,7 +129,7 @@ def test_ruff_rule_set_covers_low_noise_publication_hygiene() -> None:
     lint = ruff["lint"]
 
     assert ruff["extend-exclude"] == [
-        "docs/superpowers",
+        "docs/design",
         "notes",
         "notebooks",
         "scripts/__pycache__",
