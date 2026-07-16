@@ -332,6 +332,11 @@ def merge_validated_into_export(
     # Inspect each validated frame to find the dominant solver track covering that mask region,
     # then propagate that solver track's ID to the validated cell_id everywhere in the export.
     solver_track_remap: dict[int, int] = {}
+    # Cells the solver already labeled with the correct ID (dominant_solver_id ==
+    # cell_id). Every pixel valued cell_id then belongs to that one solver track,
+    # so the reserved-ID collision pass below must leave it untouched rather than
+    # scatter its non-validated frames to a fresh ID.
+    direct_match_ids: set[int] = set()
     for cell_id in sorted(validated_masks.keys()):
         present_masks = validated_masks[cell_id]
         dominant_solver_id: int | None = None
@@ -370,9 +375,11 @@ def merge_validated_into_export(
         if dominant_solver_id is None or dominant_solver_id == 0:
             continue
         if dominant_solver_id == cell_id:
-            # Solver already used the correct ID — no remap needed, but still handle
-            # collision below where the solver used cell_id for unrelated pixels
-            pass
+            # Solver already used the correct ID for this cell's own track — no
+            # remap needed. Record it so the reserved-ID collision pass skips it:
+            # all pixels valued cell_id are the validated track (including its
+            # non-validated continuation frames) and must be preserved whole.
+            direct_match_ids.add(cell_id)
         elif dominant_solver_id in solver_track_remap:
             LOG.warning(
                 "Solver track %d claimed by multiple validated cells; "
@@ -406,6 +413,14 @@ def merge_validated_into_export(
     remapped_sources = set(solver_track_remap.keys())
     remapped_targets = set(solver_track_remap.values())
     for cell_id, present_masks in validated_masks.items():
+        if cell_id in direct_match_ids:
+            # The solver already labeled this validated cell's own track with the
+            # correct ID, so every pixel valued cell_id belongs to that one track.
+            # Scattering the non-validated frames to a fresh ID here would split
+            # the validated track's continuation into a disconnected fragment.
+            # Mirrors the ``owning_solver == cell_id`` guard in
+            # corrections.apply_post_solve_corrections.
+            continue
         if cell_id in remapped_targets and cell_id not in remapped_sources:
             # Already handled in collision resolution above
             continue

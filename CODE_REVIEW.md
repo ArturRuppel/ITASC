@@ -18,6 +18,13 @@ synthesis pass identified cross-cutting themes.
 **Outcome:** 58 candidate findings → **3 refuted** → **55 kept**
 (42 independently confirmed, 6 plausible, 7 unverified-architecture).
 
+> **Update — three silent-corruption findings fixed on this branch.** The three
+> highest-value "wrong results, no error" bugs have been fixed with regression
+> tests: **H1** validated-track fragmentation on solver-id collision
+> (`reseed.py`), **M13** zero-IoU candidate hijack (`validation_nodes.py`), and
+> **M2** silent T↔Z transpose of 4-D input (`shape.py`, now warns + accepts an
+> explicit `z_axis`). The remaining findings below are unaddressed.
+
 | Severity | Count | | Dimension | Count |
 |---|---|---|---|---|
 | High | 7 | | Correctness | 24 |
