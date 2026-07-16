@@ -35,6 +35,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import threading
 from pathlib import Path
 
 import napari
@@ -221,6 +222,11 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         # Full-run worker state.
         self._run_worker = None
         self._running = False
+        # Cooperative-cancel signal for the active run, and a monotonic token so a
+        # superseded/cancelled worker's completion callbacks are ignored (they must
+        # not write output layers or clobber a newer run).
+        self._run_cancel_event: threading.Event | None = None
+        self._run_token = 0
 
         self._setup_ui()
         self._connect_signals()
@@ -1284,6 +1290,15 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             self._on_run()
 
     def _on_cancel(self) -> None:
+        # The run is a non-generator worker, so ``quit()`` cannot interrupt it;
+        # signal cooperative cancellation instead (the segmentation polls it per
+        # frame and raises before writing any output). Bump the run token so the
+        # in-flight worker's returned/errored callbacks become no-ops — otherwise
+        # a run that finishes its current frame before noticing the cancel would
+        # still write tracked_labels.tif and flip the status to "complete".
+        if self._run_cancel_event is not None:
+            self._run_cancel_event.set()
+        self._run_token += 1
         if self._run_worker is not None and hasattr(self._run_worker, "quit"):
             self._run_worker.quit()
         self._run_worker = None
@@ -1310,8 +1325,23 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         output_path = self._output_path()
         pos_dir = self._pos_dir
 
+        # A fresh cancel signal + token for this run. The worker closes over both
+        # so cancellation and supersession are scoped to exactly this invocation.
+        cancel_event = threading.Event()
+        self._run_cancel_event = cancel_event
+        self._run_token += 1
+        token = self._run_token
+
+        def _superseded() -> bool:
+            # A cancelled or restarted run bumps ``_run_token``; a worker whose
+            # token no longer matches must not touch the UI or output state.
+            return token != self._run_token
+
         def _done(result):
+            if _superseded():
+                return
             self._run_worker = None
+            self._run_cancel_event = None
             self._running = False
             self._set_run_idle()
             self._clear_progress()
@@ -1327,7 +1357,10 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             )
 
         def _error(exc):
+            if _superseded():
+                return
             self._run_worker = None
+            self._run_cancel_event = None
             self._running = False
             self._set_run_idle()
             self._clear_progress()
@@ -1348,8 +1381,13 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             foreground = tifffile.imread(str(foreground_path))
             nuc = tifffile.imread(str(nuc_path))
             result = segment_cells_divergence(
-                contours, foreground, nuc, params, progress_cb=_cb,
+                contours, foreground, nuc, params,
+                progress_cb=_cb, cancel_cb=cancel_event.is_set,
             )
+            # Poll once more before writing: a cancel that lands after the
+            # segmentation returns must still prevent the stale output write.
+            if cancel_event.is_set():
+                raise CancelledError("cell segmentation cancelled")
             output_path.parent.mkdir(parents=True, exist_ok=True)
             commit_labels(result.labels, output_path)
             n_labels = int(np.unique(result.labels[result.labels > 0]).size)

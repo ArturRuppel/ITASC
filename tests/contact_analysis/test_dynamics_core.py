@@ -209,3 +209,28 @@ def test_collective_tables_uniform_drift_is_aligned():
     np.testing.assert_allclose(collective["order_param"], [1.0])
     assert math.isnan(collective["corr_length_um"][0])
     np.testing.assert_allclose(collective["nn_distance_um"], [1.0])
+
+
+def test_collective_pooled_correlation_curve_is_normalized():
+    # A frame with real (non-zero) velocity fluctuations exercises the binned
+    # correlation path. C(r) is normalized by the per-frame variance, so the
+    # pair-count-weighted mean of C over the pooled curve is bounded and the
+    # smallest-separation bin is ~1 (fluctuations correlate with themselves).
+    xs, ys = np.meshgrid(np.arange(5.0), np.arange(5.0))
+    n = xs.size
+    rng = np.linspace(-0.5, 0.5, n)
+    inst = {
+        "frame": np.zeros(n, dtype=np.int64),
+        "cell_id": np.arange(n, dtype=np.int64),
+        "x_um": xs.ravel(),
+        "y_um": ys.ravel(),
+        "vx_um_per_s": 1.0 + rng,          # drift + structured fluctuation
+        "vy_um_per_s": np.zeros(n),
+    }
+    collective, curve = collective_tables(inst, min_cells=3)
+    assert curve["separation_um"].size > 0
+    assert curve["n_pairs"].sum() == n * (n - 1) // 2  # every pair counted once
+    corr = curve["corr"]
+    assert np.all(np.isfinite(corr))
+    assert abs(corr[0] - 1.0) < 0.5   # near-zero separation → self-correlation ~1
+    assert collective["n_cells"].tolist() == [n]

@@ -33,3 +33,20 @@ def test_cells_edited_fans_out_via_events(wired_stub) -> None:
     overlay.on_cells_edited.assert_called_once()
     stub._refresh_lineage_canvas_if_shown.assert_called_once_with()
     stub._refresh_candidate_gallery_if_shown.assert_called_once_with()
+
+
+def test_cells_edited_marks_session_dirty(wired_stub) -> None:
+    """Regression: a hand mask edit must set the unsaved-changes flag, so
+    deactivating correction prompts to save instead of silently discarding the
+    edit. The flag used to be inferred from a status substring that this path
+    never emits, so it stayed False."""
+    stub = wired_stub(
+        _validated_overlay=SimpleNamespace(on_cells_edited=MagicMock()),
+        validation_counter_lbl=object(),
+        correction_widget=SimpleNamespace(_selected_label=0),
+        _correction_dirty=False,
+    )
+
+    NucleusCorrectionWidget._on_cells_edited(stub, t=1, changed_ids={4})
+
+    assert stub._correction_dirty is True

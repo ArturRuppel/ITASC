@@ -25,13 +25,19 @@ __all__ = [
 ]
 
 
-def position_inputs_from_record(record: dict) -> PositionInputs:
+def position_inputs_from_record(
+    record: dict, params: Mapping[str, object] | None = None
+) -> PositionInputs:
     """Build :class:`PositionInputs` from a normalized catalogue record.
 
     ``pixel_size_um`` / ``time_interval_s`` are **global** build params: they are
-    taken only from the value stamped on the record (the Parameters panel's
-    px/Δt), never auto-resolved from a position's config or label TIFF tags.
-    Absent ⇒ ``None``.
+    read from the value stamped on the record (the Parameters panel's px/Δt),
+    falling back to the shared *params* mapping when the record omits them.
+    Threading *params* here keeps the value the build-param gate sees (via
+    :func:`record_build_params`, which also overlays *params*) identical to the
+    value ``compute_object_table`` actually receives through ``inputs`` — without
+    it, a ``params``-only pixel size passes the gate but reaches the shape/dynamics
+    cores as ``None``. Absent from both ⇒ ``None``.
     """
     out = record.get("contact_analysis_path")
     cell = record.get("cell_tracked_labels_path")
@@ -51,14 +57,28 @@ def position_inputs_from_record(record: dict) -> PositionInputs:
         position_dir=Path(position_dir),
         cell_labels_path=cell_path,
         nucleus_labels_path=nucleus_path,
-        pixel_size_um=_positive_float(record.get("pixel_size_um")),
-        time_interval_s=_positive_float(record.get("time_interval_s")),
+        pixel_size_um=_positive_float(_record_or_param(record, params, "pixel_size_um")),
+        time_interval_s=_positive_float(_record_or_param(record, params, "time_interval_s")),
         # The contacts artifact is a *produced* input — the contacts quantifier
         # writes it. The catalogue stamps its expected path on every position
         # whether or not it has been built yet, so gate on the file actually
         # existing: an unbuilt contacts product is not an available input.
         contact_analysis_path=Path(out) if out and Path(out).is_file() else None,
     )
+
+
+def _record_or_param(
+    record: dict, params: Mapping[str, object] | None, key: str
+) -> object:
+    """The record's value for *key*, falling back to shared *params*.
+
+    Record wins where present, mirroring ``run()``'s per-record stamping and
+    :func:`record_build_params`' gate precedence.
+    """
+    value = record.get(key)
+    if value is None and params is not None:
+        value = params.get(key)
+    return value
 
 
 def _positive_float(value: object) -> float | None:
@@ -128,7 +148,7 @@ def supported_quantities(
         if not quantifier.table_keys:
             continue
         for record in records:
-            inputs = position_inputs_from_record(record)
+            inputs = position_inputs_from_record(record, params)
             if quantifier.can_build(inputs) and not quantifier.missing_build_params(
                 record_build_params(quantifier, record, params)
             ):

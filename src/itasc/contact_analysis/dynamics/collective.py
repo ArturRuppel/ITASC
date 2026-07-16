@@ -20,6 +20,7 @@ into a single dataset-level curve. Pure NumPy; no I/O.
 from __future__ import annotations
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 #: Per-frame collective columns.
 COLLECTIVE_COLUMNS = ("frame", "n_cells", "order_param", "corr_length_um", "nn_distance_um")
@@ -48,7 +49,14 @@ def collective_tables(
     vy = instantaneous["vy_um_per_s"]
 
     per_frame = _per_frame_views(frames_all, x, y, vx, vy)
-    bin_width = _resolve_bin_width(corr_bin_um, per_frame)
+    # Median nearest-neighbour distance per frame — the frame's natural length
+    # scale. Computed once here and reused for BOTH the correlation bin-width
+    # default and the nn_distance_um column; the previous code computed this
+    # O(n log n) reduction twice per frame.
+    nn_by_frame = {
+        frame: _median_nn_distance(view[0]) for frame, view in per_frame.items()
+    }
+    bin_width = _resolve_bin_width(corr_bin_um, nn_by_frame)
 
     frames: list[int] = []
     n_cells: list[int] = []
@@ -65,7 +73,7 @@ def collective_tables(
     for frame, (pos_all, pos_v, vel) in per_frame.items():
         frames.append(frame)
         n_cells.append(pos_v.shape[0])
-        nn_dist.append(_median_nn_distance(pos_all))
+        nn_dist.append(nn_by_frame[frame])
         if pos_v.shape[0] < int(min_cells):
             order.append(np.nan)
             corr_len.append(np.nan)
@@ -107,11 +115,10 @@ def _per_frame_views(frames_all, x, y, vx, vy):
     return out
 
 
-def _resolve_bin_width(corr_bin_um, per_frame) -> float:
+def _resolve_bin_width(corr_bin_um, nn_by_frame) -> float:
     if corr_bin_um is not None and float(corr_bin_um) > 0:
         return float(corr_bin_um)
-    nn = [_median_nn_distance(pos_all) for pos_all, _, _ in per_frame.values()]
-    nn = [v for v in nn if np.isfinite(v) and v > 0]
+    nn = [v for v in nn_by_frame.values() if np.isfinite(v) and v > 0]
     return float(np.median(nn)) if nn else 1.0
 
 
@@ -133,18 +140,27 @@ def _velocity_correlation(pos: np.ndarray, dV: np.ndarray, bin_width: float, var
     dots = np.einsum("ij,ij->i", dV[iu], dV[ju])
     bins = np.floor(r / bin_width).astype(np.int64)
 
-    dot_by_bin: dict[int, float] = {}
-    count_by_bin: dict[int, int] = {}
-    for b, d in zip(bins.tolist(), dots.tolist()):
-        dot_by_bin[b] = dot_by_bin.get(b, 0.0) + d
-        count_by_bin[b] = count_by_bin.get(b, 0) + 1
+    # Accumulate per-bin dot sums and pair counts with bincount (C-level) instead
+    # of a Python loop over all n·(n−1)/2 pairs, which dominated the per-frame
+    # cost on dense frames. bincount sums weights in array order, i.e. the exact
+    # accumulation order the previous loop used, so the result is unchanged.
+    if bins.size:
+        n_bins = int(bins.max()) + 1
+        dot_sums = np.bincount(bins, weights=dots, minlength=n_bins)
+        pair_counts = np.bincount(bins, minlength=n_bins)
+        populated = np.flatnonzero(pair_counts)
+    else:
+        dot_sums = np.zeros(0, dtype=float)
+        pair_counts = np.zeros(0, dtype=np.int64)
+        populated = np.zeros(0, dtype=np.int64)
 
-    order = sorted(dot_by_bin)
+    order = [int(b) for b in populated]  # ascending
+    dot_by_bin = {b: float(dot_sums[b]) for b in order}
+    count_by_bin = {b: int(pair_counts[b]) for b in order}
     centers = np.asarray([(b + 0.5) * bin_width for b in order], dtype=float)
     denom = var if var > 0 else np.nan
     C = np.asarray([dot_by_bin[b] / count_by_bin[b] / denom for b in order], dtype=float)
-    counts = {b: count_by_bin[b] for b in order}
-    return centers, C, counts, dot_by_bin
+    return centers, C, count_by_bin, dot_by_bin
 
 
 def pooled_corr_length(corr_curve: dict[str, np.ndarray]) -> float:
@@ -199,8 +215,11 @@ def _median_nn_distance(pos: np.ndarray) -> float:
     n = pos.shape[0]
     if n < 2:
         return float("nan")
-    # Pairwise distances; small per-frame cell counts make this cheap and exact.
-    diff = pos[:, None, :] - pos[None, :, :]
-    dist = np.hypot(diff[..., 0], diff[..., 1])
-    np.fill_diagonal(dist, np.inf)
-    return float(np.median(dist.min(axis=1)))
+    # Each point's nearest-neighbour distance via a KD-tree: query the two closest
+    # points (the first is the point itself at distance 0) and take the second.
+    # O(n log n) instead of the O(n^2) full pairwise matrix — the dense monolayers
+    # this targets carry thousands of cells per frame. Equivalent to the previous
+    # diagonal-masked row-min (coincident points still give a 0 NN distance).
+    tree = cKDTree(pos)
+    dists, _ = tree.query(pos, k=2)
+    return float(np.median(dists[:, 1]))

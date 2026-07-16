@@ -275,6 +275,7 @@ def segment_cells_divergence(
     contours_clean_override: np.ndarray | None = None,
     foreground_mask_override: np.ndarray | None = None,
     progress_cb: Callable[[str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
 ) -> CellDivergenceResult:
     """Run the unary-only divergence pipeline and return all intermediates.
 
@@ -409,6 +410,7 @@ def segment_cells_divergence(
             nuc, foreground_mask, contours_clean, icm_params,
             foreground_scores=foreground_clean,
             progress_cb=lambda m: _report(str(m)),
+            cancel_cb=cancel_cb,
         )
         labels = labels.astype(np.uint32, copy=False)
 

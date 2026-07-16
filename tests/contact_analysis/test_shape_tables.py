@@ -225,6 +225,35 @@ def test_pooled_table_has_no_class_label(tmp_path, monkeypatch):
     assert "class_label" not in df.columns
 
 
+def test_shared_params_pixel_size_reaches_compute_when_record_omits_it(tmp_path):
+    """Regression: the documented headless contract ``aggregate(..., params={...})``
+    supplies pixel size via the shared params bar, not on each record. The build
+    gate consults params, so the value must also reach the shape core through
+    ``inputs`` — otherwise the gate passes but ``compute_object_shape`` receives
+    ``None`` and raises. Uses the *real* CellShapeQuantifier (no stub)."""
+    import tifffile
+
+    pdir = tmp_path / "ctrl" / "p1"
+    pdir.mkdir(parents=True)
+    labels = np.zeros((2, 8, 8), dtype=np.uint16)
+    labels[:, 1:4, 1:4] = 1  # a 3×3 = 9 px cell
+    labels[:, 1:4, 5:8] = 2
+    cell_path = pdir / "cells.tif"
+    tifffile.imwrite(cell_path, labels)
+    rec = {
+        "columns": {"condition": "ctrl", "position_id": "p1"},
+        "position_path": pdir,
+        "cell_tracked_labels_path": cell_path,
+        # deliberately NO "pixel_size_um" on the record — only in params below
+    }
+
+    df = build_table("cell_shape", [rec], params={"pixel_size_um": 0.5})
+
+    # 4 rows (2 cells × 2 frames), each 9 px × (0.5 µm)² = 2.25 µm².
+    assert len(df) == 4
+    assert set(df["cell_shape.area_um2"].round(6)) == {2.25}
+
+
 # --------------------------------------------------------- materialized views
 
 

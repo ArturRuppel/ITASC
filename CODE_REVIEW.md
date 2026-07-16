@@ -18,12 +18,26 @@ synthesis pass identified cross-cutting themes.
 **Outcome:** 58 candidate findings → **3 refuted** → **55 kept**
 (42 independently confirmed, 6 plausible, 7 unverified-architecture).
 
-> **Update — three silent-corruption findings fixed on this branch.** The three
-> highest-value "wrong results, no error" bugs have been fixed with regression
-> tests: **H1** validated-track fragmentation on solver-id collision
-> (`reseed.py`), **M13** zero-IoU candidate hijack (`validation_nodes.py`), and
-> **M2** silent T↔Z transpose of 4-D input (`shape.py`, now warns + accepts an
-> explicit `z_axis`). The remaining findings below are unaddressed.
+> **Update — all 7 high-severity findings fixed on this branch, plus 3 others.**
+> Fixed with regression tests (full suite green, 1209 passed):
+> - **Correctness:** validated-track fragmentation on solver-id collision
+>   (`reseed.py`); zero-IoU candidate hijack (`validation_nodes.py`); silent T↔Z
+>   transpose of 4-D input (`shape.py`, now warns + accepts an explicit
+>   `z_axis`); headless `aggregate(params={...})` delivering `None` pixel-size/Δt
+>   (`records.py`); stale contact-analysis overlays after Recompute
+>   (`contact_analysis_widget.py`); unsaved nucleus-correction edits silently
+>   discarded (`nucleus_correction_widget.py`, dirty flag now set at every
+>   mutation); "Cancel" that didn't cancel and could double-write output
+>   (`cell_workflow_widget.py`, now cooperative cancellation + a superseded-worker
+>   guard, threaded through `segment_cells_divergence`/`initialize_icm`).
+> - **Performance:** geodesic label assignment held every frame's unaries in RAM
+>   (~60 GB) — now a streaming per-frame argmin (`cell_label_icm.py`); O(N²)
+>   pure-Python collective-motion metrics — now vectorized bincount + KD-tree,
+>   byte-identical output (`collective.py`).
+> - **Adjacent crash fixed:** all-zero nucleus stack `IndexError`
+>   (`cell_label_icm.py`).
+>
+> The remaining medium/low findings below are unaddressed.
 
 | Severity | Count | | Dimension | Count |
 |---|---|---|---|---|

@@ -631,6 +631,12 @@ class ContactAnalysisWidget(QWidget):
         # the label TIFFs are inputs the build does not touch, so they stay cached.
         if built:
             self._cached_contact_analysis = None
+            # A rebuild overwrites the .h5 in place, so the display signature
+            # (path + display options) is unchanged and _show_from_disk's
+            # "already shown" fast path would skip re-adding the fresh overlays,
+            # leaving stale edges/tracks/labels on screen. Invalidate the shown
+            # signature so the fresh data is actually re-rendered.
+            self._displayed_contact_analysis_signature = None
         self._update_status()
         self._refresh_discovery_status()
         self._refresh_files_tracker()

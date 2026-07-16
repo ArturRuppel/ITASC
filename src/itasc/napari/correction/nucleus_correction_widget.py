@@ -624,6 +624,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         layer = self._correction_tracked_layer()
         if layer is not None:
             layer.data = remapped
+            self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         if self._pos_dir is not None and old_to_new:
             remap_validated_tracks(self._pos_dir, old_to_new)
         self.events.stack_relabeled.emit()
@@ -872,6 +873,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             frame, assignments, protected_mask,
             greedy=self.extend_greedy_overwrite_check.isChecked(),
         )
+        self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         layer.refresh()
         self._refresh_correction_label_visuals_for_edit(
             result.target_frame,
@@ -1009,6 +1011,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         frame[paintable] = source_id
 
         self.correction_widget._record_history(layer, t, before)
+        self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         layer.refresh()
 
     # ── candidate gallery (clickable extend / swap thumbnails) ─────────────────
@@ -1132,6 +1135,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         )
         if not changed_ids:
             return set()
+        self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         layer.refresh()
         self._refresh_correction_label_visuals_for_edit(target_frame, changed_ids)
         return changed_ids
@@ -1168,6 +1172,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             distance_weight=float(self.extend_distance_weight_spin.value()),
         )
         layer.data = result.stack
+        self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         self._refresh_correction_label_visuals_for_changed_frames(before, result.stack)
         self.events.tracks_rebuilt.emit()
         self._correction_status(
@@ -1203,6 +1208,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
 
         if not result.changed_pixels:
             self._correction_status("No unvalidated labels found."); return
+        self._correction_dirty = True  # unsaved edit (see _on_cells_edited)
         layer.refresh()
         self._deselect_if_selection_gone()
         self.events.stack_relabeled.emit()
@@ -2076,6 +2082,12 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
     def _on_cells_edited(self, t: int, changed_ids: set[int]) -> None:
         """A hand mask edit (draw / merge / relabel / redraw / fill / split)
         landed — announce it; the wired listeners repaint themselves."""
+        # Mark the session dirty authoritatively at the mutation, not by
+        # inferring it from a status-message substring: hand edits (and extend /
+        # swap) never emit the word "unsaved", so the old heuristic missed them
+        # and let real correction work be discarded on deactivate without a
+        # save prompt. Every layer-mutating handler sets this flag the same way.
+        self._correction_dirty = True
         self.events.labels_edited.emit(t, changed_ids)
 
     def _apply_overlay_edit(self, t: int, changed_ids: set[int]) -> None:
