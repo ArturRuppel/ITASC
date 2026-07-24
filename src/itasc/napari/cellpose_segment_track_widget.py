@@ -464,6 +464,12 @@ class CellposeSegmentTrackWidget(QWidget):
         )
         for b in (self.ch2_params_btn, self.ch2_preview_btn, self.ch2_run_btn):
             stage_header_action_button(b, "cellpose")
+        # Remember each action button's idle tooltip so ``_set_running`` can
+        # restore it: while a run is active the button becomes a Cancel control,
+        # and without this it would keep the "Cancel." tooltip once idle again.
+        self._default_tooltips = {
+            key: btn.toolTip() for key, btn in self._btn_for_key().items()
+        }
         self.ch2_section = self._build_ch2_params_section()
         self.ch2_section.set_header_visible(False)
         self.ch2_section.collapse()
@@ -1568,9 +1574,10 @@ class CellposeSegmentTrackWidget(QWidget):
     }
 
     def _set_running(self, key: str | None) -> None:
-        # restore all glyphs first
+        # restore all glyphs and idle tooltips first
         for k, btn in self._btn_for_key().items():
             btn.setText(self._DEFAULT_GLYPHS[k])
+            btn.setToolTip(self._default_tooltips[k])
         self._running = key
         if key is None:
             self._cancel_requested = False

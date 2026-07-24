@@ -782,6 +782,34 @@ def test_set_running_swaps_glyph_to_cancel_for_each_action():
     w.deleteLater()
 
 
+def test_set_running_restores_idle_tooltip_after_cancel():
+    # The active button becomes a Cancel control while a run is live; once idle
+    # it must show its own action tooltip again, not a stale "Cancel.". Force the
+    # gate ready so the active button stays enabled (the real-run case the bug
+    # showed in) instead of the gate overriding its tooltip with a reason.
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    w._model_ready = lambda: True
+    w._channel_present = lambda which: True
+    w._both_inputs = lambda: True
+    w._ch1_masks_available = lambda: True
+    w.gate.recompute()
+    for key, btn in (
+        ("ch1_preview", w.ch1_preview_btn),
+        ("ch1_seg", w.ch1_seg_btn),
+        ("ch1_track", w.ch1_track_btn),
+        ("ch2_preview", w.ch2_preview_btn),
+        ("ch2_run", w.ch2_run_btn),
+    ):
+        idle = btn.toolTip()
+        assert idle and idle != "Cancel."
+        w._set_running(key)
+        assert btn.toolTip() == "Cancel."
+        w._set_running(None)
+        assert btn.toolTip() == idle
+    w.deleteLater()
+
+
 def test_factory_returns_widget():
     QApplication.instance() or QApplication([])
     w = stw.make_cellpose_segment_track_widget(_FakeViewer())
