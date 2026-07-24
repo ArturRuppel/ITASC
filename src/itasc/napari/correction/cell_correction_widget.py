@@ -414,18 +414,26 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             lineage_panel = self._lineage_canvas.panel()
             lineage_panel.setMinimumHeight(140)
 
-        # Right column of the body: the "Inspect cell" box on top with the track
-        # navigator (when present) filling the height beneath it. Pairing the
-        # tall accordion with the tall icon toolbar is what stops the toolbar
-        # from stranding a block of dead space beside a lone Inspect box — the
-        # same toolbar-beside-accordion arrangement the nucleus widget uses.
+        # Right column of the body: the "Inspect cell" box on top, then the
+        # status line and Scope selector directly beneath it, then the track
+        # navigator (when present) filling the height. Pairing the tall
+        # accordion with the tall icon toolbar is what stops the toolbar from
+        # stranding a block of dead space beside a lone Inspect box — the same
+        # toolbar-beside-accordion arrangement the nucleus widget uses.
+        self.correction_status_lbl = _make_status()
         body_right = QWidget()
         right_lay = QVBoxLayout(body_right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(6)
         right_lay.addWidget(self.correction_widget)
+        right_lay.addWidget(self.correction_status_lbl)
+        right_lay.addWidget(self.scope_row)
         if lineage_panel is not None:
             right_lay.addWidget(lineage_panel, stretch=1)
+        else:
+            # No accordion to absorb the toolbar's height, so a trailing stretch
+            # keeps the footer pinned under the Inspect box.
+            right_lay.addStretch(1)
 
         body_row = QHBoxLayout()
         body_row.setContentsMargins(0, 0, 0, 0)
@@ -434,10 +442,8 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         body_row.addWidget(body_right, stretch=1)
         active_lay.addLayout(body_row)
 
-        self.correction_status_lbl = _make_status()
-        active_lay.addWidget(self.correction_status_lbl)
-
-        active_lay.addWidget(self.scope_row)
+        # The attribution / citation disclaimer stays pinned full-width at the
+        # bottom of the panel, below the body row.
         active_lay.addWidget(self.correction_widget._attrib_lbl)
 
         self.active_content.setVisible(False)
