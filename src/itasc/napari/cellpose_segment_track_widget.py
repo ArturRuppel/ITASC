@@ -1022,7 +1022,11 @@ class CellposeSegmentTrackWidget(QWidget):
         self._cancel_requested = False
         stack = np.asarray(source)  # already canonical (T, Z, Y, X)
         t, z = self._current_tz(int(stack.shape[0]), int(stack.shape[1]))
-        if self._stream is None:
+        # Re-allocate when there's no stream yet *or* the existing accumulators
+        # were sized to a different source (e.g. Channel 1 was swapped to an
+        # image of another resolution): otherwise the single-frame result won't
+        # fit the stale slot and the write below raises a broadcast error.
+        if self._stream is None or self._stream["masks"].shape != tuple(stack.shape):
             self._init_stream(stack)
             self._push_stream_layers()
         st = self._stream
