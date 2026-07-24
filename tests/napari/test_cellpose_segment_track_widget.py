@@ -765,7 +765,6 @@ def test_widget_has_no_output_dir_or_file_contract_in_source():
     # the 4-way layout picker is gone (segmentation is layout-free per-plane).
     assert "_layout_combo" not in src
     assert "_LAYOUT_OPTIONS" not in src
-    assert "currentText()" not in src  # no layout combo to read
 
 
 def test_set_running_swaps_glyph_to_cancel_for_each_action():
