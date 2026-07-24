@@ -343,6 +343,10 @@ def test_main_widget_state_round_trips_cellpose():
     w = main_mod.ITASCMainWidget(_fake_viewer())
     cellpose_state = {
         "nucleus": {
+            # Per-channel model selection is part of the state contract; the
+            # nucleus exercises the non-default "Custom" path with its own path.
+            "model": "Custom",
+            "custom_model": "nuc_model.pth",
             "layout": "3D+t",
             "do_3d": False,
             "anisotropy": 1.25,
@@ -350,7 +354,14 @@ def test_main_widget_state_round_trips_cellpose():
             "min_size": 9,
             "gamma": 1.2,
         },
-        "cell": {"layout": "3D+t", "diameter": 17.0, "min_size": 4, "gamma": 0.9},
+        "cell": {
+            "model": "Cellpose-SAM",
+            "custom_model": "",
+            "layout": "3D+t",
+            "diameter": 17.0,
+            "min_size": 4,
+            "gamma": 0.9,
+        },
     }
     w.set_state({"cellpose": cellpose_state})
     got = w.get_state()
