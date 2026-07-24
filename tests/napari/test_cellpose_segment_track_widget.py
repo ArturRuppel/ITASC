@@ -61,14 +61,28 @@ class _FakeViewer:
         self.layers = _LayerCollection()
         self.dims = SimpleNamespace(
             current_step=(0, 0),
-            events=SimpleNamespace(current_step=SimpleNamespace(connect=lambda cb: None)),
+            events=SimpleNamespace(
+                current_step=SimpleNamespace(
+                    connect=lambda cb: None, disconnect=lambda cb: None
+                )
+            ),
         )
+        # The correction widget appends its drag handler here directly (the
+        # append in _register_callbacks is not hasattr-guarded), so it must be a
+        # real list, not absent.
+        self.mouse_drag_callbacks: list = []
 
     def add_labels(self, data, *, name, **kwargs):
         self.layers[name] = SimpleNamespace(data=np.asarray(data), name=name)
         return self.layers[name]
 
     add_image = add_labels
+
+    def add_shapes(self, data=None, *, name, **kwargs):
+        # The correction draw layer: only its .visible is touched, and it is
+        # looked up / removed by name via the layer collection.
+        self.layers[name] = SimpleNamespace(name=name, data=data, visible=True)
+        return self.layers[name]
 
 
 @pytest.fixture
@@ -917,6 +931,10 @@ def test_spawn_intensity_frame_uses_prob_layer_sharing_the_tag():
     prob = np.arange(2 * 5 * 5, dtype=np.float32).reshape(2, 5, 5)
     viewer.layers["[Channel 1] prob"] = SimpleNamespace(data=prob, name="[Channel 1] prob")
     labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] masks")
+    # The bound layer must live in the viewer's list (as it would in real napari,
+    # where selection.active can only point at an existing layer) — the corrector
+    # treats a binding that has fallen out of the list as absent.
+    viewer.layers[labels.name] = labels
     viewer.layers.selection.active = labels
     w.cell_correction.active_btn.setChecked(True)  # binds _active_bound_layer
 
@@ -933,6 +951,9 @@ def test_spawn_intensity_frame_none_without_matching_prob_layer():
     viewer = _FakeViewer()
     w = stw.CellposeSegmentTrackWidget(viewer)
     labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 2] masks")
+    # Registered as a real bound layer so the fallback is exercised for the right
+    # reason (no matching prob layer), not because the binding looks absent.
+    viewer.layers[labels.name] = labels
     viewer.layers.selection.active = labels
     w.cell_correction.active_btn.setChecked(True)
 
