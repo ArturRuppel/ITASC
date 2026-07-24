@@ -390,19 +390,6 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         active_lay.setContentsMargins(0, 0, 0, 0)
         active_lay.setSpacing(6)
 
-        body_row = QHBoxLayout()
-        body_row.setContentsMargins(0, 0, 0, 0)
-        body_row.setSpacing(6)
-        body_row.addWidget(self.toolbar)
-        body_row.addWidget(self.correction_widget, stretch=1)
-        active_lay.addLayout(body_row)
-
-        self.correction_status_lbl = _make_status()
-        active_lay.addWidget(self.correction_status_lbl)
-
-        active_lay.addWidget(self.scope_row)
-        active_lay.addWidget(self.correction_widget._attrib_lbl)
-
         # ── Track-list navigator (full-editing only) ──────────────────
         # Reuses the nucleus workflow's swimlane accordion: it needs a plain
         # (T, Y, X)-ish label stack, not an Ultrack DB, so it is directly
@@ -410,6 +397,7 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         # this standalone tool (the active layer is whatever the user bound),
         # so the film-strip band stays empty; the per-track presence/validated
         # bars and click-to-jump navigation still work fully.
+        lineage_panel = None
         if self._full_editing:
             self._lineage_canvas = LineageCanvasController(
                 self.viewer,
@@ -423,9 +411,34 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
                 on_activate=self._navigate_to_cell_from_lineage,
                 validated_tracks_provider=lambda: self._validated_tracks,
             )
-            panel = self._lineage_canvas.panel()
-            panel.setMinimumHeight(140)
-            active_lay.addWidget(panel, stretch=1)
+            lineage_panel = self._lineage_canvas.panel()
+            lineage_panel.setMinimumHeight(140)
+
+        # Right column of the body: the "Inspect cell" box on top with the track
+        # navigator (when present) filling the height beneath it. Pairing the
+        # tall accordion with the tall icon toolbar is what stops the toolbar
+        # from stranding a block of dead space beside a lone Inspect box — the
+        # same toolbar-beside-accordion arrangement the nucleus widget uses.
+        body_right = QWidget()
+        right_lay = QVBoxLayout(body_right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(6)
+        right_lay.addWidget(self.correction_widget)
+        if lineage_panel is not None:
+            right_lay.addWidget(lineage_panel, stretch=1)
+
+        body_row = QHBoxLayout()
+        body_row.setContentsMargins(0, 0, 0, 0)
+        body_row.setSpacing(6)
+        body_row.addWidget(self.toolbar)
+        body_row.addWidget(body_right, stretch=1)
+        active_lay.addLayout(body_row)
+
+        self.correction_status_lbl = _make_status()
+        active_lay.addWidget(self.correction_status_lbl)
+
+        active_lay.addWidget(self.scope_row)
+        active_lay.addWidget(self.correction_widget._attrib_lbl)
 
         self.active_content.setVisible(False)
         group_lay.addWidget(self.active_content)
