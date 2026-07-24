@@ -139,6 +139,57 @@ def test_get_model_uses_cpu_when_cuda_unavailable(monkeypatch):
     assert received_kwargs["use_bfloat16"] is False
 
 
+def test_set_pretrained_model_uses_custom_path_and_resets_cache(monkeypatch, tmp_path):
+    r = _runner()
+    received = []
+    import cellpose.models as models
+
+    class _Probe:
+        def __init__(self, **kwargs):
+            received.append(kwargs)
+
+    monkeypatch.setattr(models, "CellposeModel", _Probe)
+    monkeypatch.setattr(r, "_cuda_available", lambda: False)
+    custom = tmp_path / "custom_model.pt"
+    custom.write_bytes(b"fake")
+
+    first = r.get_model()
+    r.set_pretrained_model(custom)
+    second = r.get_model()
+    third = r.get_model()
+
+    assert first is not second
+    assert second is third
+    assert received[0]["pretrained_model"] == "cpsam"
+    assert received[1]["pretrained_model"] == str(custom)
+    assert r.selected_pretrained_model() == str(custom)
+
+
+def test_set_pretrained_model_blank_restores_default_and_resets_cache(monkeypatch, tmp_path):
+    r = _runner()
+    received = []
+    import cellpose.models as models
+
+    class _Probe:
+        def __init__(self, **kwargs):
+            received.append(kwargs)
+
+    monkeypatch.setattr(models, "CellposeModel", _Probe)
+    monkeypatch.setattr(r, "_cuda_available", lambda: False)
+    custom = tmp_path / "custom_model.pt"
+    custom.write_bytes(b"fake")
+
+    r.set_pretrained_model(custom)
+    custom_model = r.get_model()
+    r.set_pretrained_model("")
+    default_model = r.get_model()
+
+    assert custom_model is not default_model
+    assert received[0]["pretrained_model"] == str(custom)
+    assert received[1]["pretrained_model"] == "cpsam"
+    assert r.selected_pretrained_model() == "cpsam"
+
+
 def test_get_model_uses_gpu_when_cuda_available(monkeypatch):
     r = _runner()
     received_kwargs = {}

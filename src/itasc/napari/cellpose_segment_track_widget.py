@@ -35,18 +35,26 @@ fill-holes / fragment cleanup, and a greedy retracker on Q/E.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import napari
 import numpy as np
 import tifffile
 from napari.layers import Image, Labels
 from napari.qt.threading import thread_worker
-from qtpy.QtCore import Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
+    QButtonGroup,
+    QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
+    QPushButton,
+    QScrollArea,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -65,6 +73,7 @@ from itasc.napari.ui_style import (
     status_label,
 )
 from itasc.napari.widgets import CollapsibleSection
+from itasc.napari.cellpose_folder_panel import CellposeFolderPanel
 from itasc.napari.correction._correction_utils import frame_view_2d
 from itasc.napari.correction.cell_correction_widget import CellCorrectionWidget
 from itasc.cellpose import cellpose_runner, native_masks, track_laptrack
@@ -78,6 +87,8 @@ logger = logging.getLogger(__name__)
 # anchor that is segmented + tracked; Channel 2 (optional) is flowed onto it.
 _CH1_LABEL = "Channel 1"
 _CH2_LABEL = "Channel 2"
+_MODEL_CPSAM = "Cellpose-SAM"
+_MODEL_CUSTOM = "Custom"
 
 
 # ---------------------------------------------------------------------------
@@ -342,6 +353,7 @@ class CellposeSegmentTrackWidget(QWidget):
         self._stream: dict | None = None
 
         self._setup_ui()
+        self._apply_model_selection()
         self._connect_signals()
         self._register_gate_controls()
         self._progress_signal.connect(self._progress)
@@ -353,10 +365,47 @@ class CellposeSegmentTrackWidget(QWidget):
 
     # ------------------------------------------------------------------ UI
     def _setup_ui(self) -> None:
-        root = QVBoxLayout(self)
+        # The whole surface lives inside a vertical scroll area so a short dock
+        # scrolls rather than clipping the params / corrector / folder list. The
+        # named children are parented under ``content`` (not ``self``) but stay
+        # reachable as attributes, so the widget's API is unchanged.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        outer.addWidget(scroll)
+        content = QWidget()
+        # Preferred (not Expanding) vertically: with ``setWidgetResizable`` the
+        # scroll area sizes ``content`` to fill the viewport, and any slack would
+        # otherwise be handed to the child rows, stretching them. Pin the layout
+        # to the top and cap it with a trailing stretch so the sections keep their
+        # natural height and the extra space collects at the bottom — matching the
+        # full app's scroll body (see ``main_widget`` scroll_widget setup).
+        content.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        scroll.setWidget(content)
+
+        root = QVBoxLayout(content)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(6)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        root.setAlignment(Qt.AlignTop)
+
+        # ── Model selector ────────────────────────────────────────────
+        # Scoped to the standalone itasc-cellpose surface; the integrated
+        # CellposeWidget keeps using Cellpose-SAM until the full distro gets its
+        # own model-selection pass.
+        root.addLayout(self._build_model_row())
+
+        # ── Source toggle: Layers (bind viewer layers, today's behavior) vs
+        # Folders (walk a project on disk). The toggle swaps only this I/O
+        # header — the Channel 1/2 param sections, actions and corrector below
+        # are shared and untouched. The discovered list persists across a flip.
+        root.addLayout(self._build_mode_toggle())
+        self.folder_panel = CellposeFolderPanel(self)
+        self.folder_panel.positionActivated.connect(self._on_folder_position)
+        self.folder_panel.saveRequested.connect(self._on_folder_save)
+        self.folder_panel.setVisible(False)
+        root.addWidget(self.folder_panel)
 
         # ── Channel 1 row (anchor: segment + track) ──
         # One row: the "Channel 1" pill, then its source pill (load from the active
@@ -458,6 +507,10 @@ class CellposeSegmentTrackWidget(QWidget):
         self.progress_bar = _make_progress()
         root.addWidget(self.progress_bar)
 
+        # Trailing stretch collects leftover vertical space so the sections above
+        # keep their natural height instead of stretching to fill the viewport.
+        root.addStretch()
+
     def _make_source_button(self, label, on_load_layer):
         """The single source pill for a channel → ``layer_btn``.
 
@@ -541,6 +594,27 @@ class CellposeSegmentTrackWidget(QWidget):
         )
         return CollapsibleSection("Channel 2 & tracking parameters", body, expanded=False)
 
+    def _build_model_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        row.addWidget(QLabel("Model:"))
+        self.model_combo = QComboBox()
+        self.model_combo.addItems([_MODEL_CPSAM, _MODEL_CUSTOM])
+        self.model_combo.setCurrentText(_MODEL_CPSAM)
+        self.model_combo.setToolTip("Choose the Cellpose model used for segmentation.")
+        row.addWidget(self.model_combo)
+        self.custom_model_edit = QLineEdit()
+        self.custom_model_edit.setPlaceholderText("custom Cellpose model file")
+        self.custom_model_edit.setVisible(False)
+        row.addWidget(self.custom_model_edit, 1)
+        self.custom_model_browse_btn = QPushButton("Browse...")
+        self.custom_model_browse_btn.setVisible(False)
+        self.custom_model_browse_btn.clicked.connect(self._on_browse_custom_model)
+        row.addWidget(self.custom_model_browse_btn)
+        row.addStretch(1)
+        return row
+
     @staticmethod
     def _stage_label(text: str) -> QLabel:
         return stage_header_label(QLabel(text), "cellpose")
@@ -556,13 +630,102 @@ class CellposeSegmentTrackWidget(QWidget):
         row.addStretch(1)
         return row
 
+    def _build_mode_toggle(self) -> QHBoxLayout:
+        """A two-button exclusive toggle: bind from viewer *Layers* vs *Folders*."""
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        row.addWidget(QLabel("Source:"))
+        self.mode_layers_btn = QToolButton()
+        self.mode_layers_btn.setText("Layers")
+        self.mode_layers_btn.setCheckable(True)
+        self.mode_layers_btn.setChecked(True)
+        self.mode_layers_btn.setToolTip(
+            "Bind each channel to a live image layer in the viewer (⧉ pills)."
+        )
+        self.mode_folders_btn = QToolButton()
+        self.mode_folders_btn.setText("Folders")
+        self.mode_folders_btn.setCheckable(True)
+        self.mode_folders_btn.setToolTip(
+            "Walk a project on disk: discover position folders, select one to "
+            "load + bind its images, then save the masks back into that folder."
+        )
+        group = QButtonGroup(self)
+        group.setExclusive(True)
+        group.addButton(self.mode_layers_btn)
+        group.addButton(self.mode_folders_btn)
+        self.mode_folders_btn.toggled.connect(self._on_mode_toggled)
+        row.addWidget(self.mode_layers_btn)
+        row.addWidget(self.mode_folders_btn)
+        row.addStretch(1)
+        return row
+
+    def _on_mode_toggled(self, folders: bool) -> None:
+        """Show the folder panel in Folders mode; the shared body stays put."""
+        self.folder_panel.setVisible(folders)
+
     # -------------------------------------------------------------- signals
     def _connect_signals(self) -> None:
+        self.model_combo.currentTextChanged.connect(self._on_model_mode_changed)
+        self.custom_model_edit.editingFinished.connect(self._on_custom_model_changed)
         self.ch1_preview_btn.clicked.connect(lambda: self._on_ch1("preview"))
         self.ch1_seg_btn.clicked.connect(lambda: self._on_ch1("seg"))
         self.ch1_track_btn.clicked.connect(lambda: self._on_ch1("track"))
         self.ch2_preview_btn.clicked.connect(lambda: self._on_ch2("preview"))
         self.ch2_run_btn.clicked.connect(lambda: self._on_ch2("run"))
+
+    def _on_model_mode_changed(self, mode: str) -> None:
+        custom = mode == _MODEL_CUSTOM
+        self.custom_model_edit.setVisible(custom)
+        self.custom_model_browse_btn.setVisible(custom)
+        self._apply_model_selection()
+        self.gate.recompute()
+
+    def _on_custom_model_changed(self) -> None:
+        self._apply_model_selection()
+        self.gate.recompute()
+
+    def _on_browse_custom_model(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Cellpose model",
+            filter="Cellpose models (*.pt *.pth *.npy);;All files (*)",
+        )
+        if path:
+            self.custom_model_edit.setText(path)
+            self._on_custom_model_changed()
+
+    def _selected_model_path(self) -> Path | None:
+        if self.model_combo.currentText() != _MODEL_CUSTOM:
+            return None
+        text = self.custom_model_edit.text().strip()
+        return Path(text) if text else None
+
+    def _model_ready(self) -> bool:
+        if self.model_combo.currentText() != _MODEL_CUSTOM:
+            return True
+        path = self._selected_model_path()
+        return path is not None and path.is_file()
+
+    def _model_not_ready_reason(self) -> str:
+        path = self._selected_model_path()
+        if path is None:
+            return "Select a custom Cellpose model file first."
+        return f"Custom Cellpose model not found: {path}"
+
+    def _apply_model_selection(self) -> bool:
+        path = self._selected_model_path()
+        if path is not None:
+            if not path.is_file():
+                return False
+            cellpose_runner.set_pretrained_model(path)
+            return True
+        cellpose_runner.set_pretrained_model(cellpose_runner.DEFAULT_PRETRAINED_MODEL)
+        return True
+
+    def _model_label(self) -> str:
+        path = self._selected_model_path()
+        return path.name if path is not None else "Cellpose-SAM"
 
     def _on_ch1(self, kind: str) -> None:
         if self._running is not None:
@@ -628,6 +791,129 @@ class CellposeSegmentTrackWidget(QWidget):
             if which == 1:
                 msg += " Preview a frame or Segment the full stack."
             self._status(msg)
+
+    # ------------------------------------------------------- folder mode
+    def _on_folder_position(self, entry) -> None:
+        """A position was selected: clear stale results, load + bind its images.
+
+        Reuses the same ``_set_channel_layer`` seam the source pills use, so the
+        body below is none the wiser about which mode fed it — mirroring the
+        app's ``refresh(pos_dir)`` drive.
+        """
+        if entry is None:
+            return
+        # A fresh position starts clean: drop the previous position's result and
+        # input layers (all ``[Channel N] …``) and the streaming accumulators so
+        # segmentation re-allocates for the new stack.
+        self._clear_tagged_layers()
+        self._stream = None
+        try:
+            self._load_input_layer(1, entry["ch1"])
+            if entry.get("ch2") is not None:
+                self._load_input_layer(2, entry["ch2"])
+            else:
+                self._set_channel_layer(2, None)
+            loaded_masks = self._load_saved_masks(entry)
+        except Exception as exc:
+            self._status(f"Error loading position: {exc}")
+            logger.exception("folder-mode load error", exc_info=exc)
+            return
+        if loaded_masks:
+            self._status(
+                f"Loaded {entry['rel']} with existing masks "
+                f"({', '.join(loaded_masks)}). Correct, then Save masks to folder."
+            )
+        else:
+            self._status(f"Loaded {entry['rel']}. Segment / track, then Save masks to folder.")
+
+    def _load_input_layer(self, which: int, path) -> None:
+        """Load a channel's input ``.tif`` as an image layer and bind it."""
+        arr = np.asarray(tifffile.imread(str(path)))
+        name = _layer_name(_CH1_LABEL if which == 1 else _CH2_LABEL, "input")
+        if name in self.viewer.layers:
+            self.viewer.layers[name].data = arr
+            layer = self.viewer.layers[name]
+        else:
+            layer = self.viewer.add_image(arr, name=name)
+        self._set_channel_layer(which, layer)
+
+    def _load_saved_masks(self, entry) -> list[str]:
+        """Load any masks already on disk for this position as ``tracked`` layers.
+
+        Reads each output name that exists under the position folder into a
+        ``[Channel N] tracked`` Labels layer — the same name :meth:`_result_layer`
+        saves from, so a revisited position can be corrected and re-saved in place.
+        Returns the output names that were loaded (for the status line).
+        """
+        ch1_out, ch2_out = self.folder_panel.output_names()
+        position = entry["position"]
+        loaded: list[str] = []
+        for which, out_name in ((1, ch1_out), (2, ch2_out)):
+            if not out_name:
+                continue
+            path = position / out_name
+            if not path.is_file():
+                continue
+            arr = np.asarray(tifffile.imread(str(path)))
+            self._add_labels(_layer_name(_CH1_LABEL if which == 1 else _CH2_LABEL, "tracked"), arr)
+            loaded.append(out_name)
+        return loaded
+
+    def _clear_tagged_layers(self) -> None:
+        """Remove every widget-owned ``[Channel N] …`` layer from the viewer.
+
+        Iterating a napari ``LayerList`` yields layer objects; a dict-like layer
+        collection yields names — resolve either to a name, then remove by name.
+        """
+        tags = (f"[{_CH1_LABEL}]", f"[{_CH2_LABEL}]")
+        for item in list(self.viewer.layers):
+            name = item if isinstance(item, str) else getattr(item, "name", "")
+            if any(name.startswith(tag) for tag in tags):
+                self.viewer.layers.remove(self.viewer.layers[name])
+
+    def _result_layer(self, which: int):
+        """The Labels layer holding this channel's tracked masks, else None.
+
+        Prefers the joint ``tracked`` output; falls back to the single-channel
+        ``masks`` layer (Channel 1's Segment → Track updates it in place).
+        """
+        label = _CH1_LABEL if which == 1 else _CH2_LABEL
+        for kind in ("tracked", "masks"):
+            name = _layer_name(label, kind)
+            layer = self.viewer.layers[name] if name in self.viewer.layers else None
+            if isinstance(layer, Labels):
+                return layer
+        return None
+
+    def _on_folder_save(self) -> None:
+        """Write the current position's tracked masks under the output names."""
+        entry = self.folder_panel.active_entry()
+        if entry is None:
+            self._status("Select a position first.")
+            return
+        ch1_out, ch2_out = self.folder_panel.output_names()
+        position = entry["position"]
+        saved: list[str] = []
+        try:
+            for which, out_name in ((1, ch1_out), (2, ch2_out)):
+                if not out_name:
+                    continue
+                layer = self._result_layer(which)
+                if layer is None:
+                    continue
+                dest = position / out_name
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                tifffile.imwrite(str(dest), np.asarray(layer.data))
+                saved.append(out_name)
+        except Exception as exc:
+            self._status(f"Error saving masks: {exc}")
+            logger.exception("folder-mode save error", exc_info=exc)
+            return
+        if not saved:
+            self._status("Nothing to save yet — segment / track first.")
+            return
+        self.folder_panel.refresh_statuses()
+        self._status(f"Saved {', '.join(saved)} → {entry['rel']}.")
 
     def _refresh_source_buttons(self, which: int) -> None:
         """Mirror the channel's bound layer into its pill (status light + tooltip)."""
@@ -736,6 +1022,9 @@ class CellposeSegmentTrackWidget(QWidget):
         if source is None:
             self._status("Missing Channel 1 input.")
             return
+        if not self._apply_model_selection():
+            self._status(self._model_not_ready_reason())
+            return
         stack = np.asarray(source)  # already canonical (T, Z, Y, X)
         params = self._build_ch1_params()
         self._cancel_requested = False
@@ -769,7 +1058,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         self._set_running("ch1_seg")
         self._status(
-            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            f"Loading {self._model_label()} on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
             else "Segmenting Channel 1..."
         )
@@ -889,6 +1178,9 @@ class CellposeSegmentTrackWidget(QWidget):
         if not self._both_inputs():
             self._status("Joint mode needs both Channel 1 and Channel 2 inputs.")
             return
+        if not self._apply_model_selection():
+            self._status(self._model_not_ready_reason())
+            return
         ch1_source = self._channel_source(1)
         ch2_source = self._channel_source(2)
         ch1_params = self._build_ch1_params()
@@ -928,7 +1220,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         self._set_running("ch2_run")
         self._status(
-            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            f"Loading {self._model_label()} on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
             else "Running joint segmentation..."
         )
@@ -938,6 +1230,9 @@ class CellposeSegmentTrackWidget(QWidget):
     def _preview_joint(self) -> None:
         if not self._both_inputs():
             self._status("Joint preview needs both Channel 1 and Channel 2 inputs.")
+            return
+        if not self._apply_model_selection():
+            self._status(self._model_not_ready_reason())
             return
         ch1_source = self._channel_source(1)
         ch2_source = self._channel_source(2)
@@ -997,7 +1292,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         self._set_running("ch2_preview")
         self._status(
-            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            f"Loading {self._model_label()} on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
             else "Previewing joint..."
         )
@@ -1017,6 +1312,9 @@ class CellposeSegmentTrackWidget(QWidget):
         source = self._channel_source(1)
         if source is None:
             self._status("Missing Channel 1 input.")
+            return
+        if not self._apply_model_selection():
+            self._status(self._model_not_ready_reason())
             return
         params = self._build_ch1_params()
         self._cancel_requested = False
@@ -1056,7 +1354,7 @@ class CellposeSegmentTrackWidget(QWidget):
 
         self._set_running("ch1_preview")
         self._status(
-            f"Loading Cellpose-SAM on {cellpose_runner.device_label()}..."
+            f"Loading {self._model_label()} on {cellpose_runner.device_label()}..."
             if not cellpose_runner.is_model_loaded()
             else "Segmenting current frame..."
         )
@@ -1141,6 +1439,10 @@ class CellposeSegmentTrackWidget(QWidget):
     # ---------------------------------------------------------- public API
     def get_state(self) -> dict:
         return {
+            "model": {
+                "mode": self.model_combo.currentText(),
+                "path": self.custom_model_edit.text().strip(),
+            },
             "channel1": {
                 "diameter": self.ch1_diameter_spin.value(),
                 "min_size": self.ch1_min_size_spin.value(),
@@ -1208,17 +1510,30 @@ class CellposeSegmentTrackWidget(QWidget):
         def _own(btn) -> bool:
             return self._running is None or self._active_btn() is btn
 
+        def _run_ready(btn, predicate) -> bool:
+            return _own(btn) and self._model_ready() and predicate()
+
+        def _run_reason(fallback):
+            return (
+                lambda: self._model_not_ready_reason()
+                if not self._model_ready()
+                else (fallback() if callable(fallback) else fallback)
+            )
+
+        g.register(self.model_combo, ControlClass.HARMLESS)
+        g.register(self.custom_model_edit, ControlClass.HARMLESS)
+        g.register(self.custom_model_browse_btn, ControlClass.HARMLESS)
         g.register(self.ch1_params_btn, ControlClass.HARMLESS)
         g.register(self.ch2_params_btn, ControlClass.HARMLESS)
         g.register(
             self.ch1_preview_btn, ControlClass.RUN_VIEWER,
-            when=lambda: _own(self.ch1_preview_btn) and self._channel_present(1),
-            reason="Bind Channel 1 first — click ⧉.",
+            when=lambda: _run_ready(self.ch1_preview_btn, lambda: self._channel_present(1)),
+            reason=_run_reason("Bind Channel 1 first — click ⧉."),
         )
         g.register(
             self.ch1_seg_btn, ControlClass.RUN_VIEWER,
-            when=lambda: _own(self.ch1_seg_btn) and self._channel_present(1),
-            reason="Bind Channel 1 first — click ⧉.",
+            when=lambda: _run_ready(self.ch1_seg_btn, lambda: self._channel_present(1)),
+            reason=_run_reason("Bind Channel 1 first — click ⧉."),
         )
         g.register(
             self.ch1_track_btn, ControlClass.RUN_VIEWER,
@@ -1230,8 +1545,8 @@ class CellposeSegmentTrackWidget(QWidget):
         for btn in self._joint_buttons():
             g.register(
                 btn, ControlClass.RUN_VIEWER,
-                when=lambda b=btn: _own(b) and self._both_inputs(),
-                reason=self._ch2_joint_reason,
+                when=lambda b=btn: _run_ready(b, self._both_inputs),
+                reason=_run_reason(self._ch2_joint_reason),
             )
         g.recompute()
 

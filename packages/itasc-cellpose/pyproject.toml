@@ -56,6 +56,9 @@ bypass-selection = true
 "../../src/itasc/cellpose" = "itasc/cellpose"
 # The standalone surface is the segment+track widget (napari.yaml points here).
 "../../src/itasc/napari/cellpose_segment_track_widget.py" = "itasc/napari/cellpose_segment_track_widget.py"
+# Folder mode: the project-walk panel the widget mounts under its Source toggle.
+# Self-contained (no itasc.contact_analysis) so it composes inside this distro.
+"../../src/itasc/napari/cellpose_folder_panel.py" = "itasc/napari/cellpose_folder_panel.py"
 # The basic (ultrack/OverlapDB-free) cell corrector is embedded in the
 # segment+track widget so the tool covers segment → track → correct. Its base
 # (correction_widget + _correction_ui/_correction_layer_lifecycle) ships in

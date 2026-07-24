@@ -680,7 +680,18 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
         ``[Correction] Cell Labels`` layer loaded from disk.
         """
         if self._active_layer_mode():
-            return self._active_bound_layer
+            layer = self._active_bound_layer
+            # The binding is captured at activate time; a later re-segment,
+            # track, or folder-position reload can remove that layer from the
+            # viewer, leaving a dangling reference. Editing it would touch a
+            # detached array and selecting it raises ("not in list"), so treat
+            # a fallen-out binding as absent. Match by name + identity so the
+            # check reads the same on napari's LayerList and name-keyed stubs.
+            if layer is not None:
+                name = getattr(layer, "name", None)
+                if name not in self.viewer.layers or self.viewer.layers[name] is not layer:
+                    return None
+            return layer
         if _TRACKED_CELL_LAYER in self.viewer.layers:
             return self.viewer.layers[_TRACKED_CELL_LAYER]
         return None
@@ -1159,7 +1170,9 @@ class CellCorrectionWidget(CorrectionViewStateMixin, QWidget):
             self._correction_owned_layers.add(_VALIDATED_OVERLAY_LAYER)
         overlay.contour = _VALIDATED_OVERLAY_CONTOUR
         overlay.opacity = 1.0
-        self.viewer.layers.selection.active = layer
+        name = getattr(layer, "name", None)
+        if name in self.viewer.layers and self.viewer.layers[name] is layer:
+            self.viewer.layers.selection.active = layer
 
     def _remove_validated_overlay(self) -> None:
         if _VALIDATED_OVERLAY_LAYER in self.viewer.layers:

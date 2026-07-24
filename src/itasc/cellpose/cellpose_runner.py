@@ -110,7 +110,10 @@ def _diameter_kwarg(diameter: float) -> float | None:
     return None if diameter == 0 else float(diameter)
 
 
+DEFAULT_PRETRAINED_MODEL = "cpsam"
 _MODEL = None
+_MODEL_PRETRAINED: str | None = None
+_SELECTED_PRETRAINED_MODEL = DEFAULT_PRETRAINED_MODEL
 
 
 def _cuda_available() -> bool:
@@ -126,22 +129,49 @@ def device_label() -> str:
 
 
 def is_model_loaded() -> bool:
-    return _MODEL is not None
+    return _MODEL is not None and (
+        _MODEL_PRETRAINED is None or _MODEL_PRETRAINED == _SELECTED_PRETRAINED_MODEL
+    )
+
+
+def selected_pretrained_model() -> str:
+    """Return the Cellpose pretrained model id/path used by subsequent inference."""
+    return _SELECTED_PRETRAINED_MODEL
+
+
+def set_pretrained_model(pretrained_model: str | Path | None) -> None:
+    """Select the Cellpose pretrained model id/path and invalidate stale cache.
+
+    ``None`` or a blank value restores the default Cellpose-SAM model
+    (``"cpsam"``). A custom model is passed through to Cellpose as the
+    ``pretrained_model`` argument exactly as a filesystem path string.
+    """
+    global _MODEL, _MODEL_PRETRAINED, _SELECTED_PRETRAINED_MODEL
+    selected = str(pretrained_model).strip() if pretrained_model is not None else ""
+    selected = selected or DEFAULT_PRETRAINED_MODEL
+    if selected == _SELECTED_PRETRAINED_MODEL:
+        return
+    _SELECTED_PRETRAINED_MODEL = selected
+    _MODEL = None
+    _MODEL_PRETRAINED = None
 
 
 def get_model():
-    """Lazy-load the cpsam model once per process; cached at module level."""
-    global _MODEL
-    if _MODEL is not None:
+    """Lazy-load the selected Cellpose model once per process; cached by model path."""
+    global _MODEL, _MODEL_PRETRAINED
+    if _MODEL is not None and (
+        _MODEL_PRETRAINED is None or _MODEL_PRETRAINED == _SELECTED_PRETRAINED_MODEL
+    ):
         return _MODEL
     from cellpose.models import CellposeModel
 
     use_gpu = _cuda_available()
     _MODEL = CellposeModel(
         gpu=use_gpu,
-        pretrained_model="cpsam",
+        pretrained_model=_SELECTED_PRETRAINED_MODEL,
         use_bfloat16=use_gpu,
     )
+    _MODEL_PRETRAINED = _SELECTED_PRETRAINED_MODEL
     return _MODEL
 
 

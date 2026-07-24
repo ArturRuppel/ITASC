@@ -17,7 +17,7 @@ import tifffile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QToolButton
+from qtpy.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QToolButton
 
 # A GUI QApplication must exist before napari (imported by the widget module) is
 # pulled in, or QWidget construction aborts headless. Create it up front.
@@ -187,6 +187,12 @@ def test_prob_threshold_is_inverse_sigmoid_of_prob_map():
 def test_widget_exposes_rows_actions_and_no_output_dir():
     QApplication.instance() or QApplication([])
     w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    assert isinstance(w.model_combo, QComboBox)
+    assert isinstance(w.custom_model_edit, QLineEdit)
+    assert isinstance(w.custom_model_browse_btn, QPushButton)
+    assert w.model_combo.currentText() == "Cellpose-SAM"
+    assert w.custom_model_edit.isHidden() is True
+    assert w.custom_model_browse_btn.isHidden() is True
     # Channel 1 (anchor) has the full segment + track row; Channel 2 has its
     # params + a joint preview + run (no independent segmentation).
     for name in (
@@ -213,6 +219,49 @@ def test_widget_exposes_rows_actions_and_no_output_dir():
     assert w.ch1_layer_btn.isCheckable() and w.ch2_layer_btn.isCheckable()
     assert w.ch1_seg_btn.text() == "▶" and w.ch1_preview_btn.text() == "▷"
     assert w.ch2_run_btn.text() == "▶" and w.ch2_preview_btn.text() == "▷"
+    w.deleteLater()
+
+
+def test_custom_model_selector_reveals_file_picker_and_gates_runs(tmp_path):
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    ch1 = viewer.add_image(np.zeros((2, 4, 4), dtype=np.float32), name="ch1")
+    w._set_channel_layer(1, ch1)
+    assert w.ch1_seg_btn.isEnabled() is True
+
+    w.model_combo.setCurrentText("Custom")
+    assert w.custom_model_edit.isHidden() is False
+    assert w.custom_model_browse_btn.isHidden() is False
+    assert w.ch1_seg_btn.isEnabled() is False
+    assert "custom Cellpose model" in w.ch1_seg_btn.toolTip()
+
+    model_path = tmp_path / "custom.pt"
+    model_path.write_bytes(b"fake")
+    w.custom_model_edit.setText(str(model_path))
+    w._on_custom_model_changed()
+    assert w.ch1_seg_btn.isEnabled() is True
+    assert w.get_state()["model"] == {"mode": "Custom", "path": str(model_path)}
+    w.model_combo.setCurrentText("Cellpose-SAM")
+    w.deleteLater()
+
+
+def test_apply_custom_model_selection_sets_runner_path(monkeypatch, tmp_path):
+    QApplication.instance() or QApplication([])
+    seen = []
+    monkeypatch.setattr(stw.cellpose_runner, "set_pretrained_model", lambda value: seen.append(value))
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    seen.clear()
+    model_path = tmp_path / "custom.pt"
+    model_path.write_bytes(b"fake")
+
+    w.model_combo.setCurrentText("Custom")
+    w.custom_model_edit.setText(str(model_path))
+
+    assert w._apply_model_selection() is True
+    assert seen[-1] == model_path
+    w.model_combo.setCurrentText("Cellpose-SAM")
+    assert seen[-1] == stw.cellpose_runner.DEFAULT_PRETRAINED_MODEL
     w.deleteLater()
 
 
@@ -891,6 +940,17 @@ class _FakeLabelsLayer:
         pass
 
 
+def _bind(w, viewer, layer):
+    """Bind the corrector to an active Labels layer the way napari would.
+
+    An *active* layer is by definition present in the viewer's collection, so
+    register it there too — the corrector now treats a bound layer that has
+    fallen out of the viewer as stale (see _correction_tracked_layer)."""
+    w._active_bound_layer = layer
+    viewer.layers[layer.name] = layer
+    return layer
+
+
 def test_full_editing_unlocks_toolkit_and_retracker():
     """The standalone corrector runs full DB-free editing + the Q/E retracker."""
     from itasc.napari.correction.cell_correction_widget import CellCorrectionWidget
@@ -934,7 +994,7 @@ def test_full_editing_retrack_propagates_ids_on_bound_layer():
     stack[1, 10:14, 4:8] = 50
     stack[2, 10:14, 6:10] = 77
     layer = _FakeLabelsLayer(stack)
-    w._active_bound_layer = layer
+    _bind(w, viewer, layer)
     viewer.dims.current_step = (0, 0)
     w._on_retrack("forward")
     out = layer.data
@@ -954,7 +1014,7 @@ def test_full_editing_retrack_needs_multiframe_stack():
     w = CellCorrectionWidget(
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
-    w._active_bound_layer = _FakeLabelsLayer(np.zeros((8, 8), dtype=np.int32))
+    _bind(w, viewer, _FakeLabelsLayer(np.zeros((8, 8), dtype=np.int32)))
     viewer.dims.current_step = (0, 0)
     w._on_retrack("forward")  # no raise; reports via status
     assert "time-first" in w.correction_status_lbl.text().lower()
@@ -982,7 +1042,7 @@ def test_toggle_validation_flags_and_unflags_across_a_cells_frames():
     w = CellCorrectionWidget(
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
-    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    _bind(w, viewer, _FakeLabelsLayer(_make_three_frame_two_cell_stack()))
     viewer.dims.current_step = (0, 0)
     w.correction_widget._selected_label = 1
 
@@ -1004,7 +1064,7 @@ def test_toggle_validation_requires_a_selected_cell_present_at_the_frame():
     w = CellCorrectionWidget(
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
-    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    _bind(w, viewer, _FakeLabelsLayer(_make_three_frame_two_cell_stack()))
     viewer.dims.current_step = (1, 0)  # cell 2 is absent here
     w.correction_widget._selected_label = 2
 
@@ -1026,7 +1086,7 @@ def test_remove_unvalidated_labels_clears_everything_but_the_validated_cell():
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
     layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
-    w._active_bound_layer = layer
+    _bind(w, viewer, layer)
     viewer.dims.current_step = (0, 0)
     w._validated_tracks = {1: {0, 1, 2}}  # cell 1 validated everywhere; cell 2 not
 
@@ -1050,7 +1110,7 @@ def test_remove_unvalidated_labels_noop_status_when_all_validated():
     stack = np.zeros((2, 10, 10), dtype=np.int32)
     stack[:, 2:5, 2:5] = 1
     layer = _FakeLabelsLayer(stack)
-    w._active_bound_layer = layer
+    _bind(w, viewer, layer)
     w._validated_tracks = {1: {0, 1}}
 
     w._on_remove_unvalidated_labels()
@@ -1091,7 +1151,7 @@ def test_track_list_navigator_click_jumps_frame_and_selects_cell():
     w = CellCorrectionWidget(
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
-    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    _bind(w, viewer, _FakeLabelsLayer(_make_three_frame_two_cell_stack()))
     viewer.dims.current_step = (0, 0)
 
     w._navigate_to_cell_from_lineage(2, 1)
@@ -1117,7 +1177,7 @@ def test_validating_a_cell_draws_green_border_overlay_layer():
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
     stack = _make_three_frame_two_cell_stack()
-    w._active_bound_layer = _FakeLabelsLayer(stack)
+    _bind(w, viewer, _FakeLabelsLayer(stack))
     viewer.dims.current_step = (0, 0)
     w.correction_widget._selected_label = 1
 
@@ -1145,7 +1205,7 @@ def test_invalidating_the_last_validated_cell_removes_the_overlay_layer():
     w = CellCorrectionWidget(
         viewer, active_labels_layer_provider=lambda: None, full_editing=True
     )
-    w._active_bound_layer = _FakeLabelsLayer(_make_three_frame_two_cell_stack())
+    _bind(w, viewer, _FakeLabelsLayer(_make_three_frame_two_cell_stack()))
     viewer.dims.current_step = (0, 0)
     w.correction_widget._selected_label = 1
 
@@ -1153,6 +1213,30 @@ def test_invalidating_the_last_validated_cell_removes_the_overlay_layer():
     assert _VALIDATED_OVERLAY_LAYER in viewer.layers
     w._on_toggle_validation()  # invalidate
     assert _VALIDATED_OVERLAY_LAYER not in viewer.layers
+    w.deleteLater()
+
+
+def test_bound_layer_removed_from_viewer_reads_as_absent():
+    """Regression: the corrector binds an active Labels layer, but a later
+    re-segment / track / folder-position reload removes that layer from the
+    viewer. The stale reference must read as absent — editing it would touch a
+    detached array and selecting it raises 'Cannot select item that is not in
+    list' — so the operation no-ops instead of crashing."""
+    from itasc.napari.correction.cell_correction_widget import CellCorrectionWidget
+
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = CellCorrectionWidget(
+        viewer, active_labels_layer_provider=lambda: None, full_editing=True
+    )
+    layer = _bind(w, viewer, _FakeLabelsLayer(_make_three_frame_two_cell_stack()))
+    assert w._correction_tracked_layer() is layer
+
+    viewer.layers.remove(layer)  # e.g. a re-track replaced it
+    assert w._correction_tracked_layer() is None
+
+    w._on_remove_unvalidated_labels()  # must not raise
+    assert "no cell labels" in w.correction_status_lbl.text().lower()
     w.deleteLater()
 
 
@@ -1189,3 +1273,167 @@ def test_every_cancellable_worker_wires_aborted():
     src = Path(stw.__file__).read_text()
     assert src.count('"aborted": self._aborted') == src.count('"errored": self._errored')
     assert src.count('"aborted": self._aborted') == 5
+
+
+# ── folder mode ──────────────────────────────────────────────────────────────
+# The Source toggle adds a project-walk panel over the same interactive tool:
+# discover position folders, select one (its images auto-load and bind through
+# the shared _set_channel_layer seam), then save the tracked masks back into that
+# folder under the chosen output names. Discovery is Ch1-required / Ch2-optional.
+from itasc.napari import cellpose_folder_panel as fp  # noqa: E402
+
+
+def _fake_project(tmp_path):
+    """Two positions (nucleus+cell) and one nucleus-only, under a common root."""
+    for cond, pos, has_cell in (("WT", "p1", True), ("WT", "p2", True), ("KO", "p1", False)):
+        d = tmp_path / cond / pos / "0_input"
+        d.mkdir(parents=True)
+        tifffile.imwrite(d / "nuc.tif", np.ones((2, 4, 4), dtype=np.uint16))
+        if has_cell:
+            tifffile.imwrite(d / "cell.tif", np.ones((2, 4, 4), dtype=np.uint16))
+    return tmp_path
+
+
+def test_discover_folders_ch1_required_ch2_optional(tmp_path):
+    root = _fake_project(tmp_path)
+    entries = fp.discover_folders(root, "0_input/nuc.tif", "0_input/cell.tif")
+    by_rel = {e["rel"]: e for e in entries}
+    assert set(by_rel) == {"WT/p1", "WT/p2", "KO/p1"}  # every folder with nuc
+    assert by_rel["WT/p1"]["ch2"] is not None           # cell co-located → bound
+    assert by_rel["KO/p1"]["ch2"] is None               # nucleus-only → single-channel
+    # A folder holding only the Channel 2 file is not a position.
+    assert fp.discover_folders(root, "0_input/cell.tif", "") and \
+        all("KO/p1" != e["rel"] for e in
+            fp.discover_folders(root, "0_input/cell.tif", ""))
+
+
+def test_folder_panel_name_fields_roundtrip():
+    QApplication.instance() or QApplication([])
+    panel = fp.CellposeFolderPanel()
+    panel._fields["ch1_input"].setText("0_input/nuc.tif")
+    panel._fields["ch2_input"].setText("0_input/cell.tif")
+    panel._fields["ch1_output"].setText("nucleus_labels.tif")
+    panel._fields["ch2_output"].setText("cell_labels.tif")
+    assert panel.input_names() == ("0_input/nuc.tif", "0_input/cell.tif")
+    assert panel.output_names() == ("nucleus_labels.tif", "cell_labels.tif")
+    panel.deleteLater()
+
+
+def test_folder_toggle_shows_panel_and_keeps_list_alive():
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    # isHidden (not isVisible) tracks the explicit flag: the top-level is never
+    # shown in the offscreen tests, so isVisible would be False either way.
+    assert w.folder_panel.isHidden() is True
+    w.mode_folders_btn.setChecked(True)
+    assert w.folder_panel.isHidden() is False
+    # The list is panel state, not mode state: flipping back to Layers keeps it.
+    w.folder_panel._add_entries([{"position": Path("/x"), "ch1": Path("/x/n.tif"),
+                                  "ch2": None, "rel": "x"}])
+    w.mode_layers_btn.setChecked(True)
+    assert w.folder_panel.isHidden() is True
+    assert w.folder_panel.list_widget.count() == 1  # survived the flip
+    w.deleteLater()
+
+
+def test_folder_position_loads_and_binds_through_the_seam(tmp_path):
+    root = _fake_project(tmp_path)
+    entries = fp.discover_folders(root, "0_input/nuc.tif", "0_input/cell.tif")
+    by_rel = {e["rel"]: e for e in entries}
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+
+    w._on_folder_position(by_rel["WT/p1"])  # two-channel position
+    assert w._ch1_layer is not None and w._ch1_layer.name == "[Channel 1] input"
+    assert w._ch2_layer is not None and w._ch2_layer.name == "[Channel 2] input"
+
+    w._on_folder_position(by_rel["KO/p1"])  # nucleus-only → Channel 2 clears
+    assert w._ch1_layer is not None and w._ch1_layer.name == "[Channel 1] input"
+    assert w._ch2_layer is None
+    w.deleteLater()
+
+
+def test_folder_save_writes_masks_and_flips_dot(tmp_path):
+    root = _fake_project(tmp_path)
+    entry = {e["rel"]: e for e in
+             fp.discover_folders(root, "0_input/nuc.tif", "")}["WT/p1"]
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
+    w.folder_panel._add_entries([entry])
+    w.folder_panel.list_widget.setCurrentRow(0)  # activates → _active set
+
+    # A tracked Channel-1 result is present (as after Segment → Track).
+    masks = np.zeros((2, 4, 4), dtype=np.int32)
+    masks[0, 1, 1] = 7
+    viewer.layers["[Channel 1] masks"] = napari.layers.Labels(masks, name="[Channel 1] masks")
+
+    w._on_folder_save()
+    out = entry["position"] / "nucleus_labels.tif"
+    assert out.is_file()
+    assert np.array_equal(tifffile.imread(out), masks)
+    # dot for this position now reads "saved".
+    assert w.folder_panel._status_for(str(entry["position"])) == fp.SAVED
+    w.deleteLater()
+
+
+def test_folder_save_without_result_layer_is_a_noop(tmp_path):
+    root = _fake_project(tmp_path)
+    entry = {e["rel"]: e for e in
+             fp.discover_folders(root, "0_input/nuc.tif", "")}["WT/p1"]
+    QApplication.instance() or QApplication([])
+    w = stw.CellposeSegmentTrackWidget(_FakeViewer())
+    w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
+    w.folder_panel._add_entries([entry])
+    w.folder_panel.list_widget.setCurrentRow(0)
+
+    w._on_folder_save()  # nothing segmented yet
+    assert not (entry["position"] / "nucleus_labels.tif").exists()
+    assert "segment" in w.status_lbl.text().lower()
+    w.deleteLater()
+
+
+def test_folder_position_loads_existing_masks(tmp_path):
+    """Revisiting a saved position brings its masks back as tracked Labels layers."""
+    root = _fake_project(tmp_path)
+    entry = {e["rel"]: e for e in
+             fp.discover_folders(root, "0_input/nuc.tif", "0_input/cell.tif")}["WT/p1"]
+    # A prior session saved both channels' masks into the folder.
+    tifffile.imwrite(entry["position"] / "nucleus_labels.tif",
+                     np.arange(2 * 4 * 4, dtype=np.int32).reshape(2, 4, 4))
+    tifffile.imwrite(entry["position"] / "cell_labels.tif",
+                     np.ones((2, 4, 4), dtype=np.int32))
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
+    w.folder_panel._fields["ch2_output"].setText("cell_labels.tif")
+
+    w._on_folder_position(entry)
+    # Loaded into the same [Channel N] tracked names Save reads back, so a
+    # revisited position corrects and re-saves in place.
+    assert "[Channel 1] tracked" in viewer.layers
+    assert "[Channel 2] tracked" in viewer.layers
+    assert np.array_equal(
+        viewer.layers["[Channel 1] tracked"].data,
+        np.arange(2 * 4 * 4, dtype=np.int32).reshape(2, 4, 4),
+    )
+    assert "existing masks" in w.status_lbl.text()
+    w.deleteLater()
+
+
+def test_folder_position_without_saved_masks_loads_only_inputs(tmp_path):
+    root = _fake_project(tmp_path)
+    entry = {e["rel"]: e for e in
+             fp.discover_folders(root, "0_input/nuc.tif", "")}["KO/p1"]
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
+
+    w._on_folder_position(entry)
+    assert "[Channel 1] tracked" not in viewer.layers  # nothing saved yet
+    assert w._result_layer(1) is None
+    w.deleteLater()
