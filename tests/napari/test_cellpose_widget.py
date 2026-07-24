@@ -13,7 +13,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from qtpy.QtWidgets import QApplication, QLabel, QToolButton
+from qtpy.QtWidgets import QApplication, QLabel, QComboBox, QLineEdit, QPushButton, QToolButton
 
 
 class _LayerCollection(dict):
@@ -145,6 +145,18 @@ def test_widget_exposes_stage_rows_and_buttons(_mock_cellpose, monkeypatch):
     ):
         btn = getattr(w, name)
         assert isinstance(btn, QToolButton), name
+    for name in ("nuc_model_combo", "cell_model_combo"):
+        combo = getattr(w, name)
+        assert isinstance(combo, QComboBox), name
+        assert combo.currentText() == "Cellpose-SAM"
+    for name in ("nuc_model_edit", "cell_model_edit"):
+        edit = getattr(w, name)
+        assert isinstance(edit, QLineEdit), name
+        assert edit.isHidden()
+    for name in ("nuc_model_browse_btn", "cell_model_browse_btn"):
+        browse = getattr(w, name)
+        assert isinstance(browse, QPushButton), name
+        assert browse.isHidden()
     assert w.nucleus_run_btn.text() == "▶"
     assert w.cell_run_btn.text() == "▶"
     w.deleteLater()
@@ -227,6 +239,8 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
     w = mod.CellposeWidget(_FakeViewer())
     new_state = {
         "nucleus": {
+            "model": "Custom",
+            "custom_model": "/tmp/nucleus_model.pt",
             "layout": "3D",
             "do_3d": False,
             "anisotropy": 2.25,
@@ -235,6 +249,8 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
             "gamma": 1.5,
         },
         "cell": {
+            "model": "Cellpose-SAM",
+            "custom_model": "",
             "layout": "2D+t",
             "diameter": 18.0,
             "min_size": 3,
@@ -246,6 +262,56 @@ def test_get_set_state_round_trips(_mock_cellpose, monkeypatch):
     assert got["nucleus"] == new_state["nucleus"]
     assert got["cell"] == new_state["cell"]
     assert "divergence_maps" in got
+    w.deleteLater()
+
+
+def test_channel_model_controls_toggle_custom_file_row(_mock_cellpose, monkeypatch):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    w = mod.CellposeWidget(_FakeViewer())
+    assert w.nuc_model_edit.isHidden()
+    assert w.nuc_model_browse_btn.isHidden()
+    assert w.cell_model_edit.isHidden()
+    assert w.cell_model_browse_btn.isHidden()
+
+    w.nuc_model_combo.setCurrentText("Custom")
+    assert not w.nuc_model_edit.isHidden()
+    assert not w.nuc_model_browse_btn.isHidden()
+    assert w.cell_model_edit.isHidden()
+
+    w.cell_model_combo.setCurrentText("Custom")
+    assert not w.cell_model_edit.isHidden()
+    assert not w.cell_model_browse_btn.isHidden()
+    w.nuc_model_combo.setCurrentText("Cellpose-SAM")
+    assert w.nuc_model_edit.isHidden()
+    w.deleteLater()
+
+
+def test_apply_model_selection_is_per_channel(_mock_cellpose, monkeypatch, tmp_path):
+    app = QApplication.instance() or QApplication([])
+    mod = _load_widget(monkeypatch)
+    seen = []
+    monkeypatch.setattr(
+        mod.cellpose_runner, "set_pretrained_model", lambda value: seen.append(value)
+    )
+    w = mod.CellposeWidget(_FakeViewer())
+    nucleus_model = tmp_path / "nucleus.pt"
+    cell_model = tmp_path / "cell.pt"
+    nucleus_model.write_bytes(b"fake")
+    cell_model.write_bytes(b"fake")
+
+    w.nuc_model_combo.setCurrentText("Custom")
+    w.nuc_model_edit.setText(str(nucleus_model))
+    w.cell_model_combo.setCurrentText("Custom")
+    w.cell_model_edit.setText(str(cell_model))
+
+    assert w._apply_model_selection("nucleus") is True
+    assert seen[-1] == nucleus_model
+    assert w._apply_model_selection("cell") is True
+    assert seen[-1] == cell_model
+    w.cell_model_combo.setCurrentText("Cellpose-SAM")
+    assert w._apply_model_selection("cell") is True
+    assert seen[-1] == mod.cellpose_runner.DEFAULT_PRETRAINED_MODEL
     w.deleteLater()
 
 

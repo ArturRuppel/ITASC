@@ -114,6 +114,8 @@ DEFAULT_PRETRAINED_MODEL = "cpsam"
 _MODEL = None
 _MODEL_PRETRAINED: str | None = None
 _SELECTED_PRETRAINED_MODEL = DEFAULT_PRETRAINED_MODEL
+_DEFAULT_TRANSFORMER_BSIZE = 256
+_TRANSFORMER_PATCH_SIZE = 8
 
 
 def _cuda_available() -> bool:
@@ -166,13 +168,83 @@ def get_model():
     from cellpose.models import CellposeModel
 
     use_gpu = _cuda_available()
-    _MODEL = CellposeModel(
+    _MODEL = _load_custom_transformer_model(
+        _SELECTED_PRETRAINED_MODEL, use_gpu=use_gpu
+    ) or CellposeModel(
         gpu=use_gpu,
         pretrained_model=_SELECTED_PRETRAINED_MODEL,
         use_bfloat16=use_gpu,
     )
     _MODEL_PRETRAINED = _SELECTED_PRETRAINED_MODEL
     return _MODEL
+
+
+def _load_custom_transformer_model(pretrained_model: str, *, use_gpu: bool):
+    """Load custom Cellpose-SAM checkpoints trained with a non-default bsize.
+
+    Cellpose v4 constructs ``Transformer(bsize=256)`` inside ``CellposeModel``.
+    Fine-tuned checkpoints can instead contain a smaller positional embedding
+    (for example ``16 x 16`` from training with ``bsize=128``). PyTorch rejects
+    that as a same-key shape mismatch during ``load_state_dict``, so detect the
+    checkpoint's positional grid and instantiate a matching Transformer directly.
+
+    Return ``None`` for built-in models, default-size custom checkpoints, or any
+    file that cannot be inspected; those continue through Cellpose's normal
+    loader.
+    """
+    path = Path(pretrained_model)
+    if not path.is_file():
+        return None
+    bsize = _checkpoint_transformer_bsize(path)
+    if bsize is None or bsize == _DEFAULT_TRANSFORMER_BSIZE:
+        return None
+
+    import torch
+    from cellpose.models import CellposeModel, assign_device
+    from cellpose.vit_sam import Transformer
+
+    device = assign_device(gpu=use_gpu)[0]
+    model = CellposeModel.__new__(CellposeModel)
+    model.device = device
+    if torch.cuda.is_available():
+        model.gpu = device.type == "cuda"
+    elif torch.backends.mps.is_available():
+        model.gpu = device.type == "mps"
+    else:
+        model.gpu = False
+    model.pretrained_model = str(path)
+    dtype = torch.bfloat16 if use_gpu else torch.float32
+    model.net = Transformer(bsize=bsize, dtype=dtype).to(device)
+    model.net.load_model(str(path), device=device)
+    model._itasc_bsize = bsize
+    return model
+
+
+def _checkpoint_transformer_bsize(path: Path) -> int | None:
+    """Infer Cellpose Transformer ``bsize`` from a checkpoint's pos_embed grid."""
+    try:
+        import torch
+
+        state_dict = torch.load(str(path), map_location="cpu", weights_only=True)
+    except Exception:
+        return None
+    pos_embed = state_dict.get("encoder.pos_embed")
+    if pos_embed is None:
+        pos_embed = state_dict.get("module.encoder.pos_embed")
+    shape = getattr(pos_embed, "shape", None)
+    if shape is None or len(shape) != 4 or int(shape[1]) != int(shape[2]):
+        return None
+    bsize = int(shape[1]) * _TRANSFORMER_PATCH_SIZE
+    return bsize if bsize > 0 else None
+
+
+def eval_model(img: np.ndarray, **eval_kwargs):
+    """Evaluate the selected model, honoring custom transformer tile size."""
+    model = get_model()
+    bsize = getattr(model, "_itasc_bsize", None)
+    if bsize is not None:
+        eval_kwargs.setdefault("bsize", int(bsize))
+    return model.eval(img, **eval_kwargs)
 
 
 def run_nucleus_frame(
@@ -187,11 +259,10 @@ def run_nucleus_frame(
     If ``z`` is an integer, runs 2D on frame[z] and returns
     prob with shape (Y, X) and dp with shape (2, Y, X).
     """
-    model = get_model()
     diameter = _diameter_kwarg(params.diameter)
     if z is None:
         volume = _apply_gamma(frame, params.gamma)
-        _, flows, _ = model.eval(
+        _, flows, _ = eval_model(
             volume,
             do_3D=True,
             z_axis=0,
@@ -202,7 +273,7 @@ def run_nucleus_frame(
         )
     else:
         slice_2d = _apply_gamma(frame[z], params.gamma)
-        _, flows, _ = model.eval(
+        _, flows, _ = eval_model(
             slice_2d,
             diameter=diameter,
             min_size=params.min_size,
@@ -228,10 +299,9 @@ def run_cell_frame(
     params: CellParams,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Single 2D-slice cell inference. Returns (prob (Y,X), dp (2,Y,X))."""
-    model = get_model()
     diameter = _diameter_kwarg(params.diameter)
     slice_2d = _apply_gamma(frame[z], params.gamma)
-    _, flows, _ = model.eval(
+    _, flows, _ = eval_model(
         slice_2d,
         diameter=diameter,
         min_size=params.min_size,
@@ -262,12 +332,11 @@ def run_cell_frame_joint(
     zero-pads to 3 channels internally); the same per-plane gamma is applied to
     both channels and cpsam normalises each channel independently.
     """
-    model = get_model()
     diameter = _diameter_kwarg(params.diameter)
     cell_2d = _apply_gamma(cell_frame[z], params.gamma)
     nucleus_2d = _apply_gamma(nucleus_frame[z], params.gamma)
     img = np.stack([cell_2d, nucleus_2d], axis=-1)  # (Y, X, 2), cell first
-    _, flows, _ = model.eval(
+    _, flows, _ = eval_model(
         img,
         channel_axis=2,
         diameter=diameter,

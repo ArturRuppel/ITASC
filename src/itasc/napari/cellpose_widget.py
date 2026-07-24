@@ -12,9 +12,12 @@ from qtpy.QtCore import Signal
 from qtpy.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -82,6 +85,8 @@ _REFERENCE_LAYER_NAMES = {
 # Input dimensionality options; default to 3D+t (the historical assumption).
 _LAYOUT_OPTIONS = ["2D", "2D+t", "3D", "3D+t"]
 _DEFAULT_LAYOUT = "3D+t"
+_MODEL_CPSAM = "Cellpose-SAM"
+_MODEL_CUSTOM = "Custom"
 
 
 def _layout_combo() -> QComboBox:
@@ -291,6 +296,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
+        self.nuc_model_combo, self.nuc_model_edit, self.nuc_model_browse_btn = (
+            self._add_model_controls(grid, 0, "nucleus")
+        )
         self.nuc_layout_combo = _layout_combo()
         self.nuc_3d_chk = QCheckBox("3D mode")
         self.nuc_3d_chk.setChecked(False)
@@ -298,7 +306,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         self.nuc_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
         self.nuc_min_size_spin = _islider(0, 100000, 15)
         self.nuc_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
-        row = 0
+        row = 1
         add_section_pair_row(grid, row, "Input layout:", self.nuc_layout_combo); row += 1
         add_section_full_row(grid, row, self.nuc_3d_chk); row += 1
         add_section_pair_row(
@@ -326,11 +334,14 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         grid = section_grid()
         grid.setContentsMargins(8, 4, 4, 4)
         body.setLayout(grid)
+        self.cell_model_combo, self.cell_model_edit, self.cell_model_browse_btn = (
+            self._add_model_controls(grid, 0, "cell")
+        )
         self.cell_layout_combo = _layout_combo()
         self.cell_diameter_spin = _dslider(0.0, 500.0, 0.0, 1.0, 1)
         self.cell_min_size_spin = _islider(0, 100000, 0)
         self.cell_gamma_spin = _dslider(0.1, 5.0, 1.0, 0.1, 2)
-        row = 0
+        row = 1
         add_section_pair_row(grid, row, "Input layout:", self.cell_layout_combo); row += 1
         add_section_pair_row(
             grid, row,
@@ -339,6 +350,78 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         ); row += 1
         add_section_pair_row(grid, row, "Gamma:", self.cell_gamma_spin)
         return CollapsibleSection("Cell parameters", body, expanded=False)
+
+    def _add_model_controls(
+        self, grid, row: int, channel: str
+    ) -> tuple[QComboBox, QLineEdit, QPushButton]:
+        combo = QComboBox()
+        combo.addItems([_MODEL_CPSAM, _MODEL_CUSTOM])
+        combo.setCurrentText(_MODEL_CPSAM)
+        combo.setToolTip("Choose the Cellpose model used for this channel.")
+        edit = QLineEdit()
+        edit.setPlaceholderText("custom Cellpose model file")
+        edit.setVisible(False)
+        browse = QPushButton("Browse...")
+        browse.setVisible(False)
+        browse.clicked.connect(lambda _checked=False, ch=channel: self._on_browse_model(ch))
+        combo.currentTextChanged.connect(lambda _mode, ch=channel: self._on_model_mode_changed(ch))
+        add_section_pair_row(grid, row, "Model:", combo, "Custom model:", edit)
+        grid.addWidget(browse, row, 4)
+        return combo, edit, browse
+
+    def _on_model_mode_changed(self, channel: str) -> None:
+        custom = self._model_combo(channel).currentText() == _MODEL_CUSTOM
+        self._model_edit(channel).setVisible(custom)
+        self._model_browse_btn(channel).setVisible(custom)
+
+    def _on_browse_model(self, channel: str) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            f"Select {channel} Cellpose model",
+            filter="All files (*)",
+        )
+        if path:
+            self._model_edit(channel).setText(path)
+
+    def _model_combo(self, channel: str) -> QComboBox:
+        return self.nuc_model_combo if channel == "nucleus" else self.cell_model_combo
+
+    def _model_edit(self, channel: str) -> QLineEdit:
+        return self.nuc_model_edit if channel == "nucleus" else self.cell_model_edit
+
+    def _model_browse_btn(self, channel: str) -> QPushButton:
+        return (
+            self.nuc_model_browse_btn
+            if channel == "nucleus"
+            else self.cell_model_browse_btn
+        )
+
+    def _selected_model_path(self, channel: str) -> Path | None:
+        if self._model_combo(channel).currentText() != _MODEL_CUSTOM:
+            return None
+        text = self._model_edit(channel).text().strip()
+        return Path(text) if text else None
+
+    def _apply_model_selection(self, channel: str) -> bool:
+        path = self._selected_model_path(channel)
+        if path is not None:
+            if not path.is_file():
+                return False
+            cellpose_runner.set_pretrained_model(path)
+            return True
+        cellpose_runner.set_pretrained_model(cellpose_runner.DEFAULT_PRETRAINED_MODEL)
+        return True
+
+    def _model_not_ready_reason(self, channel: str) -> str:
+        path = self._selected_model_path(channel)
+        label = "nucleus" if channel == "nucleus" else "cell"
+        if path is None:
+            return f"Select a custom {label} Cellpose model file first."
+        return f"Custom {label} Cellpose model not found: {path}"
+
+    def _model_label(self, channel: str) -> str:
+        path = self._selected_model_path(channel)
+        return path.name if path is not None else "Cellpose-SAM"
 
     @staticmethod
     def _stage_label(text: str) -> QLabel:
@@ -554,6 +637,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         if in_path is None or not in_path.exists():
             self._status(f"Missing: {in_path.name if in_path else '(no path)'}")
             return
+        if not self._apply_model_selection(channel):
+            self._status(self._model_not_ready_reason(channel))
+            return
         out_dir = self._output_dir()
         params = (
             self._build_nucleus_params() if channel == "nucleus"
@@ -617,7 +703,7 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
 
         self._set_running_stage(channel)
         self._status(
-            f"Loading Cellpose-SAM model on {cellpose_runner.device_label()} "
+            f"Loading {self._model_label(channel)} model on {cellpose_runner.device_label()} "
             f"(~10s on first run)..." if not cellpose_runner.is_model_loaded()
             else f"Running {channel} Cellpose..."
         )
@@ -659,6 +745,9 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
         in_path = self._input_path(channel)
         if in_path is None or not in_path.exists():
             self._status(f"Missing: {in_path.name if in_path else '(no path)'}")
+            return
+        if not self._apply_model_selection(channel):
+            self._status(self._model_not_ready_reason(channel))
             return
 
         params = (
@@ -872,6 +961,8 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
     def get_state(self) -> dict:
         return {
             "nucleus": {
+                "model": self.nuc_model_combo.currentText(),
+                "custom_model": self.nuc_model_edit.text().strip(),
                 "layout": self.nuc_layout_combo.currentText(),
                 "do_3d": self.nuc_3d_chk.isChecked(),
                 "anisotropy": self.nuc_anisotropy_spin.value(),
@@ -880,6 +971,8 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
                 "gamma": self.nuc_gamma_spin.value(),
             },
             "cell": {
+                "model": self.cell_model_combo.currentText(),
+                "custom_model": self.cell_model_edit.text().strip(),
                 "layout": self.cell_layout_combo.currentText(),
                 "diameter": self.cell_diameter_spin.value(),
                 "min_size": self.cell_min_size_spin.value(),
@@ -893,6 +986,10 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
             return
         nuc = state.get("nucleus", {})
         if isinstance(nuc, dict):
+            if nuc.get("model") in (_MODEL_CPSAM, _MODEL_CUSTOM):
+                self.nuc_model_combo.setCurrentText(nuc["model"])
+            if "custom_model" in nuc:
+                self.nuc_model_edit.setText(str(nuc["custom_model"]))
             if nuc.get("layout") in _LAYOUT_OPTIONS:
                 self.nuc_layout_combo.setCurrentText(nuc["layout"])
             if "do_3d" in nuc:
@@ -907,6 +1004,10 @@ class CellposeWidget(StandalonePathsMixin, QWidget):
                 self.nuc_gamma_spin.setValue(float(nuc["gamma"]))
         cel = state.get("cell", {})
         if isinstance(cel, dict):
+            if cel.get("model") in (_MODEL_CPSAM, _MODEL_CUSTOM):
+                self.cell_model_combo.setCurrentText(cel["model"])
+            if "custom_model" in cel:
+                self.cell_model_edit.setText(str(cel["custom_model"]))
             if cel.get("layout") in _LAYOUT_OPTIONS:
                 self.cell_layout_combo.setCurrentText(cel["layout"])
             if "diameter" in cel:

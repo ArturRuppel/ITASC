@@ -102,8 +102,9 @@ def _eval_maps(img: np.ndarray, **eval_kwargs):
     a single forward pass, so no channel is segmented twice to surface them. Use
     :func:`cell_maps_to_preview` to turn the raw pair into display maps.
     """
-    model = cellpose_runner.get_model()
-    masks, flows, _styles = model.eval(img, normalize=_NORMALIZE, **eval_kwargs)
+    masks, flows, _styles = cellpose_runner.eval_model(
+        img, normalize=_NORMALIZE, **eval_kwargs
+    )
     dp = np.asarray(flows[1], dtype=np.float32)
     cellprob = np.asarray(flows[2], dtype=np.float32)
     return np.asarray(masks, dtype=np.int32), cellprob, dp
@@ -131,8 +132,9 @@ def offset_slice_labels(slices: list[np.ndarray]) -> np.ndarray:
 
 def _eval_masks(img: np.ndarray, **eval_kwargs) -> np.ndarray:
     """Run ``model.eval`` and return its native masks (index 0) as ``int32``."""
-    model = cellpose_runner.get_model()
-    masks, _flows, _styles = model.eval(img, normalize=_NORMALIZE, **eval_kwargs)
+    masks, _flows, _styles = cellpose_runner.eval_model(
+        img, normalize=_NORMALIZE, **eval_kwargs
+    )
     return np.asarray(masks, dtype=np.int32)
 
 

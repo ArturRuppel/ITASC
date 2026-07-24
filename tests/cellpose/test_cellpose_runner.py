@@ -190,6 +190,35 @@ def test_set_pretrained_model_blank_restores_default_and_resets_cache(monkeypatc
     assert r.selected_pretrained_model() == "cpsam"
 
 
+def test_checkpoint_transformer_bsize_infers_from_pos_embed(tmp_path):
+    r = _runner()
+    import torch
+
+    checkpoint = tmp_path / "custom"
+    torch.save({"encoder.pos_embed": torch.zeros((1, 16, 16, 1024))}, checkpoint)
+
+    assert r._checkpoint_transformer_bsize(checkpoint) == 128
+
+
+def test_eval_model_passes_custom_bsize(monkeypatch):
+    r = _runner()
+    calls = []
+
+    class _Recorder:
+        _itasc_bsize = 128
+
+        def eval(self, img, **kwargs):
+            calls.append(kwargs)
+            arr = np.asarray(img, dtype=np.float32)
+            return None, (None, np.zeros((2, *arr.shape)), np.zeros(arr.shape)), None
+
+    monkeypatch.setattr(r, "_MODEL", _Recorder())
+    r.eval_model(np.zeros((8, 8), dtype=np.float32), normalize=True)
+
+    assert calls[-1]["bsize"] == 128
+    assert calls[-1]["normalize"] is True
+
+
 def test_get_model_uses_gpu_when_cuda_available(monkeypatch):
     r = _runner()
     received_kwargs = {}

@@ -138,7 +138,7 @@ def _prob_to_cellprob(p: float) -> float:
 
 
 def _layer_name(channel_label: str, kind: str) -> str:
-    """Channel-tagged layer name, e.g. ``[Channel 1] masks`` / ``[Channel 2] tracked``."""
+    """Channel-tagged layer name, e.g. ``[Channel 1] masks`` / ``[Channel 2] masks``."""
     return f"[{channel_label}] {kind}"
 
 
@@ -689,7 +689,7 @@ class CellposeSegmentTrackWidget(QWidget):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Select Cellpose model",
-            filter="Cellpose models (*.pt *.pth *.npy);;All files (*)",
+            filter="All files (*)",
         )
         if path:
             self.custom_model_edit.setText(path)
@@ -838,12 +838,13 @@ class CellposeSegmentTrackWidget(QWidget):
         self._set_channel_layer(which, layer)
 
     def _load_saved_masks(self, entry) -> list[str]:
-        """Load any masks already on disk for this position as ``tracked`` layers.
+        """Load any masks already on disk for this position as ``masks`` layers.
 
         Reads each output name that exists under the position folder into a
-        ``[Channel N] tracked`` Labels layer — the same name :meth:`_result_layer`
-        saves from, so a revisited position can be corrected and re-saved in place.
-        Returns the output names that were loaded (for the status line).
+        ``[Channel N] masks`` Labels layer — the one layer per channel that
+        segmentation, tracking, and :meth:`_result_layer` all share, so a
+        revisited position can be corrected (or re-segmented) and re-saved in
+        place. Returns the output names that were loaded (for the status line).
         """
         ch1_out, ch2_out = self.folder_panel.output_names()
         position = entry["position"]
@@ -855,7 +856,7 @@ class CellposeSegmentTrackWidget(QWidget):
             if not path.is_file():
                 continue
             arr = np.asarray(tifffile.imread(str(path)))
-            self._add_labels(_layer_name(_CH1_LABEL if which == 1 else _CH2_LABEL, "tracked"), arr)
+            self._add_labels(_layer_name(_CH1_LABEL if which == 1 else _CH2_LABEL, "masks"), arr)
             loaded.append(out_name)
         return loaded
 
@@ -872,18 +873,17 @@ class CellposeSegmentTrackWidget(QWidget):
                 self.viewer.layers.remove(self.viewer.layers[name])
 
     def _result_layer(self, which: int):
-        """The Labels layer holding this channel's tracked masks, else None.
+        """The Labels layer holding this channel's masks, else None.
 
-        Prefers the joint ``tracked`` output; falls back to the single-channel
-        ``masks`` layer (Channel 1's Segment → Track updates it in place).
+        There is one masks layer per channel: segmentation creates it, tracking
+        (single-channel and joint) mutates it in place, and loading a saved
+        position restores it under the same name — so Save always writes the
+        current working masks.
         """
         label = _CH1_LABEL if which == 1 else _CH2_LABEL
-        for kind in ("tracked", "masks"):
-            name = _layer_name(label, kind)
-            layer = self.viewer.layers[name] if name in self.viewer.layers else None
-            if isinstance(layer, Labels):
-                return layer
-        return None
+        name = _layer_name(label, "masks")
+        layer = self.viewer.layers[name] if name in self.viewer.layers else None
+        return layer if isinstance(layer, Labels) else None
 
     def _on_folder_save(self) -> None:
         """Write the current position's tracked masks under the output names."""
@@ -1190,8 +1190,8 @@ class CellposeSegmentTrackWidget(QWidget):
         max_frame_gap = int(self.track_gap_spin.value())
         self._cancel_requested = False
         progress_signal = self._progress_signal
-        ch1_name = _layer_name(_CH1_LABEL, "tracked")
-        ch2_name = _layer_name(_CH2_LABEL, "tracked")
+        ch1_name = _layer_name(_CH1_LABEL, "masks")
+        ch2_name = _layer_name(_CH2_LABEL, "masks")
 
         def _done(result):
             ch1_tracked, ch2_tracked = result

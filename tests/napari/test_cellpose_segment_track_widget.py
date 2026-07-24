@@ -108,7 +108,7 @@ def test_to_tzyx_and_squeeze_z_roundtrip():
 
 def test_layer_name_tags_channel():
     assert stw._layer_name("Channel 1", "masks") == "[Channel 1] masks"
-    assert stw._layer_name("Channel 2", "tracked") == "[Channel 2] tracked"
+    assert stw._layer_name("Channel 2", "masks") == "[Channel 2] masks"
     assert stw._layer_name("Channel 1", "preview") == "[Channel 1] preview"
 
 
@@ -854,7 +854,7 @@ def test_activate_button_disabled_until_labels_layer_selected():
     cc = w.cell_correction
     assert cc.active_btn.isEnabled() is False
     assert "Select a Labels layer" in cc.active_btn.toolTip()
-    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] tracked")
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] masks")
     viewer.layers.selection.active = labels
     # the fake viewer's selection has no real events to fire (see
     # test_source_pill_darkens_when_bound_layer_removed for the same pattern),
@@ -871,7 +871,7 @@ def test_activate_button_stays_enabled_once_checked_even_if_selection_moves_away
     viewer = _FakeViewer()
     w = stw.CellposeSegmentTrackWidget(viewer)
     cc = w.cell_correction
-    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] tracked")
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 1] masks")
     viewer.layers.selection.active = labels
     cc.active_btn.setChecked(True)  # activates correction on the bound layer
     assert cc.active_btn.isChecked() is True
@@ -905,7 +905,7 @@ def test_spawn_intensity_frame_none_without_matching_prob_layer():
     QApplication.instance() or QApplication([])
     viewer = _FakeViewer()
     w = stw.CellposeSegmentTrackWidget(viewer)
-    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 2] tracked")
+    labels = napari.layers.Labels(np.zeros((2, 5, 5), dtype=np.int32), name="[Channel 2] masks")
     viewer.layers.selection.active = labels
     w.cell_correction.active_btn.setChecked(True)
 
@@ -1379,6 +1379,35 @@ def test_folder_save_writes_masks_and_flips_dot(tmp_path):
     w.deleteLater()
 
 
+def test_folder_save_clobbers_an_existing_mask_file(tmp_path):
+    """Re-saving a position overwrites the mask already on disk (not a no-op).
+
+    Regression: a prior save left ``nucleus_labels.tif`` on disk; the corrected
+    working masks must replace it, and the single ``[Channel N] masks`` layer
+    means Save reads the fresh data rather than a stale shadow layer.
+    """
+    root = _fake_project(tmp_path)
+    entry = {e["rel"]: e for e in
+             fp.discover_folders(root, "0_input/nuc.tif", "")}["WT/p1"]
+    out = entry["position"] / "nucleus_labels.tif"
+    tifffile.imwrite(out, np.zeros((2, 4, 4), dtype=np.int32))  # stale prior save
+    QApplication.instance() or QApplication([])
+    viewer = _FakeViewer()
+    w = stw.CellposeSegmentTrackWidget(viewer)
+    w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
+    w.folder_panel._add_entries([entry])
+    w.folder_panel.list_widget.setCurrentRow(0)
+
+    corrected = np.zeros((2, 4, 4), dtype=np.int32)
+    corrected[0, 1, 1] = 42
+    viewer.layers["[Channel 1] masks"] = napari.layers.Labels(
+        corrected, name="[Channel 1] masks")
+
+    w._on_folder_save()
+    assert np.array_equal(tifffile.imread(out), corrected)  # clobbered, not stale
+    w.deleteLater()
+
+
 def test_folder_save_without_result_layer_is_a_noop(tmp_path):
     root = _fake_project(tmp_path)
     entry = {e["rel"]: e for e in
@@ -1412,12 +1441,12 @@ def test_folder_position_loads_existing_masks(tmp_path):
     w.folder_panel._fields["ch2_output"].setText("cell_labels.tif")
 
     w._on_folder_position(entry)
-    # Loaded into the same [Channel N] tracked names Save reads back, so a
-    # revisited position corrects and re-saves in place.
-    assert "[Channel 1] tracked" in viewer.layers
-    assert "[Channel 2] tracked" in viewer.layers
+    # Loaded into the same [Channel N] masks names Save reads back, so a
+    # revisited position corrects (or re-segments) and re-saves in place.
+    assert "[Channel 1] masks" in viewer.layers
+    assert "[Channel 2] masks" in viewer.layers
     assert np.array_equal(
-        viewer.layers["[Channel 1] tracked"].data,
+        viewer.layers["[Channel 1] masks"].data,
         np.arange(2 * 4 * 4, dtype=np.int32).reshape(2, 4, 4),
     )
     assert "existing masks" in w.status_lbl.text()
@@ -1434,6 +1463,6 @@ def test_folder_position_without_saved_masks_loads_only_inputs(tmp_path):
     w.folder_panel._fields["ch1_output"].setText("nucleus_labels.tif")
 
     w._on_folder_position(entry)
-    assert "[Channel 1] tracked" not in viewer.layers  # nothing saved yet
+    assert "[Channel 1] masks" not in viewer.layers  # nothing saved yet
     assert w._result_layer(1) is None
     w.deleteLater()
