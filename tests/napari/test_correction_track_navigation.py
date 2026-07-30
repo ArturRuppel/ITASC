@@ -14,6 +14,7 @@ import numpy as np
 
 from itasc.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 from itasc.napari.nucleus_workflow_widget import NucleusWorkflowWidget
+from itasc.napari.correction._correction_navigation import ensure_cell_visible
 from itasc.napari.correction._correction_keymap import HeldKeyRepeater, KEY_REPEAT_DELAY_MS
 from itasc.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
@@ -113,35 +114,139 @@ def _navigate_stub(*, present_at):
     dims = types.SimpleNamespace(current_step=tuple(step))
     viewer = types.SimpleNamespace(dims=dims)
     select_calls: list = []
+    visible_calls: list = []
     obj = types.SimpleNamespace(
         viewer=viewer,
         correction_widget=types.SimpleNamespace(
             select_label=lambda t, cid: select_calls.append((t, cid))
         ),
         _current_cell_ids=lambda t: present_at.get(t, set()),
+        _ensure_cell_visible=lambda t, cid: visible_calls.append((t, cid)),
         _navigating_from_lineage=False,
         _select_calls=select_calls,
+        _visible_calls=visible_calls,
     )
     return obj
 
 
-def test_navigate_to_present_frame_selects_without_touching_camera():
+def test_navigate_to_present_frame_selects_and_checks_visibility():
     obj = _navigate_stub(present_at={2: {7}})
     NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
     assert obj.viewer.dims.current_step[0] == 2
     assert obj._select_calls == [(2, 7)]
-    # The stub viewer has no ``camera`` at all: selecting must not reach for it,
-    # so any reintroduced pan/zoom would raise here.
+    assert obj._visible_calls == [(2, 7)]
+    # Framing goes through _ensure_cell_visible and nowhere else: the stub viewer
+    # has no ``camera``, so a pan/zoom written straight from _navigate_to_cell
+    # would raise here.
     assert not hasattr(obj.viewer, "camera")
 
 
 def test_navigate_to_empty_placeholder_frame_keeps_selection():
     # Track 7 is absent on frame 2 (an empty film-strip placeholder): jump to the
-    # frame but do not re-select (which would clear the track).
+    # frame but do not re-select (which would clear the track) or pan.
     obj = _navigate_stub(present_at={0: {7}})
     NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
     assert obj.viewer.dims.current_step[0] == 2
     assert obj._select_calls == []
+    assert obj._visible_calls == []
+
+
+# ── Off-screen-only panning (ensure_cell_visible) ───────────────────────────
+
+
+def _framing_env(data, *, canvas, center=(0.0, 50.0, 50.0), zoom=4.0):
+    """A ``(viewer, layer)`` pair for :func:`ensure_cell_visible`.
+
+    ``data_to_world`` is identity (unit scale), so world coords == data coords.
+    With the defaults the camera sits at (50, 50) and a 200x400 canvas at zoom 4
+    shows y within +/-25 and x within +/-50 of that, shrunk by the 0.8 margin to
+    +/-20 (y) and +/-40 (x).
+    """
+    layer = types.SimpleNamespace(
+        data=data,
+        data_to_world=lambda coord: np.asarray(coord, dtype=float),
+    )
+    camera = types.SimpleNamespace(center=center, zoom=zoom)
+    canvas_obj = None if canvas is None else types.SimpleNamespace(size=canvas)
+    viewer = types.SimpleNamespace(
+        camera=camera,
+        window=types.SimpleNamespace(
+            _qt_viewer=types.SimpleNamespace(canvas=canvas_obj)
+        ),
+    )
+    return viewer, layer
+
+
+def _cell_at(y, x, *, cell_id=7, frame=0, shape=(3, 200, 200)):
+    data = np.zeros(shape, dtype=int)
+    data[frame, y, x] = cell_id
+    return data
+
+
+def test_on_screen_cell_does_not_move_the_camera():
+    # (55, 60) is 5 off-centre in y and 10 in x — inside the 20/40 margins.
+    viewer, layer = _framing_env(_cell_at(55, 60), canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 50.0, 50.0)
+    assert viewer.camera.zoom == 4.0
+
+
+def test_off_screen_cell_pans_without_zooming():
+    # (150, 60) is 100 off-centre in y, well outside the 20 margin.
+    viewer, layer = _framing_env(_cell_at(150, 60), canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 150.0, 60.0)
+    assert viewer.camera.zoom == 4.0  # untouched — this is the whole point
+
+
+def test_cell_just_inside_the_margin_stays_put():
+    # y offset 20 is exactly the margin (0.8 * 200/4 / 2); x offset 40 likewise.
+    viewer, layer = _framing_env(_cell_at(70, 90), canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 50.0, 50.0)
+
+
+def test_cell_in_the_outer_margin_is_treated_as_off_screen():
+    # y offset 24 is on canvas (raw half-height 25) but inside the 0.8 margin,
+    # so it is panned to rather than left hugging the edge.
+    viewer, layer = _framing_env(_cell_at(74, 50), canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 74.0, 50.0)
+
+
+def test_visibility_uses_the_current_frame_not_the_whole_track():
+    # Track 7 is on screen at frame 0 and far away at frame 2. Selecting it on
+    # frame 0 must not pan just because the track wanders off screen later.
+    data = _cell_at(55, 60)
+    data[2, 190, 190] = 7
+    viewer, layer = _framing_env(data, canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 50.0, 50.0)
+    ensure_cell_visible(viewer, layer, 2, 7)
+    assert viewer.camera.center == (0.0, 190.0, 190.0)
+
+
+def test_without_canvas_size_the_camera_is_left_alone():
+    # Unknown viewport → assume visible rather than pan blindly.
+    viewer, layer = _framing_env(_cell_at(150, 60), canvas=None)
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 50.0, 50.0)
+    assert viewer.camera.zoom == 4.0
+
+
+def test_absent_cell_is_a_noop():
+    viewer, layer = _framing_env(_cell_at(150, 60), canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 999)
+    assert viewer.camera.center == (0.0, 50.0, 50.0)
+    assert viewer.camera.zoom == 4.0
+
+
+def test_pan_targets_the_mask_centroid():
+    data = np.zeros((3, 200, 200), dtype=int)
+    data[0, 150:161, 60:71] = 7  # centroid (155, 65)
+    viewer, layer = _framing_env(data, canvas=(200, 400))
+    ensure_cell_visible(viewer, layer, 0, 7)
+    assert viewer.camera.center == (0.0, 155.0, 65.0)
 
 
 # ── Space-bar movie play/stop (_toggle_movie_playback) ──────────────────────

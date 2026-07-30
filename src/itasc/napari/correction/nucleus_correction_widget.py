@@ -97,6 +97,7 @@ from itasc.napari.correction._correction_ui_nucleus import build_nucleus_correct
 from itasc.napari.correction._correction_paint import paint_assignments
 from itasc.napari.correction._correction_events import CorrectionEvents
 from itasc.napari.correction._correction_keymap import HeldKeyRepeater
+from itasc.napari.correction._correction_navigation import ensure_cell_visible
 from itasc.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
     playback_loops,
@@ -172,8 +173,8 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
       (:class:`CandidateGalleryController`).
     * Stateless helpers in sibling modules: control assembly
       (:mod:`_correction_ui_nucleus`), label painting (:mod:`_correction_paint`),
-      playback queries
-      (:mod:`_correction_playback`), held-key auto-repeat
+      off-screen-selection panning (:mod:`_correction_navigation`), playback
+      queries (:mod:`_correction_playback`), held-key auto-repeat
       (:mod:`_correction_keymap`), label colormaps (:mod:`_correction_centroids`)
       and the shared view-state / owned-layer lifecycle
       (:class:`CorrectionViewStateMixin`, also used by the cell widget).
@@ -1776,12 +1777,14 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
     def _navigate_to_cell(self, t: int, cell_id: int, *, from_lineage: bool) -> None:
         """Jump to frame ``t`` and select ``cell_id``.
 
-        The image-viewer camera is deliberately left where the user put it — pan
-        and zoom are never touched by a selection, so the view stays put and the
-        spotlight alone marks the newly selected cell. With ``from_lineage=False``
-        (keyboard track stepping) the resulting selection callback recenters the
-        *lineage canvas* on the track; a lineage click passes ``from_lineage=True``
-        because the clicked row is already shown.
+        The image-viewer zoom is never touched, and the pan only moves when the
+        selected cell would otherwise be off screen (see
+        :func:`~itasc.napari.correction._correction_navigation.ensure_cell_visible`),
+        so the view stays where the user put it and the spotlight marks the
+        selection. With ``from_lineage=False`` (keyboard track stepping) the
+        resulting selection callback recenters the *lineage canvas* on the track;
+        a lineage click passes ``from_lineage=True`` because the clicked row is
+        already shown.
         """
         try:
             step = list(self.viewer.dims.current_step)
@@ -1804,6 +1807,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             logger.exception("focus-mode navigation: cell select failed")
         finally:
             self._navigating_from_lineage = False
+        self._ensure_cell_visible(int(t), int(cell_id))
 
     def _step_film_frame(self, *, dx: int = 0, dy: int = 0) -> None:
         """Step the current frame across the selected track's film-strip grid.
@@ -1826,7 +1830,8 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         scan, this walks the sorted list of every track ID in the stack and
         navigates to the chosen track exactly as a lineage-canvas click would —
         landing on a frame where it exists, selecting it, and recentering the
-        lineage canvas on it. The image viewer's camera is left alone.
+        lineage canvas on it. Because the next track can sit anywhere in the
+        field of view, this is the path most likely to need the off-screen pan.
         """
         layer = self._correction_tracked_layer()
         if layer is None:
@@ -1849,6 +1854,14 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             if frames:
                 t = frames[0]
         self._navigate_to_cell(t, nxt, from_lineage=False)
+
+    def _ensure_cell_visible(self, t: int, cell_id: int) -> None:
+        """Pan onto the selection only when it is off screen; never zoom (logic
+        lives in
+        :func:`itasc.napari.correction._correction_navigation.ensure_cell_visible`)."""
+        ensure_cell_visible(
+            self.viewer, self._correction_tracked_layer(), t, cell_id
+        )
 
     def _find_plugin_dock(self):
         """The QDockWidget hosting the correction header, walking up from it.
