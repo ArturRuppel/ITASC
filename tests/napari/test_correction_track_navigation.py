@@ -14,7 +14,6 @@ import numpy as np
 
 from itasc.napari.correction.nucleus_correction_widget import NucleusCorrectionWidget
 from itasc.napari.nucleus_workflow_widget import NucleusWorkflowWidget
-from itasc.napari.correction._correction_navigation import center_viewer_on_cell
 from itasc.napari.correction._correction_keymap import HeldKeyRepeater, KEY_REPEAT_DELAY_MS
 from itasc.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
@@ -114,106 +113,35 @@ def _navigate_stub(*, present_at):
     dims = types.SimpleNamespace(current_step=tuple(step))
     viewer = types.SimpleNamespace(dims=dims)
     select_calls: list = []
-    center_calls: list = []
     obj = types.SimpleNamespace(
         viewer=viewer,
         correction_widget=types.SimpleNamespace(
             select_label=lambda t, cid: select_calls.append((t, cid))
         ),
         _current_cell_ids=lambda t: present_at.get(t, set()),
-        _center_viewer_on_cell=lambda t, cid: center_calls.append((t, cid)),
         _navigating_from_lineage=False,
         _select_calls=select_calls,
-        _center_calls=center_calls,
     )
     return obj
 
 
-def test_navigate_to_present_frame_selects_and_centers():
+def test_navigate_to_present_frame_selects_without_touching_camera():
     obj = _navigate_stub(present_at={2: {7}})
     NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
     assert obj.viewer.dims.current_step[0] == 2
     assert obj._select_calls == [(2, 7)]
-    assert obj._center_calls == [(2, 7)]
+    # The stub viewer has no ``camera`` at all: selecting must not reach for it,
+    # so any reintroduced pan/zoom would raise here.
+    assert not hasattr(obj.viewer, "camera")
 
 
 def test_navigate_to_empty_placeholder_frame_keeps_selection():
     # Track 7 is absent on frame 2 (an empty film-strip placeholder): jump to the
-    # frame but do not re-select (which would clear the track) or recenter.
+    # frame but do not re-select (which would clear the track).
     obj = _navigate_stub(present_at={0: {7}})
     NucleusCorrectionWidget._navigate_to_cell(obj, 2, 7, from_lineage=True)
     assert obj.viewer.dims.current_step[0] == 2
     assert obj._select_calls == []
-    assert obj._center_calls == []
-
-
-# ── Whole-track camera framing (_center_viewer_on_cell) ─────────────────────
-
-
-def _framing_env(data, *, canvas):
-    """A ``(viewer, layer)`` pair for :func:`center_viewer_on_cell`.
-
-    ``data_to_world`` is identity (unit scale), so world bbox == data bbox.
-    """
-    layer = types.SimpleNamespace(
-        data=data,
-        data_to_world=lambda coord: np.asarray(coord, dtype=float),
-    )
-    camera = types.SimpleNamespace(center=(0.0, 0.0, 0.0), zoom=1.0)
-    canvas_obj = (
-        None if canvas is None
-        else types.SimpleNamespace(size=canvas)
-    )
-    viewer = types.SimpleNamespace(
-        camera=camera,
-        window=types.SimpleNamespace(
-            _qt_viewer=types.SimpleNamespace(canvas=canvas_obj)
-        ),
-    )
-    return viewer, layer
-
-
-def _track_bbox_stack():
-    # Track 7 spans frames 0 and 2; its union bbox is y∈[10,30], x∈[10,50],
-    # centered at (20, 30) with extents 20 (y) and 40 (x).
-    data = np.zeros((3, 100, 100), dtype=int)
-    data[0, 10, 10] = 7
-    data[2, 30, 50] = 7
-    return data
-
-
-def test_center_frames_whole_track_bbox_not_just_current_frame():
-    viewer, layer = _framing_env(_track_bbox_stack(), canvas=(200, 400))
-    center_viewer_on_cell(viewer, layer, 0, 7)
-    # Camera centers on the full-track bbox center (20, 30), not frame 0's cell.
-    assert viewer.camera.center == (0.0, 20.0, 30.0)
-    # zoom = min(0.5*200/20, 0.5*400/40) = min(5, 5) = 5 → bbox fills ~50%.
-    assert viewer.camera.zoom == 5.0
-
-
-def test_center_zoom_picks_the_limiting_dimension():
-    # Wide-but-short track: x extent dominates, so it caps the zoom.
-    data = np.zeros((1, 100, 100), dtype=int)
-    data[0, 40, 0] = 3
-    data[0, 50, 80] = 3  # y∈[40,50] (10), x∈[0,80] (80)
-    viewer, layer = _framing_env(data, canvas=(200, 400))
-    center_viewer_on_cell(viewer, layer, 0, 3)
-    # zoom_y = 0.5*200/10 = 10, zoom_x = 0.5*400/80 = 2.5 → min = 2.5.
-    assert viewer.camera.zoom == 2.5
-
-
-def test_center_without_canvas_size_still_pans_but_leaves_zoom():
-    viewer, layer = _framing_env(_track_bbox_stack(), canvas=None)
-    center_viewer_on_cell(viewer, layer, 0, 7)
-    assert viewer.camera.center == (0.0, 20.0, 30.0)
-    assert viewer.camera.zoom == 1.0  # untouched
-
-
-def test_center_on_absent_cell_is_a_noop():
-    viewer, layer = _framing_env(_track_bbox_stack(), canvas=(200, 400))
-    center_viewer_on_cell(viewer, layer, 0, 999)
-    assert viewer.camera.center == (0.0, 0.0, 0.0)
-    assert viewer.camera.zoom == 1.0
 
 
 # ── Space-bar movie play/stop (_toggle_movie_playback) ──────────────────────

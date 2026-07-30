@@ -97,7 +97,6 @@ from itasc.napari.correction._correction_ui_nucleus import build_nucleus_correct
 from itasc.napari.correction._correction_paint import paint_assignments
 from itasc.napari.correction._correction_events import CorrectionEvents
 from itasc.napari.correction._correction_keymap import HeldKeyRepeater
-from itasc.napari.correction._correction_navigation import center_viewer_on_cell
 from itasc.napari.correction._correction_playback import (
     nav_repeat_interval_ms,
     playback_loops,
@@ -173,7 +172,7 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
       (:class:`CandidateGalleryController`).
     * Stateless helpers in sibling modules: control assembly
       (:mod:`_correction_ui_nucleus`), label painting (:mod:`_correction_paint`),
-      camera framing (:mod:`_correction_navigation`), playback queries
+      playback queries
       (:mod:`_correction_playback`), held-key auto-repeat
       (:mod:`_correction_keymap`), label colormaps (:mod:`_correction_centroids`)
       and the shared view-state / owned-layer lifecycle
@@ -1767,22 +1766,22 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         self._all_tracks.set_filled_mode(filled)
 
     def _navigate_to_error(self, t: int, cell_id: int) -> None:
-        """Lineage-canvas click handler: jump to frame ``t``, select and center.
+        """Lineage-canvas click handler: jump to frame ``t`` and select the cell.
 
         The clicked row is already in view, so the canvas recenter is suppressed
-        (``from_lineage=True``) while the image viewer is still panned onto the
-        cell.
+        (``from_lineage=True``).
         """
         self._navigate_to_cell(int(t), int(cell_id), from_lineage=True)
 
     def _navigate_to_cell(self, t: int, cell_id: int, *, from_lineage: bool) -> None:
-        """Jump to frame ``t``, select ``cell_id`` and center both views on it.
+        """Jump to frame ``t`` and select ``cell_id``.
 
-        Besides stepping to the frame and selecting the cell, this pans the
-        image-viewer camera so the cell sits in the middle of the canvas. With
-        ``from_lineage=False`` (keyboard track stepping) the resulting selection
-        callback also recenters the lineage canvas on the track; a lineage click
-        passes ``from_lineage=True`` because the clicked row is already shown.
+        The image-viewer camera is deliberately left where the user put it — pan
+        and zoom are never touched by a selection, so the view stays put and the
+        spotlight alone marks the newly selected cell. With ``from_lineage=False``
+        (keyboard track stepping) the resulting selection callback recenters the
+        *lineage canvas* on the track; a lineage click passes ``from_lineage=True``
+        because the clicked row is already shown.
         """
         try:
             step = list(self.viewer.dims.current_step)
@@ -1805,7 +1804,6 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             logger.exception("focus-mode navigation: cell select failed")
         finally:
             self._navigating_from_lineage = False
-        self._center_viewer_on_cell(int(t), int(cell_id))
 
     def _step_film_frame(self, *, dx: int = 0, dy: int = 0) -> None:
         """Step the current frame across the selected track's film-strip grid.
@@ -1822,13 +1820,13 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         )
 
     def _step_track(self, direction: int) -> None:
-        """Select the next/previous track in the global list and recenter on it.
+        """Select the next/previous track in the global list.
 
         Bound to Shift+Up / Shift+Down in focus mode. Unlike a frame-local
         scan, this walks the sorted list of every track ID in the stack and
         navigates to the chosen track exactly as a lineage-canvas click would —
-        landing on a frame where it exists, selecting it, and recentering both
-        the lineage canvas and the image viewer.
+        landing on a frame where it exists, selecting it, and recentering the
+        lineage canvas on it. The image viewer's camera is left alone.
         """
         layer = self._correction_tracked_layer()
         if layer is None:
@@ -1851,13 +1849,6 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
             if frames:
                 t = frames[0]
         self._navigate_to_cell(t, nxt, from_lineage=False)
-
-    def _center_viewer_on_cell(self, t: int, cell_id: int) -> None:
-        """Frame the selected track in the viewer (camera math lives in
-        :func:`itasc.napari.correction._correction_navigation.center_viewer_on_cell`)."""
-        center_viewer_on_cell(
-            self.viewer, self._correction_tracked_layer(), t, cell_id
-        )
 
     def _find_plugin_dock(self):
         """The QDockWidget hosting the correction header, walking up from it.
