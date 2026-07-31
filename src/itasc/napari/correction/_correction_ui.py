@@ -294,6 +294,7 @@ _SHORTCUT_COLUMNS = (
                 ("Ctrl+Right-click", "Swap with the clicked cell, or attach it to the selected track (other frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
+                ("Alt+Left", "Stands in for the right button (touchpad / gamepad)"),
             ),
         ),
         ("History", (("Ctrl+Z", "Undo"),)),

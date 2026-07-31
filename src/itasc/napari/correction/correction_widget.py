@@ -61,6 +61,35 @@ if os.environ.get("ITASC_DEBUG"):
 _DRAW_LAYER      = "[Correction] CorrectionDraw"
 _SPOTLIGHT_LAYER = "[Correction] CellSpotlight"
 
+# vispy's button numbering, which is what napari hands the drag callbacks.
+_BTN_LEFT   = 1
+_BTN_RIGHT  = 2
+_BTN_MIDDLE = 3
+
+
+def alias_pointer_button(btn: int, mods: set[str]) -> tuple[int, set[str]]:
+    """Let Alt+left stand in for the right button.
+
+    Right-*drag* is the gesture that hurts on a touchpad: the button has to be
+    held down by one finger while another draws the stroke, and on a clickpad
+    those fingers are fighting over the same surface. Alt+left-drag is the same
+    stroke with one finger and a modifier the other hand already has, which is
+    also what makes it reachable from the gamepad — a held pad button *is* a
+    held modifier, so no pointer events have to be synthesised anywhere.
+
+    The alias is applied once, before any branch reads the button, so every
+    right-button gesture gains it at the same time and none of them has to know
+    it exists: Alt+Shift+left-drag splits/carves, Alt+Ctrl+left-click swaps.
+
+    Alt is dropped from *mods* on the way through, so the branches keep matching
+    on exact modifier sets. Middle-click is deliberately left alone — it has no
+    spare modifier to claim, and its actions (spawn / erase) are one-shot
+    clicks rather than drags, so they cost a two-finger tap and no more.
+    """
+    if btn == _BTN_LEFT and "Alt" in mods:
+        return _BTN_RIGHT, mods - {"Alt"}
+    return btn, mods
+
 
 class CorrectionWidget(QWidget):
     """Dock widget for interactive label correction."""
@@ -108,6 +137,7 @@ class CorrectionWidget(QWidget):
 
         self._drag_callbacks: list = []
         self._bound_keys: list = []
+        self._suspended_move_cbs: list = []
 
         self._in_deactivate: bool = False
 
@@ -339,6 +369,7 @@ class CorrectionWidget(QWidget):
             manual_rows = [
                 ("Shift+Left-drag", "Extend the selected cell's contour"),
                 ("Shift+Right-drag", "Draw a line through a neighbour to cut it and merge the near piece into the selected cell"),
+                ("Alt+Left", "Stands in for the right button (touchpad / gamepad)"),
             ]
         else:
             manual_rows = [
@@ -349,6 +380,7 @@ class CorrectionWidget(QWidget):
                 ("Ctrl+Right-click", "Swap with the clicked cell, or attach it to the selected track (other frame)"),
                 ("Shift+Left-drag", "Draw / extend cell path"),
                 ("Shift+Right-drag", "Split by drawn line"),
+                ("Alt+Left", "Stands in for the right button (touchpad / gamepad)"),
             ]
         row = self._add_shortcut_group(
             grid,
@@ -1131,6 +1163,7 @@ class CorrectionWidget(QWidget):
 
     def _register_callbacks(self) -> None:
         layer = self._layer
+        self._suspend_brush_size_on_alt(layer)
 
         def key_delete(_layer):
             try:
@@ -1164,8 +1197,9 @@ class CorrectionWidget(QWidget):
                     return
 
                 t   = int(self.viewer.dims.current_step[0])
-                btn = event.button
-                mods = {m.name for m in event.modifiers}
+                btn, mods = alias_pointer_button(
+                    event.button, {m.name for m in event.modifiers}
+                )
 
                 seg2d = self._frame_view(_layer, t)
                 pos   = _layer.world_to_data(event.position)
@@ -1371,6 +1405,39 @@ class CorrectionWidget(QWidget):
             except Exception:
                 pass
         self._bound_keys.clear()
+        self._restore_brush_size_on_alt()
+
+    # -- napari's Alt gesture, which collides with our right-button alias ------
+    #
+    # A Labels layer ships a mouse-move callback that resizes the brush while
+    # Alt is held, freezing the cursor to a circle for the duration. Alt is what
+    # :func:`alias_pointer_button` reads, so that callback would fire on every
+    # aliased drag. The brush itself is irrelevant to us — correction never
+    # paints through napari — but the frozen cursor is restored to ``'circle'``
+    # rather than to what pan_zoom mode actually wants, so an Alt+drag would
+    # leave a brush cursor sitting on a layer that has no brush. Park the
+    # callback for as long as correction owns the layer and put it back after.
+
+    def _suspend_brush_size_on_alt(self, layer) -> None:
+        self._suspended_move_cbs = []
+        cbs = getattr(layer, "mouse_move_callbacks", None)
+        if not cbs:
+            return
+        # Matched by class name: it lives in a private napari module, so an
+        # import would be the brittle half of this. Missing it costs a cursor
+        # glitch, not a wrong label, which is the right way for it to fail.
+        for cb in list(cbs):
+            if type(cb).__name__ == "BrushSizeOnMouseMove":
+                cbs.remove(cb)
+                self._suspended_move_cbs.append(cb)
+
+    def _restore_brush_size_on_alt(self) -> None:
+        cbs = getattr(self._layer, "mouse_move_callbacks", None)
+        if cbs is not None:
+            for cb in self._suspended_move_cbs:
+                if cb not in cbs:
+                    cbs.append(cb)
+        self._suspended_move_cbs = []
 
     def _toggle_outline(self, checked: bool) -> None:
         if self._layer is None:
