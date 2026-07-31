@@ -187,7 +187,7 @@ def _position_frame(
     """Outer-join (within one position) every co-targeting quantity on the table's
     keys, namespacing each quantity's value columns. ``None`` when no targeting
     quantity yields a table for this position."""
-    inputs = position_inputs_from_record(record)
+    inputs = position_inputs_from_record(record, params)
     merged: pd.DataFrame | None = None
     for quantifier in quantifiers:
         if not set(quantifier.requires) <= available_fields(inputs):

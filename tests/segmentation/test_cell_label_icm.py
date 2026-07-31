@@ -102,6 +102,41 @@ def test_only_track_ids_appear_and_anchors_preserved(synthetic_3d):
     assert np.all(labels[nuc_mask] == nuc[nuc_mask])
 
 
+def test_initialize_with_no_nucleus_labels_returns_all_background(synthetic_3d):
+    """A nucleus stack with no positive labels (e.g. segmentation run before
+    nucleus tracking produced anything) must return an all-background label
+    stack, not crash with an IndexError on the empty label set."""
+    _nuc, fg, ct = synthetic_3d
+    empty_nuc = np.zeros_like(_nuc)
+
+    state, labels = initialize_icm(empty_nuc, fg, ct, CellLabelICMParams())
+
+    assert labels.shape == fg.shape
+    assert labels.dtype == np.uint32
+    assert not labels.any()  # every pixel background
+    assert state.n_labels == 0
+
+
+def test_argmin_init_from_dict_empty_labels_is_all_background():
+    """The pure argmin helper must also survive an empty label set."""
+    labels = _argmin_init_from_dict({}, np.ones((1, 2, 2), dtype=bool),
+                                    np.array([], dtype=np.uint32))
+    assert labels.shape == (1, 2, 2)
+    assert not labels.any()
+
+
+def test_cache_hit_matches_fresh_compute(tmp_path, synthetic_3d):
+    """Building labels from a written unary cache (streaming read) must equal the
+    fresh streaming compute — the cache round-trip changes nothing."""
+    nuc, fg, ct = synthetic_3d
+    _s, fresh = initialize_icm(nuc, fg, ct, CellLabelICMParams())
+    # First call writes the cache (miss), second reads it (hit).
+    _s, miss = initialize_icm(nuc, fg, ct, CellLabelICMParams(), cache_dir=tmp_path)
+    _s, hit = initialize_icm(nuc, fg, ct, CellLabelICMParams(), cache_dir=tmp_path)
+    np.testing.assert_array_equal(fresh, miss)
+    np.testing.assert_array_equal(fresh, hit)
+
+
 def test_state_has_no_pairwise_fields():
     # The pairwise/refine machinery is gone — the state is unary-only.
     for attr in ("h", "v", "dr", "dl", "tw"):

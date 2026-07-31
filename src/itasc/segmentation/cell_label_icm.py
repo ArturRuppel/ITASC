@@ -30,7 +30,14 @@ import h5py
 import numpy as np
 from skimage.graph import MCP_Geometric
 
+from itasc.core.cancellation import CancelledError
 from itasc.core.tiff import imwrite_grayscale
+
+
+def _check_cancel(cancel_cb: Callable[[], bool] | None) -> None:
+    """Raise :class:`CancelledError` when a cooperative cancel is signalled."""
+    if cancel_cb is not None and cancel_cb():
+        raise CancelledError("cell segmentation cancelled")
 
 logger = logging.getLogger(__name__)
 
@@ -261,7 +268,7 @@ def _geodesic_frame_worker(t: int) -> tuple[int, dict[int, np.ndarray]]:
     return t, result
 
 
-def _compute_geodesic_unaries(
+def _iter_geodesic_frames(
     nuc_tracks: np.ndarray,
     fg_mask: np.ndarray,
     contours: np.ndarray,
@@ -272,32 +279,36 @@ def _compute_geodesic_unaries(
     gamma_unary: float = 0.0,
     n_workers: int = 1,
     progress_cb: Callable[[str], None] | None = None,
-) -> dict[tuple[int, int], np.ndarray]:
-    """Compute normalised geodesic unary costs for each alive (frame, label).
+):
+    """Yield ``(t, {k: (Y, X) float32})`` geodesic unaries one frame at a time.
 
-    When ``n_workers > 1``, frames are computed in parallel using
-    fork-based multiprocessing (Linux).  Each worker inherits the input
-    arrays via copy-on-write — only the frame index is sent through the
-    pipe per task.
+    Streaming replaces the previous "accumulate every ``(frame, label)`` array
+    into one dict" design: the caller argmins each frame and discards it, so peak
+    memory is a single frame's alive-label arrays rather than the whole movie's
+    (which reached tens of GB on the dense monolayers this targets).
+
+    When ``n_workers > 1`` and fork is available, frames are computed across
+    worker processes and yielded as they complete (see
+    :func:`_iter_geodesic_frames_parallel`).
     """
     T = fg_mask.shape[0]
     _report = progress_cb or (lambda msg: None)
 
     if n_workers > 1 and "fork" in mp.get_all_start_methods():
         # The parallel path relies on fork COW to share input arrays with
-        # workers (see _compute_geodesic_unaries_parallel). Where fork is
-        # unavailable — Windows only offers spawn, which re-imports rather than
-        # inheriting the module globals — fall through to the sequential loop.
-        return _compute_geodesic_unaries_parallel(
+        # workers. Where fork is unavailable — Windows only offers spawn, which
+        # re-imports rather than inheriting the module globals — fall through to
+        # the sequential loop.
+        yield from _iter_geodesic_frames_parallel(
             nuc_tracks, fg_mask, contours, label_ids, alpha_unary,
             foreground_scores=foreground_scores,
             gamma_unary=gamma_unary,
             n_workers=n_workers,
             progress_cb=progress_cb,
         )
+        return
 
     # ── Sequential path ──────────────────────────────────────────────
-    unary: dict[tuple[int, int], np.ndarray] = {}
     for t in range(T):
         frame_result = _compute_frame_geodesic(
             contours[t], fg_mask[t], nuc_tracks[t], label_ids,
@@ -307,16 +318,12 @@ def _compute_geodesic_unaries(
             ),
             gamma_unary=gamma_unary,
         )
-        for k, d in frame_result.items():
-            unary[(t, k)] = d
         if progress_cb and ((t + 1) % 10 == 0 or t + 1 == T):
-            alive = len(frame_result)
-            _report(f"Geodesic unaries: frame {t + 1}/{T}, {alive} alive")
-
-    return unary
+            _report(f"Geodesic unaries: frame {t + 1}/{T}, {len(frame_result)} alive")
+        yield t, frame_result
 
 
-def _compute_geodesic_unaries_parallel(
+def _iter_geodesic_frames_parallel(
     nuc_tracks: np.ndarray,
     fg_mask: np.ndarray,
     contours: np.ndarray,
@@ -327,13 +334,13 @@ def _compute_geodesic_unaries_parallel(
     gamma_unary: float = 0.0,
     n_workers: int = 4,
     progress_cb: Callable[[str], None] | None = None,
-) -> dict[tuple[int, int], np.ndarray]:
-    """Parallel geodesic unary computation across frames.
+):
+    """Fork-based parallel variant of :func:`_iter_geodesic_frames`.
 
-    Uses fork-based multiprocessing: input arrays are set as module-level
-    globals and inherited by worker processes via COW.  Only the frame
-    index (a single int) is sent per task; results (sparse dicts of
-    float32 arrays) are returned through the pipe.
+    Input arrays are set as module-level globals and inherited by worker
+    processes via COW; only the frame index (a single int) is sent per task.
+    Frames are yielded as they complete, so the consumer's per-frame argmin
+    overlaps computation and only the in-flight frames' arrays are resident.
     """
     global _MP_CONTOURS, _MP_FG_MASK, _MP_NUC_TRACKS, _MP_LABEL_IDS
     global _MP_ALPHA_UNARY, _MP_GAMMA_UNARY, _MP_FG_SCORES
@@ -352,8 +359,6 @@ def _compute_geodesic_unaries_parallel(
     _MP_FG_SCORES = foreground_scores
 
     _report(f"Computing geodesic unaries ({n_workers} workers, {T} frames)...")
-
-    unary: dict[tuple[int, int], np.ndarray] = {}
     done = 0
 
     try:
@@ -362,14 +367,13 @@ def _compute_geodesic_unaries_parallel(
             for t, frame_result in pool.imap_unordered(
                 _geodesic_frame_worker, range(T)
             ):
-                for k, d in frame_result.items():
-                    unary[(t, k)] = d
                 done += 1
                 if progress_cb and (done % 10 == 0 or done == T):
                     _report(
                         f"Geodesic unaries: {done}/{T} frames "
                         f"({len(frame_result)} labels in frame {t})"
                     )
+                yield t, frame_result
     finally:
         # Clear globals — don't keep references to large arrays
         _MP_CONTOURS = None
@@ -378,32 +382,53 @@ def _compute_geodesic_unaries_parallel(
         _MP_LABEL_IDS = None
         _MP_FG_SCORES = None
 
-    return unary
 
-
-def _apply_nucleus_anchors(
-    unary: dict[tuple[int, int], np.ndarray],
-    nuc_tracks: np.ndarray,
+def _label_frame(
+    frame_unary: dict[int, np.ndarray],
+    nuc_t: np.ndarray,
+    fg_t: np.ndarray,
     label_ids: np.ndarray,
-) -> dict[tuple[int, int], np.ndarray]:
-    """Re-apply hard nucleus anchors: cost=0 for own label, INF for others."""
-    T = nuc_tracks.shape[0]
-    label_list = [int(k) for k in label_ids]
-    cached_by_t: dict[int, list[int]] = {}
-    for (t, j) in unary:
-        cached_by_t.setdefault(int(t), []).append(int(j))
+) -> np.ndarray:
+    """One frame's ``(Y, X)`` uint32 labels from its per-label geodesic unaries.
 
-    for t in range(T):
-        alive = [k for k in label_list if int((nuc_tracks[t] == k).sum()) > 0]
-        cached = cached_by_t.get(t, [])
-        for k in alive:
-            k_pix = nuc_tracks[t] == k
-            if (t, k) in unary:
-                unary[(t, k)][k_pix] = 0.0
-            for j in cached:
-                if j != k:
-                    unary[(t, j)][k_pix] = _INF
-    return unary
+    Applies the hard nucleus anchors (own-nucleus cost 0, every other alive label
+    ``_INF`` there) then the per-pixel nearest-seed argmin — the exact per-frame
+    equivalent of the old whole-stack ``_apply_nucleus_anchors`` +
+    ``_argmin_init_from_dict`` pair. ``frame_unary`` is mutated in place (the
+    anchors); callers pass a frame they are about to discard.
+    """
+    Y, X = fg_t.shape
+    if label_ids.size == 0:
+        # No nucleus tracks at all — nothing to assign, every pixel is background.
+        # (Guards the empty-``label_ids`` IndexError in the argmin below.)
+        return np.zeros((Y, X), dtype=np.uint32)
+
+    # Hard nucleus anchors, restricted to this frame.
+    alive = [int(k) for k in label_ids if int((nuc_t == k).sum()) > 0]
+    present = list(frame_unary.keys())
+    for k in alive:
+        k_pix = nuc_t == k
+        if k in frame_unary:
+            frame_unary[k][k_pix] = 0.0
+        for j in present:
+            if j != k:
+                frame_unary[j][k_pix] = _INF
+
+    # Per-pixel argmin over the label axis (running minimum; strict ``<`` keeps
+    # the lowest ki on ties, matching np.argmin). Missing labels are ``_INF``.
+    best_cost = np.full((Y, X), _INF, dtype=np.float32)
+    best_ki = np.zeros((Y, X), dtype=np.intp)
+    for ki, k in enumerate(label_ids):
+        u = frame_unary.get(int(k))
+        if u is None:
+            continue
+        better = u < best_cost
+        np.copyto(best_cost, u, where=better)
+        best_ki[better] = ki
+    # A foreground pixel no seed reached keeps best_cost == _INF (and best_ki 0);
+    # it must stay background rather than collapse onto label_ids[0].
+    reached = best_cost < _INF
+    return np.where(fg_t & reached, label_ids[best_ki], 0).astype(np.uint32)
 
 
 def _argmin_init_from_dict(
@@ -420,6 +445,11 @@ def _argmin_init_from_dict(
     ``_INF``, matching the dense fill value.
     """
     T, Y, X = fg_mask.shape
+    if label_ids.size == 0:
+        # No labels at all: every pixel is background. Guards the eager
+        # ``label_ids[best_ki]`` fancy-index, which would otherwise raise
+        # IndexError on the size-0 array.
+        return np.zeros((T, Y, X), dtype=np.uint32)
     best_cost = np.full((T, Y, X), _INF, dtype=np.float32)
     best_ki = np.zeros((T, Y, X), dtype=np.intp)
     for ki, k in enumerate(label_ids):
@@ -495,29 +525,65 @@ def _read_unary_cache(
         return None
 
 
-def _write_unary_cache(
-    cache_dir: Path,
-    key: str,
-    unary: dict[tuple[int, int], np.ndarray],
-) -> None:
-    cache_dir.mkdir(parents=True, exist_ok=True)
+def _iter_cached_frames(cache_dir: Path, key: str, T: int):
+    """Yield ``(t, {k: (Y, X) float32})`` from the cache one frame at a time.
+
+    The streaming counterpart of :func:`_read_unary_cache` (which loads the whole
+    movie into one dict): only a single frame's datasets are resident at once, so
+    reusing a cached segmentation costs one frame of RAM, not the whole stack.
+    """
     path = _unary_cache_path(cache_dir, key)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    try:
-        with h5py.File(tmp, "w") as f:
-            grp = f.create_group("unaries")
-            grp.attrs["cache_key"] = key
-            for (t, k), arr in unary.items():
-                grp.create_dataset(
-                    f"{int(t)}_{int(k)}",
-                    data=np.asarray(arr, dtype=np.float32),
-                    compression="lzf",
-                )
-        tmp.replace(path)
-    except Exception:
-        if tmp.exists():
-            tmp.unlink()
-        raise
+    with h5py.File(path, "r") as f:
+        grp = f["unaries"]
+        names_by_t: dict[int, list[tuple[int, str]]] = {}
+        for name in grp:
+            t_s, k_s = name.split("_", 1)
+            names_by_t.setdefault(int(t_s), []).append((int(k_s), name))
+        for t in range(T):
+            frame = {
+                k: grp[name][...].astype(np.float32, copy=False)
+                for k, name in names_by_t.get(t, [])
+            }
+            yield t, frame
+
+
+class _UnaryCacheWriter:
+    """Incremental writer for the geodesic-unary HDF5 cache.
+
+    Datasets are added frame by frame (as they are computed) rather than from one
+    fully-materialised dict, so caching does not reintroduce the whole-movie
+    memory footprint the streaming argmin removes. Writes to a temp file and
+    atomically renames on :meth:`commit`, matching the previous behaviour and
+    on-disk format (group ``unaries``, datasets ``{t}_{k}``, float32/lzf).
+    """
+
+    def __init__(self, cache_dir: Path, key: str) -> None:
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._path = _unary_cache_path(cache_dir, key)
+        self._tmp = self._path.with_suffix(self._path.suffix + ".tmp")
+        self._file = h5py.File(self._tmp, "w")
+        self._grp = self._file.create_group("unaries")
+        self._grp.attrs["cache_key"] = key
+
+    def add_frame(self, t: int, frame_unary: dict[int, np.ndarray]) -> None:
+        for k, arr in frame_unary.items():
+            self._grp.create_dataset(
+                f"{int(t)}_{int(k)}",
+                data=np.asarray(arr, dtype=np.float32),
+                compression="lzf",
+            )
+
+    def commit(self) -> None:
+        self._file.close()
+        self._tmp.replace(self._path)
+
+    def abort(self) -> None:
+        try:
+            self._file.close()
+        finally:
+            if self._tmp.exists():
+                self._tmp.unlink()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -533,6 +599,7 @@ def initialize_icm(
     foreground_scores: np.ndarray | None = None,
     cache_dir: Path | None = None,
     progress_cb: Callable[[str], None] | None = None,
+    cancel_cb: Callable[[], bool] | None = None,
 ) -> tuple[CellICMState, np.ndarray]:
     """Compute geodesic unaries and build labels (per-pixel argmin).
 
@@ -575,35 +642,71 @@ def initialize_icm(
         (T, Y, X), alpha_unary, gamma_unary,
         nuc_tracks, fg_mask, contours, foreground_scores,
     )
-    unary_dict: dict[tuple[int, int], np.ndarray] | None = None
 
-    if cache_dir is not None:
-        _report(f"Checking unary cache: {cache_key}")
-        unary_dict = _read_unary_cache(cache_dir, cache_key)
-        if unary_dict is not None:
-            _report(f"Cache hit: {len(unary_dict)} entries loaded.")
+    # ── Geodesic unaries → streaming per-frame argmin ─────────────────
+    # Compute (or load from cache) one frame's unaries at a time and fold each
+    # straight into the label argmin, so peak memory is a single frame's
+    # alive-label arrays — not the whole movie's, which reached tens of GB on the
+    # dense monolayers this targets.
+    init_labels = np.zeros((T, Y, X), dtype=np.uint32)
+    cache_path = (
+        _unary_cache_path(cache_dir, cache_key) if cache_dir is not None else None
+    )
 
-    if unary_dict is None:
+    loaded_from_cache = False
+    if cache_path is not None and cache_path.exists():
+        _report(f"Loading unary cache: {cache_key}")
+        try:
+            for t, frame_unary in _iter_cached_frames(cache_dir, cache_key, T):
+                _check_cancel(cancel_cb)
+                init_labels[t] = _label_frame(
+                    frame_unary, nuc_tracks[t], fg_mask[t], label_ids
+                )
+            loaded_from_cache = True
+            _report("Cache hit: labels built from cached unaries.")
+        except CancelledError:
+            raise
+        except Exception:
+            # Present but unreadable/partial cache — warn (distinct from a cold
+            # miss), drop any partial labels, and recompute.
+            logger.warning(
+                "Discarding unreadable unary cache %s; recomputing.",
+                cache_path, exc_info=True,
+            )
+            init_labels.fill(0)
+            loaded_from_cache = False
+
+    if not loaded_from_cache:
         t0 = perf_counter()
-        unary_dict = _compute_geodesic_unaries(
-            nuc_tracks, fg_mask, contours, label_ids, alpha_unary,
-            foreground_scores=foreground_scores,
-            gamma_unary=gamma_unary,
-            n_workers=params.n_workers,
-            progress_cb=progress_cb,
+        writer = (
+            _UnaryCacheWriter(cache_dir, cache_key) if cache_dir is not None else None
         )
+        n_frames = 0
+        try:
+            for t, frame_unary in _iter_geodesic_frames(
+                nuc_tracks, fg_mask, contours, label_ids, alpha_unary,
+                foreground_scores=foreground_scores,
+                gamma_unary=gamma_unary,
+                n_workers=params.n_workers,
+                progress_cb=progress_cb,
+            ):
+                _check_cancel(cancel_cb)
+                if writer is not None:
+                    # Cache the pre-anchor unaries (what the previous cache held),
+                    # then let _label_frame mutate + argmin this frame in place.
+                    writer.add_frame(t, frame_unary)
+                init_labels[t] = _label_frame(
+                    frame_unary, nuc_tracks[t], fg_mask[t], label_ids
+                )
+                n_frames += 1
+            if writer is not None:
+                writer.commit()
+        except Exception:
+            if writer is not None:
+                writer.abort()
+            raise
         elapsed = perf_counter() - t0
-        _report(f"Geodesic unaries: {len(unary_dict)} entries in {elapsed:.1f}s")
-        if cache_dir is not None:
-            _report("Writing unary cache...")
-            _write_unary_cache(cache_dir, cache_key, unary_dict)
-
-    _apply_nucleus_anchors(unary_dict, nuc_tracks, label_ids)
-
-    # ── Initial labels (streaming argmin; no dense (T, Y, X, K) volume) ──
-    _report("Initialising labels from unary argmin...")
-    init_labels = _argmin_init_from_dict(unary_dict, fg_mask, label_ids)
-    del unary_dict
+        _report(f"Geodesic unaries + labels: {n_frames} frames in {elapsed:.1f}s")
 
     nuc_mask = nuc_tracks > 0
     init_labels[nuc_mask] = nuc_tracks[nuc_mask].astype(np.uint32)

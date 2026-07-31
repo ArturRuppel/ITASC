@@ -45,6 +45,38 @@ def test_merge_moves_solver_collisions_off_reserved_validated_ids():
     assert np.all(result[1, 8:10, 8:10] == 8)
 
 
+def test_merge_preserves_track_when_solver_already_used_validated_id():
+    merge_validated_into_export = _merge_validated_into_export()
+    # The solver exported a track whose id already equals the validated cell id
+    # (3), spanning frames 0-4. The user validated cell 3 only at frames 0-1.
+    # Because dominant_solver_id == cell_id, the whole track already carries the
+    # correct id: its continuation at frames 2-4 must be preserved, not scattered
+    # to a fresh disconnected id. (Regression: the reserved-id collision pass used
+    # to split the validated track in two.)
+    exported = np.zeros((5, 12, 12), dtype=np.uint32)
+    exported[0, 2:5, 2:5] = 3
+    exported[1, 3:6, 2:5] = 3
+    exported[2, 4:7, 2:5] = 3
+    exported[3, 5:8, 2:5] = 3
+    exported[4, 6:9, 2:5] = 3
+    tracked = np.zeros_like(exported)
+    tracked[0, 2:5, 2:5] = 3
+    tracked[1, 3:6, 2:5] = 3
+
+    result, id_map = merge_validated_into_export(exported, {3: {0, 1}}, tracked)
+
+    assert id_map == {}
+    # Validated frames keep id 3.
+    assert np.all(result[0, 2:5, 2:5] == 3)
+    assert np.all(result[1, 3:6, 2:5] == 3)
+    # Non-validated continuation frames must ALSO remain id 3 (one intact track).
+    assert np.all(result[2, 4:7, 2:5] == 3)
+    assert np.all(result[3, 5:8, 2:5] == 3)
+    assert np.all(result[4, 6:9, 2:5] == 3)
+    # No fresh id was minted anywhere.
+    assert set(np.unique(result).tolist()) == {0, 3}
+
+
 def test_merge_propagates_validated_id_along_solver_track():
     merge_validated_into_export = _merge_validated_into_export()
     # 5-frame movie, solver assigned track_id=42 across frames 1-4 for the cell

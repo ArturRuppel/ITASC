@@ -103,7 +103,14 @@ def _best_iou_assignments(
     for record_index, record in enumerate(records):
         for candidate_id, (candidate_bbox, candidate_mask, _ndim) in candidates.items():
             iou = raw_iou(record.bbox, record.mask, candidate_bbox, candidate_mask)
-            pairs.append((-iou, record_index, int(candidate_id), record.cell_id, record.t))
+            # Only spatially-overlapping candidates are eligible. Without this
+            # gate the greedy fill below would hand a validated mask an arbitrary
+            # leftover candidate (smallest free candidate_id) even at IoU 0,
+            # overwriting an unrelated node in place and making the validated cell
+            # inherit that node's spatially-wrong temporal links. A record with no
+            # overlapping candidate instead falls through to a fresh reserved node.
+            if iou > 0.0:
+                pairs.append((-iou, record_index, int(candidate_id), record.cell_id, record.t))
 
     pairs.sort()
     assigned_records: set[int] = set()
