@@ -101,6 +101,101 @@ def test_step_track_on_empty_stack_does_not_navigate():
     assert obj._status  # reported "no cells"
 
 
+# ── Arrow-key frame stepping with no track selected (_step_film_frame) ──────
+
+
+def _film_stub(*, has_strip, current_t=1, n_frames=5, loop_mode="once"):
+    """Stand-in for ``_step_film_frame`` and its ``_step_viewer_frame`` fallback.
+
+    ``has_strip`` is the lineage canvas's answer to "is a thumbnail band laid
+    out?" — False whenever no track is selected, the case that used to leave the
+    arrow keys (and the gamepad stick, which is just Left/Right) dead.
+    """
+    strip_calls: list = []
+    dims = types.SimpleNamespace(
+        current_step=(int(current_t), 0, 0), nsteps=(n_frames, 8, 8),
+    )
+    viewer = types.SimpleNamespace(
+        dims=dims,
+        window=types.SimpleNamespace(
+            _qt_viewer=types.SimpleNamespace(
+                dims=types.SimpleNamespace(
+                    slider_widgets=[types.SimpleNamespace(loop_mode=loop_mode)]
+                )
+            )
+        ),
+    )
+    obj = types.SimpleNamespace(
+        viewer=viewer,
+        _workspace_splitter=object(),  # focus mode is docked
+        _lineage_canvas=types.SimpleNamespace(
+            has_film_strip=lambda: has_strip,
+            step_film_frame=lambda **kw: strip_calls.append(kw),
+        ),
+        _strip_calls=strip_calls,
+    )
+    # The fallback is the real method, run against this stub.
+    obj._step_viewer_frame = lambda dx: NucleusCorrectionWidget._step_viewer_frame(
+        obj, dx
+    )
+    return obj
+
+
+def test_step_film_frame_walks_the_band_when_a_track_is_selected():
+    obj = _film_stub(has_strip=True)
+    NucleusCorrectionWidget._step_film_frame(obj, dx=1)
+    # Delegated to the band; the frame slider is not touched directly.
+    assert obj._strip_calls == [{"dx": 1, "dy": 0, "wrap": False}]
+    assert obj.viewer.dims.current_step[0] == 1
+
+
+def test_step_film_frame_without_a_selection_steps_the_frame_slider():
+    obj = _film_stub(has_strip=False, current_t=1)
+    NucleusCorrectionWidget._step_film_frame(obj, dx=1)
+    assert obj._strip_calls == []
+    assert obj.viewer.dims.current_step == (2, 0, 0)
+
+    back = _film_stub(has_strip=False, current_t=1)
+    NucleusCorrectionWidget._step_film_frame(back, dx=-1)
+    assert back.viewer.dims.current_step == (0, 0, 0)
+
+
+def test_frame_slider_fallback_stops_at_the_ends_unless_looping():
+    # Loop mode "once" clamps: no step past either end.
+    last = _film_stub(has_strip=False, current_t=4, n_frames=5, loop_mode="once")
+    NucleusCorrectionWidget._step_film_frame(last, dx=1)
+    assert last.viewer.dims.current_step[0] == 4
+
+    first = _film_stub(has_strip=False, current_t=0, loop_mode="once")
+    NucleusCorrectionWidget._step_film_frame(first, dx=-1)
+    assert first.viewer.dims.current_step[0] == 0
+
+    # With the viewer looping, both ends wrap — the same rule the band step uses.
+    wrap_end = _film_stub(has_strip=False, current_t=4, n_frames=5, loop_mode="loop")
+    NucleusCorrectionWidget._step_film_frame(wrap_end, dx=1)
+    assert wrap_end.viewer.dims.current_step[0] == 0
+
+    wrap_start = _film_stub(has_strip=False, current_t=0, n_frames=5, loop_mode="loop")
+    NucleusCorrectionWidget._step_film_frame(wrap_start, dx=-1)
+    assert wrap_start.viewer.dims.current_step[0] == 4
+
+
+def test_up_down_stay_inert_without_a_film_strip():
+    # A "row" is a property of the wrapped band; with no band there is nothing
+    # for Up/Down to mean, so they must not silently become a frame step.
+    obj = _film_stub(has_strip=False, current_t=1)
+    NucleusCorrectionWidget._step_film_frame(obj, dy=1)
+    assert obj.viewer.dims.current_step[0] == 1
+    assert obj._strip_calls == []
+
+
+def test_step_film_frame_does_nothing_outside_focus_mode():
+    obj = _film_stub(has_strip=False, current_t=1)
+    obj._workspace_splitter = None
+    NucleusCorrectionWidget._step_film_frame(obj, dx=1)
+    assert obj.viewer.dims.current_step[0] == 1
+
+
 # ── Navigating onto a frame the track skips (_navigate_to_cell) ─────────────
 
 

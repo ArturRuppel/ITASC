@@ -149,6 +149,14 @@ class LineageCanvasController:
         if not self._panel.center_on_strip() and cell_id is not None:
             self._panel.center_on_track(int(cell_id or 0))
 
+    def has_film_strip(self) -> bool:
+        """True when a thumbnail band is laid out for :meth:`step_film_frame`.
+
+        False when no track is selected, so the caller can fall back to plain
+        frame stepping rather than leaving the arrow keys inert.
+        """
+        return self._panel is not None and self._panel.has_film_strip()
+
     def step_film_frame(self, *, dx: int = 0, dy: int = 0, wrap: bool = False) -> None:
         """Move the current frame to the neighbouring thumbnail in the band.
 

@@ -292,6 +292,17 @@ def test_grid_neighbor_wrap_loops_around_the_ends(_app):
     assert panel.grid_neighbor_frame(0, dy=-1, wrap=True) == 3
 
 
+def test_has_film_strip_reports_whether_a_band_is_laid_out(_app):
+    # The gate the arrow keys read: with no band the caller steps the frame
+    # slider itself instead of leaving the arrows dead.
+    panel = TrackAccordionPanel(tile_px=32)
+    panel.set_overview(_lanes(), n_frames=6)
+    assert panel.has_film_strip() is False
+    panel.set_selection(7)
+    panel.set_strip(_strip(0, 4))
+    assert panel.has_film_strip() is True
+
+
 def test_center_on_strip_reports_whether_a_band_existed(_app):
     panel = TrackAccordionPanel(tile_px=32)
     panel.set_overview(_lanes(), n_frames=6)

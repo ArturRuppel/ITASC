@@ -1816,12 +1816,46 @@ class NucleusCorrectionWidget(CorrectionViewStateMixin, QWidget):
         in reading order, Up/Down jump a wrapped row. Running off the end wraps
         back when the viewer's playback loop mode is on. Delegates to the lineage
         canvas, which owns the band geometry and the frame-jump path.
+
+        With **no track selected** there is no band to walk, and the arrows used
+        to go dead — including the gamepad stick, which is just Left/Right.
+        Scrubbing the movie shouldn't require a selection first, so Left/Right
+        then step the viewer's frame slider directly. Up/Down stay inert in that
+        state: a "row" is a property of the wrapped film strip and means nothing
+        without one.
         """
         if self._workspace_splitter is None:
             return
-        self._lineage_canvas.step_film_frame(
-            dx=dx, dy=dy, wrap=playback_loops(self.viewer)
-        )
+        if self._lineage_canvas.has_film_strip():
+            self._lineage_canvas.step_film_frame(
+                dx=dx, dy=dy, wrap=playback_loops(self.viewer)
+            )
+        elif dx:
+            self._step_viewer_frame(dx)
+
+    def _step_viewer_frame(self, dx: int) -> None:
+        """Move the viewer's frame slider by ``dx``, honouring the loop mode.
+
+        The no-selection fallback for :meth:`_step_film_frame`. Deliberately
+        *only* the dims step: no ``select_label``, no recentering — with nothing
+        selected there is nothing to keep in view, and the existing frame-change
+        listeners already move the canvas guide and the lineage highlight.
+        """
+        dims = getattr(self.viewer, "dims", None)
+        step = list(getattr(dims, "current_step", ()) or ())
+        if not step:
+            return
+        nsteps = getattr(dims, "nsteps", ()) or ()
+        n_frames = int(nsteps[0]) if len(nsteps) >= 1 else 0
+        if n_frames <= 0:
+            return
+        target = int(step[0]) + int(dx)
+        if not 0 <= target < n_frames:
+            if not playback_loops(self.viewer):
+                return
+            target %= n_frames
+        step[0] = target
+        dims.current_step = tuple(step)
 
     def _step_track(self, direction: int) -> None:
         """Select the next/previous track in the global list.

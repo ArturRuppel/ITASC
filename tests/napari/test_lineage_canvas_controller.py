@@ -332,6 +332,23 @@ def test_step_film_frame_is_a_noop_when_no_neighbour(stubbed):
     on_activate.assert_not_called()
 
 
+def test_has_film_strip_reports_the_panels_answer(stubbed):
+    viewer = _viewer()
+    ctrl = _controller(
+        viewer,
+        tracked=np.zeros((2, 12, 12), np.uint32),
+        intensity=np.zeros((2, 12, 12), np.float32),
+    )
+    # Before the panel exists there is certainly no band.
+    assert ctrl.has_film_strip() is False
+    ctrl.refresh()
+    panel = stubbed.return_value
+    panel.has_film_strip.return_value = False
+    assert ctrl.has_film_strip() is False
+    panel.has_film_strip.return_value = True
+    assert ctrl.has_film_strip() is True
+
+
 def test_teardown_drops_panel(stubbed):
     # The panel is embedded as a bare widget in the host's workspace splitter and
     # deleted when that dock is torn down; teardown only drops the reference so a

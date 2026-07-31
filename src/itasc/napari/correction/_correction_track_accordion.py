@@ -210,6 +210,15 @@ class TrackAccordionPanel(QWidget):
         self._view.centerOn(vc.x(), y)
         return True
 
+    def has_film_strip(self) -> bool:
+        """True when an expanded band of thumbnails is laid out to navigate.
+
+        False with no track selected (and for a selection whose band has not
+        been built yet), which is what lets the arrow keys fall back to plain
+        frame stepping instead of going dead.
+        """
+        return bool(self._tile_rects)
+
     def grid_neighbor_frame(
         self, current_frame: int, *, dx: int = 0, dy: int = 0, wrap: bool = False
     ) -> int | None:

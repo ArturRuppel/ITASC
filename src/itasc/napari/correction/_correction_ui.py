@@ -303,7 +303,7 @@ _SHORTCUT_COLUMNS = (
             "Selection",
             (
                 ("Left-click", "Select / highlight cell"),
-                ("← / →", "Previous / next thumbnail"),
+                ("← / →", "Previous / next thumbnail (frame, with no selection)"),
                 ("↑ / ↓", "Thumbnail row up / down"),
                 ("Shift+↑ / ↓", "Previous / next track"),
             ),
