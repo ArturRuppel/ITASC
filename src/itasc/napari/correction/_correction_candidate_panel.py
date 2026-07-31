@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 from itasc.napari.correction._correction_candidates import CandidateStrip, CandidateTile
 from itasc.napari.correction._correction_track_accordion import rgb_to_qimage
 from itasc.napari._flow_layout import FlowLayout
+from itasc.napari._widget_helpers import WheelNotches
 
 _TILE_PX = 64
 _TILE_PX_MIN = 20
@@ -246,11 +247,18 @@ class _GalleryScroll(QScrollArea):
     def __init__(self, panel: CandidateGalleryPanel) -> None:
         super().__init__(panel)
         self._panel = panel
+        self._notches = WheelNotches()
 
     def wheelEvent(self, event) -> None:
         if event.modifiers() & Qt.ControlModifier:
-            step = _ZOOM_STEP if event.angleDelta().y() > 0 else -_ZOOM_STEP
-            self._panel.set_tile_size(self._panel._tile_px + step)
+            # Notches, not events: a touchpad sends dozens of small deltas per
+            # swipe where a mouse sends one per detent, so stepping per event
+            # made the gallery unusable on a touchpad. See WheelNotches.
+            steps = self._notches.steps(event.angleDelta().y())
+            if steps:
+                self._panel.set_tile_size(
+                    self._panel._tile_px + steps * _ZOOM_STEP
+                )
             event.accept()
             return
         super().wheelEvent(event)

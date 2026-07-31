@@ -43,6 +43,7 @@ from qtpy.QtWidgets import (
 
 from itasc.core.lineage import _segments_from_frames
 from itasc.napari.correction._correction_track_path import TrackFilmStrip
+from itasc.napari._widget_helpers import WheelNotches
 
 _CLICK_SLOP = 6  # max drag (px) still treated as a click, not a scroll
 
@@ -536,6 +537,7 @@ class _AccordionView(QGraphicsView):
         super().__init__(panel._scene, panel)
         self._panel = panel
         self._press_pos = None
+        self._notches = WheelNotches()
         self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -544,11 +546,18 @@ class _AccordionView(QGraphicsView):
         if not (event.modifiers() & Qt.ControlModifier):
             super().wheelEvent(event)  # plain wheel scrolls vertically
             return
-        point = event.position().toPoint() if hasattr(event, "position") else event.pos()
-        self._panel._ctrl_wheel_zoom(
-            up=event.angleDelta().y() > 0,
-            scene_y=self.mapToScene(point).y(),
-        )
+        # Notches, not events: a touchpad sends dozens of small deltas per
+        # swipe where a mouse sends one per detent, so stepping per event made
+        # the band shoot from one size limit to the other. See WheelNotches.
+        steps = self._notches.steps(event.angleDelta().y())
+        if steps:
+            point = (
+                event.position().toPoint()
+                if hasattr(event, "position") else event.pos()
+            )
+            scene_y = self.mapToScene(point).y()
+            for _ in range(abs(steps)):
+                self._panel._ctrl_wheel_zoom(up=steps > 0, scene_y=scene_y)
         event.accept()
 
     def resizeEvent(self, event) -> None:

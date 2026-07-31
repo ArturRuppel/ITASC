@@ -226,6 +226,51 @@ def islider(lo, hi, val, step=1, tooltip="", *, step_buttons=True):
     return s
 
 
+WHEEL_NOTCH = 120  # eighths of a degree in one mouse-wheel detent, per Qt
+
+
+class WheelNotches:
+    """Turn a stream of wheel events into whole detents.
+
+    Qt reports wheel travel in eighths of a degree, and one detent of a mouse
+    wheel is 120 of them delivered as a single event. So a handler that reads
+    only ``angleDelta().y() > 0`` is exactly right for a mouse and unusable on
+    a touchpad: a high-resolution device sends the same travel as *dozens* of
+    small events, each with a positive sign, so a per-event step fires thirty
+    times in one two-finger swipe.
+
+    Accumulating instead makes both devices agree on what a "notch" is. The
+    remainder is kept between events, so slow travel still eventually steps
+    rather than being rounded away to nothing.
+
+    One instance per zoomable widget — the residue is per-gesture state, not
+    something two widgets may share.
+    """
+
+    def __init__(self, notch: int = WHEEL_NOTCH) -> None:
+        self._notch = int(notch)
+        self._residue = 0
+
+    def steps(self, delta: int) -> int:
+        """Whole notches contained in *delta*, carrying the remainder forward.
+
+        Returns a signed count: 0 for a small event that has not yet added up,
+        and occasionally more than 1 for a real wheel or a fast flick.
+        """
+        delta = int(delta)
+        if delta == 0:
+            return 0
+        if (delta > 0) != (self._residue >= 0):
+            # Reversed direction. Travel already banked toward the old
+            # direction must not count toward the new one, or a shove one way
+            # followed by a nudge back would over-shoot on the way home.
+            self._residue = 0
+        self._residue += delta
+        steps = int(self._residue / self._notch)
+        self._residue -= steps * self._notch
+        return steps
+
+
 def tool_btn(glyph: str, tooltip: str = "", *, checkable: bool = False) -> QToolButton:
     """Compact icon-only QToolButton carrying a unicode glyph and a tooltip."""
     b = QToolButton()
