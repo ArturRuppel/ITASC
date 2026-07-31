@@ -19,6 +19,7 @@ Qt-free: the viewer is used purely by its duck-typed ``layers`` / ``add_labels``
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from itasc.napari._stage_status import (
     STAGE_NUCLEUS,
     STAGE_NUCLEUS_LABELS,
 )
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,12 @@ def _read_lazy(path: Path):
     doesn't decode the whole stack up front — napari materializes only the
     slices it displays. Falls back to an eager ``imread`` if the file can't be
     opened as a zarr store (e.g. an exotic layout aszarr won't handle).
+
+    The fallback is *warned*, not swallowed: an eager read still shows the right
+    pixels, so a silent one degrades every click to a full-stack decode without
+    any visible symptom other than the freeze this module exists to avoid.
+    (Exactly that happened with tifffile < 2025.5.21, whose zarr store zarr 3
+    refuses — hence the floor in ``pyproject.toml``.)
     """
     import tifffile
 
@@ -97,6 +106,13 @@ def _read_lazy(path: Path):
 
         return da.from_zarr(tifffile.imread(str(path), aszarr=True))
     except Exception:
+        _log.warning(
+            "Lazy zarr-backed read of %s failed; falling back to an eager "
+            "imread of the whole stack. Clicking this stage will block until "
+            "the full file is decoded.",
+            path,
+            exc_info=True,
+        )
         return tifffile.imread(str(path))
 
 

@@ -191,8 +191,11 @@ def test_set_pretrained_model_blank_restores_default_and_resets_cache(monkeypatc
 
 
 def test_checkpoint_transformer_bsize_infers_from_pos_embed(tmp_path):
+    # Real torch, not the mocked cellpose: this round-trips an actual
+    # checkpoint, and the runner returns None when torch is absent. torch is in
+    # the `cellpose` extra, so CI's `[dev]` install skips this one.
+    torch = pytest.importorskip("torch")
     r = _runner()
-    import torch
 
     checkpoint = tmp_path / "custom"
     torch.save({"encoder.pos_embed": torch.zeros((1, 16, 16, 1024))}, checkpoint)

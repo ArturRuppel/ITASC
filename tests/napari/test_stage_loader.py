@@ -1,6 +1,7 @@
 """Tests for per-stage click-to-load (Qt-free; a stub viewer stands in)."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
@@ -150,3 +151,24 @@ def test_load_stage_hands_napari_a_lazy_array(tmp_path: Path):
     load_stage(viewer, tmp_path, STAGE_NUCLEUS)
     data = viewer.layers[f"{tmp_path.name}:nucleus_labels"].data
     assert isinstance(data, da.Array)
+
+
+def test_eager_fallback_is_warned_not_silent(tmp_path: Path, monkeypatch, caplog):
+    # The eager fallback still shows the right pixels, so the only symptom of
+    # it firing is the freeze it was meant to prevent. It has to be loud: a
+    # silent fallback hid a tifffile/zarr incompatibility for weeks.
+    import dask.array as da
+
+    def _boom(*_args, **_kwargs):
+        raise TypeError("Unsupported type for store_like: 'ZarrTiffStore'")
+
+    monkeypatch.setattr(da, "from_zarr", _boom)
+
+    _write(tmp_path / "nucleus_labels.tif")
+    viewer = _StubViewer()
+    with caplog.at_level(logging.WARNING):
+        load_stage(viewer, tmp_path, STAGE_NUCLEUS)
+
+    data = viewer.layers[f"{tmp_path.name}:nucleus_labels"].data
+    assert isinstance(data, np.ndarray)  # fell back, still usable
+    assert any("eager imread" in r.getMessage() for r in caplog.records)

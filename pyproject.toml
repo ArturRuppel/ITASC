@@ -36,7 +36,11 @@ dependencies = [
     "scikit-image",
     "pandas",
     "pyarrow",
-    "tifffile",
+    # 2025.5.21 is the first release whose aszarr store zarr 3 accepts; on older
+    # ones the lazy per-slice stage read in itasc.napari._stage_loader silently
+    # degrades to a full eager decode. The extracted packages don't use aszarr,
+    # so their tifffile stays unpinned.
+    "tifffile>=2025.5.21",
     "numba",
     "matplotlib>=3.9.4",
     "seaborn>=0.13",
