@@ -133,6 +133,10 @@ class ContactAnalysisWidget(QWidget):
         self._displayed_contact_analysis_signature: tuple | None = None
         #: Pending deferred overlay-add timer, cancelled if a new Show supersedes it.
         self._pending_show_timer: QTimer | None = None
+        #: Whether the in-flight build was started by Visualize (show the result
+        #: when it lands) or by Run (compute only — running a stage never puts
+        #: layers in the viewer; see ``_on_compute_done``).
+        self._show_after_build = False
         #: Positions discovered under the standalone top folder (row index ↔ job).
         self._discovered_jobs: list = []
 
@@ -200,18 +204,19 @@ class ContactAnalysisWidget(QWidget):
         options_grid.addWidget(self.hide_border_edges_cb, 1, 0)
         layout.addLayout(options_grid)
 
-        # Two build/show actions sit directly below the display options (no
-        # trailing stretch, so the panel hugs its content). Visualize computes the
-        # .h5 on demand only if it is missing, then shows the overlays; Recompute
-        # forces a rebuild before showing, for when the .h5 is stale relative to
-        # its inputs.
+        # Two actions sit directly below the display options (no trailing
+        # stretch, so the panel hugs its content), and the split between them is
+        # deliberate: Run only computes and Visualize only shows. Run rebuilds the
+        # .h5 from the current inputs and touches nothing in the viewer;
+        # Visualize shows the overlays, computing the .h5 first only if it is
+        # missing.
         actions_row = QHBoxLayout()
         actions_row.setContentsMargins(0, 0, 0, 0)
         actions_row.setSpacing(6)
         self.recompute_btn = QPushButton("Run Contact Analysis")
         self.recompute_btn.setToolTip(
-            "Rebuild the contact-analysis .h5 from the current inputs, then show "
-            "the overlays. Use this when the result is stale."
+            "Rebuild the contact-analysis .h5 from the current inputs. Nothing is "
+            "added to the viewer — use Visualize to see the result."
         )
         action_button(self.recompute_btn, expand=True)
         actions_row.addWidget(self.recompute_btn, 1)
@@ -226,8 +231,12 @@ class ContactAnalysisWidget(QWidget):
         actions_row.addWidget(self.visualize_btn, 1)
         layout.addLayout(actions_row)
 
-        self.visualize_btn.clicked.connect(lambda: self._on_visualize(overwrite=False))
-        self.recompute_btn.clicked.connect(lambda: self._on_visualize(overwrite=True))
+        self.visualize_btn.clicked.connect(
+            lambda: self._on_visualize(overwrite=False, show=True)
+        )
+        self.recompute_btn.clicked.connect(
+            lambda: self._on_visualize(overwrite=True, show=False)
+        )
         self._register_gate_controls()
         if self._standalone:
             self._load_standalone_settings()
@@ -626,7 +635,7 @@ class ContactAnalysisWidget(QWidget):
             f"({output_path.name})."
         )
         # The .h5 cache is keyed by path, but a build rewrites the file in place
-        # (same path), so a Recompute would otherwise serve the stale cached read.
+        # (same path), so the next show would otherwise serve the stale cached read.
         # Drop just the cached analysis so _show_from_disk re-reads the fresh file;
         # the label TIFFs are inputs the build does not touch, so they stay cached.
         if built:
@@ -635,12 +644,19 @@ class ContactAnalysisWidget(QWidget):
             # (path + display options) is unchanged and _show_from_disk's
             # "already shown" fast path would skip re-adding the fresh overlays,
             # leaving stale edges/tracks/labels on screen. Invalidate the shown
-            # signature so the fresh data is actually re-rendered.
+            # signature so the fresh data is actually re-rendered — this matters
+            # even for a non-showing Run, whose result a later Visualize must not
+            # mistake for what is already up.
             self._displayed_contact_analysis_signature = None
         self._update_status()
         self._refresh_discovery_status()
         self._refresh_files_tracker()
-        self._show_from_disk()
+        # Only Visualize shows. A Run computes and stops there: running a stage
+        # never adds layers to the viewer, so a run-only session leaves the layer
+        # list empty and the user decides what to open (Visualize, or the
+        # catalog rail's stage dots).
+        if self._show_after_build:
+            self._show_from_disk()
 
     def _on_build_error(self, exc: Exception) -> None:
         self._build_error_pending = True
@@ -649,12 +665,18 @@ class ContactAnalysisWidget(QWidget):
         self._set_contact_analysis_status(f"Status: error: {exc}")
         self._update_status()
 
-    def _on_visualize(self, *, overwrite: bool = False) -> None:
-        """Visualize the contact analysis, computing the .h5 only if needed.
+    def _on_visualize(self, *, overwrite: bool = False, show: bool = True) -> None:
+        """Compute and/or show the contact analysis for the current position.
 
         With ``overwrite=False`` (Visualize) an existing .h5 is shown as-is and a
-        missing one is built first. With ``overwrite=True`` (Recompute) the .h5 is
-        always rebuilt. The build runs in a worker; the show happens afterwards.
+        missing one is built first. With ``overwrite=True`` (Run) the .h5 is
+        always rebuilt. The build runs in a worker.
+
+        ``show`` decides whether the result reaches the viewer once it exists.
+        Visualize sets it; Run clears it, because running a stage must never put
+        layers in the viewer on its own — the layer list stays exactly as the user
+        left it, and Visualize (or the catalog rail's stage dots) is how anything
+        gets opened.
         """
         cell = self._cell_labels_path
         out = self._out_path
@@ -680,10 +702,14 @@ class ContactAnalysisWidget(QWidget):
         if out.exists() and not overwrite:
             self._set_contact_analysis_status(
                 f"Status: showing existing contact analysis ({out.name})."
+                if show
+                else f"Status: contact analysis already present ({out.name})."
             )
-            self._show_from_disk()
+            if show:
+                self._show_from_disk()
             return
 
+        self._show_after_build = show
         self._build_completion_pending = False
         self._build_error_pending = False
         self._set_contact_analysis_status(

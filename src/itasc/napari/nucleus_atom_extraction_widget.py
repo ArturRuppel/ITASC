@@ -619,17 +619,15 @@ class NucleusAtomExtractionMixin:
         except Exception as exc:
             self._set_atom_status(f"Atom computation failed: {exc}")
             return
-        # The run computed every stage, so show them all: tick both Compute
-        # boxes (so their layers exist) and replace each with its full (T, Y, X)
-        # stack.
-        w = self.atom_extraction_widget
-        w.fg_check.setChecked(True)
-        w.contour_check.setChecked(True)
-        shape = atoms.shape
-        self._ensure_atom_preview_stacks(shape, _ATOM_LAYERS)
-        self.viewer.layers[_ATOM_PREVIEW_LAYER].data = atoms
-        self.viewer.layers[_ATOM_TERRITORY_LAYER].data = territory.astype(np.int32)
-        self.viewer.layers[_ATOM_RIDGE_LAYER].data = ridge.astype(np.int32)
+        # The run computed every stage, but it does not open any of them: a run
+        # writes atoms.tif and stops there, never creating a layer or ticking a
+        # Compute box on the user's behalf. Layers the user already has open (via
+        # the preview) are filled with the full (T, Y, X) stacks so they don't go
+        # stale; absent ones stay absent, so a run on an empty viewer leaves the
+        # layer list empty.
+        self._refresh_atom_labels_stack(_ATOM_PREVIEW_LAYER, atoms)
+        self._refresh_atom_labels_stack(_ATOM_TERRITORY_LAYER, territory)
+        self._refresh_atom_labels_stack(_ATOM_RIDGE_LAYER, ridge)
         self._set_atom_image_stack(_ATOM_FG_RESIDUAL_LAYER, residual_foreground)
         self._set_atom_image_stack(_ATOM_CONTOUR_RESIDUAL_LAYER, residual_contour)
         self._set_atom_status(f"Wrote {atoms.shape[0]} frames → atoms.tif.")
@@ -640,7 +638,18 @@ class NucleusAtomExtractionMixin:
         if files_widget is not None:
             files_widget.refresh(getattr(self, "_pos_dir", None))
 
+    def _refresh_atom_labels_stack(self, name: str, data: np.ndarray) -> None:
+        """Replace *name*'s labels with *data* — a no-op when the layer is absent."""
+        if name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[name]
+        layer.data = np.asarray(data).astype(np.int32, copy=False)
+        layer.refresh()
+
     def _set_atom_image_stack(self, name: str, data: np.ndarray) -> None:
+        """Replace *name*'s image with *data* — a no-op when the layer is absent."""
+        if name not in self.viewer.layers:
+            return
         layer = self.viewer.layers[name]
         data = np.asarray(data, dtype=np.float32)
         layer.data = data

@@ -611,10 +611,73 @@ def test_full_run_writes_tracked_labels(monkeypatch, tmp_path):
     labels = tifffile.imread(str(out))
     assert set(np.unique(labels).tolist()) <= {0, 1, 2}
     assert labels.max() > 0
-    assert mod._TRACKED_CELL_LAYER in viewer.layers
+    # The run writes the file and stops there — it does not open it.
+    assert mod._TRACKED_CELL_LAYER not in viewer.layers
     assert "complete" in widget.pipeline_status_lbl.text()
     # The fill mask is derived in-process — no disk intermediate is written.
     assert not (pos_dir / "3_cell" / "cell_foreground_mask.tif").exists()
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_full_run_leaves_the_layer_list_alone(monkeypatch, tmp_path):
+    """A run adds nothing to the viewer — clicking Run keeps the layer list empty.
+
+    Loading is always the user's own move (the catalog rail's stage dots, the
+    Pipeline Files rows, correction mode). A run that quietly opened its output
+    made "run all four stages" pile up layers nobody asked for.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir)
+
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.set_state({"segmentation": {"n_workers": 1}})
+
+    widget.run_btn.click()
+
+    assert (pos_dir / "3_cell" / "tracked_labels.tif").exists()
+    assert list(viewer.layers) == []
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_full_run_refreshes_a_tracked_layer_the_user_already_has_open(
+    monkeypatch, tmp_path
+):
+    """Update-only: an open Tracked layer is kept in step with what was written.
+
+    Not adding is the rule; going stale is not the price. A correction session
+    already looking at the layer sees the new result without a manual reload.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = tmp_path / "pos00"
+    _write_inputs(pos_dir)
+
+    viewer = _FakeViewer()
+    widget = mod.CellWorkflowWidget(viewer)
+    widget.refresh(pos_dir)
+    widget.set_state({"segmentation": {"n_workers": 1}})
+
+    stale = np.zeros((2, 8, 8), dtype=np.uint32)
+    viewer.add_labels(stale, name=mod._TRACKED_CELL_LAYER)
+
+    widget.run_btn.click()
+
+    layer = viewer.layers[mod._TRACKED_CELL_LAYER]
+    assert np.asarray(layer.data).max() > 0
+    # Refreshed in place: still exactly the one layer the user opened.
+    assert list(viewer.layers) == [mod._TRACKED_CELL_LAYER]
 
     widget.deleteLater()
     app.processEvents()

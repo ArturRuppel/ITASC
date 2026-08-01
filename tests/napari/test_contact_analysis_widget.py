@@ -358,11 +358,13 @@ def test_recompute_forces_rebuild_even_when_h5_exists(monkeypatch, tmp_path):
     app.processEvents()
 
 
-def test_recompute_rereads_h5_instead_of_serving_stale_cache(monkeypatch, tmp_path):
+def test_run_rereads_h5_instead_of_serving_stale_cache(monkeypatch, tmp_path):
     """A same-path rebuild must invalidate the path-keyed .h5 cache.
 
-    The cache is keyed by output path, but Recompute rewrites the .h5 in place, so
-    without invalidation _show_from_disk would serve the stale cached read.
+    The cache is keyed by output path, but Run rewrites the .h5 in place, so
+    without invalidation the *next Visualize* would serve the stale cached read.
+    Run itself shows nothing — the cache still has to be dropped for the show
+    that comes later.
     """
     app = QApplication.instance() or QApplication([])
     mod = _load_module(monkeypatch)
@@ -399,12 +401,61 @@ def test_recompute_rereads_h5_instead_of_serving_stale_cache(monkeypatch, tmp_pa
     assert reads["n"] == 1
     assert shown[-1] == {"cells": [1]}
 
-    # Recompute rewrites the same path → the cache must be dropped and re-read,
-    # so the freshly built analysis is shown rather than the stale {"cells": [1]}.
+    # Run rewrites the same path. It shows nothing itself...
     widget.recompute_btn.click()
+    app.processEvents()
+    assert shown[-1] == {"cells": [1]}, "Run must not push anything to the viewer"
+
+    # ...but it dropped the cache, so the next Visualize re-reads the fresh file
+    # rather than serving the stale {"cells": [1]}.
+    widget.visualize_btn.click()
     app.processEvents()
     assert reads["n"] == 2
     assert shown[-1] == {"cells": [2]}
+
+    widget.deleteLater()
+    app.processEvents()
+
+
+def test_run_contact_analysis_leaves_the_layer_list_alone(monkeypatch, tmp_path):
+    """Run computes the .h5 and stops there; only Visualize reaches the viewer.
+
+    Running a stage never puts layers in the viewer — that is what keeps a
+    run/run/run/run pass through the four stages from silently filling the layer
+    list with things the user did not ask to see.
+    """
+    app = QApplication.instance() or QApplication([])
+    mod = _load_module(monkeypatch)
+    monkeypatch.setattr(mod, "thread_worker", _make_sync_thread_worker())
+
+    pos_dir = _staged_pos(tmp_path, "pos13", cell=True, nucleus=True, h5=True)
+
+    monkeypatch.setattr(
+        mod, "ensure_contacts",
+        lambda *, cell_labels_path, output_path, **kwargs: (output_path, True),
+    )
+    monkeypatch.setattr(mod, "read_position_contacts", lambda _p: {"cells": [1]})
+
+    added: list = []
+    monkeypatch.setattr(
+        mod, "add_contact_analysis_layers",
+        lambda *a, **k: added.append(a),
+    )
+
+    viewer = _FakeViewer()
+    widget = mod.ContactAnalysisWidget(viewer)
+    _set_pos(widget, pos_dir)
+
+    widget.recompute_btn.click()
+    app.processEvents()
+
+    assert added == []
+    assert dict(viewer.layers) == {}
+
+    # Visualize is how it gets on screen.
+    widget.visualize_btn.click()
+    app.processEvents()
+    assert len(added) == 1
 
     widget.deleteLater()
     app.processEvents()

@@ -900,6 +900,26 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
         else:
             adder(data, name=name, **kwargs)
 
+    def _refresh_layer(self, name, data) -> bool:
+        """Update *name*'s data **only if that layer already exists**.
+
+        The update-only half of :meth:`_show_layer`, for the code paths that must
+        not create layers — a stage run keeps whatever the user has open in step
+        with what it just wrote, without ever putting something new in the layer
+        list. Returns whether a layer was updated.
+        """
+        if name not in self.viewer.layers:
+            return False
+        try:
+            self.viewer.layers[name].data = data
+        except Exception:
+            # A shape/dtype the existing layer cannot take. Dropping it would be
+            # a surprise edit to the layer list, so leave it and let the user
+            # reload; the authoritative result is on disk either way.
+            logger.exception("Could not refresh layer %r in place", name)
+            return False
+        return True
+
     def _current_t(self) -> int:
         step = getattr(getattr(self.viewer, "dims", None), "current_step", (0,))
         return int(step[0]) if len(step) >= 1 else 0
@@ -1346,9 +1366,12 @@ class CellWorkflowWidget(StandalonePathsMixin, QWidget):
             self._set_run_idle()
             self._clear_progress()
             labels, n_labels = result
-            self._show_layer(
-                _TRACKED_CELL_LAYER, labels, {"visible": True}, self.viewer.add_labels
-            )
+            # A run writes tracked_labels.tif and stops there — it never adds a
+            # layer to the viewer. An existing layer of that name is still
+            # refreshed so a correction session already looking at it does not go
+            # stale, but a run on an empty viewer leaves it empty. Loading is the
+            # user's move (the catalog rail's stage dots, or correction mode).
+            self._refresh_layer(_TRACKED_CELL_LAYER, labels)
             self._files_widget.refresh(pos_dir)
             self._refresh_finalize_btn()
             self._set_status(

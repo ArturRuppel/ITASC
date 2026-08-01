@@ -118,6 +118,15 @@ the wheel, tracking correction most of all, so they run one position at a time.
 The sections below walk that single-position pass and show what each stage
 produces.
 
+Running a stage never loads anything. Every stage writes its result to the
+project folder and stops there, so a pass of Run · Run · Run · Run leaves the
+layer list exactly as you left it. Opening something is always your own move: a
+stage's rail dot, a row in its Pipeline Files panel, **Visualize Contact
+Analysis**, or entering correction mode. The live previews inside each stage are
+the exception that proves the rule — they put layers up because looking at them
+is the whole point of a preview. The figures below show what each stage produces
+once it has been loaded that way.
+
 ```{figure} ../_static/manual/02-data-folders.png
 :alt: The ITASC panel listing three positions above the collapsed stage sections.
 :width: 100%
@@ -161,14 +170,15 @@ after the other: this is the [Ultrack](https://github.com/royerlab/ultrack) mode
 that matters and what the solver is doing; the steps below are how you drive it.
 
 **Atom extraction** breaks the nucleus foreground into atoms: the smallest
-fragments an oversegmentation splits it into.
+fragments an oversegmentation splits it into. Run writes `2_nucleus/atoms.tif`;
+turn the live preview on to watch the fragments while you tune the parameters.
 
 ```{figure} ../_static/manual/05-nucleus-atoms.png
 :alt: Colored atom fragments in the viewer with the Ultrack candidate parameters in the panel.
 :width: 100%
 
-Atom extraction. The `[Atoms]` layers hold the fragments every later candidate is
-built from.
+Atom extraction with the live preview on. The `[Atoms]` layers hold the fragments
+every later candidate is built from.
 ```
 
 **Ultrack database** assembles those atoms into every plausible merge, so one
@@ -186,8 +196,9 @@ candidates before a solve.
 **Ultrack solve** then picks one candidate per nucleus per frame and links the
 picks across frames in a single optimization, trading off the event penalties and
 solver settings so the labels are coherent in time rather than decided frame by
-frame. The result is a `Tracked: Nucleus` layer that holds one color per track
-across every frame.
+frame. The result is `2_nucleus/tracked_labels.tif`: one label per track, held
+across every frame. Click the nucleus stage's rail dot to open it as a
+`Tracked: Nucleus` layer, or go straight into correction, which loads it for you.
 
 ```{figure} ../_static/manual/07-nucleus-tracked.png
 :alt: Tracked nucleus labels in the viewer, one color per track, with the solve parameters.
@@ -262,8 +273,10 @@ the correction panel open below. **Inspect cell** isolates one label to check it
 
 The last stage reads the committed nucleus and cell labels and writes
 `contact_analysis.h5` to the position root: the contact graph, the shared edges
-between neighbors, and the T1 events where two neighbors swap partners.
-**Visualize Contact Analysis** loads the result back as napari layers.
+between neighbors, and the T1 events where two neighbors swap partners. The two
+buttons split the work cleanly: **Run Contact Analysis** rebuilds the `.h5` and
+touches nothing in the viewer, **Visualize Contact Analysis** loads the result
+back as napari layers (building it first if it isn't there yet).
 
 ```{figure} ../_static/manual/11-contact-analysis.png
 :alt: Contact analysis layers in the viewer: cell labels, nucleus tracks, edges, and T1 events.

@@ -241,8 +241,8 @@ def test_atom_run_refreshes_pipeline_files(viewer, tmp_path):
 
     widget = mod.NucleusWorkflowWidget(viewer)
     widget.refresh(tmp_path)
-    # The run adds atom layers; swap in a headless viewer (see the compute-
-    # checkbox test for why a live canvas can't start on CI).
+    # Swap in a headless viewer (see the compute-checkbox test for why a live
+    # canvas can't start on CI).
     widget.viewer = _HeadlessViewer()
 
     atoms_row = widget._files_widget._rows_by_group["Intermediates"][0]
@@ -254,6 +254,72 @@ def test_atom_run_refreshes_pipeline_files(viewer, tmp_path):
     assert atoms.is_file()
     # The tracker refreshed, so the intermediate row now sees the file on disk.
     assert atoms_row._full_path == atoms
+
+
+def test_atom_run_leaves_the_layer_list_alone(viewer, tmp_path):
+    """Running atom extraction writes atoms.tif and adds nothing to the viewer.
+
+    A run used to tick both Compute boxes and create five layers on the user's
+    behalf. It no longer does: running a stage never loads anything, so a
+    run/run/run/run pass leaves the layer list exactly as the user left it.
+    """
+    import numpy as np
+    import tifffile
+
+    cellpose = tmp_path / "1_cellpose"
+    cellpose.mkdir()
+    rng = np.random.default_rng(0)
+    fg = np.clip(rng.normal(0.6, 0.1, (2, 16, 16)), 0, 1).astype(np.float32)
+    contours = np.abs(rng.normal(0, 1, (2, 16, 16))).astype(np.float32)
+    tifffile.imwrite(cellpose / "nucleus_foreground.tif", fg)
+    tifffile.imwrite(cellpose / "nucleus_contours.tif", contours)
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    widget.viewer = _HeadlessViewer()
+    assert list(widget.viewer.layers) == []
+
+    aw = widget.atom_extraction_widget
+    aw.fg_check.setChecked(False)
+    aw.contour_check.setChecked(False)
+
+    widget._run_atom_extraction()
+
+    assert (tmp_path / "2_nucleus" / "atoms.tif").is_file()
+    assert list(widget.viewer.layers) == []
+    # ...and it did not tick the Compute boxes on the user's behalf either.
+    assert aw.fg_check.isChecked() is False
+    assert aw.contour_check.isChecked() is False
+
+
+def test_atom_run_refreshes_preview_layers_the_user_already_has_open(viewer, tmp_path):
+    """Update-only: open atom layers are filled with the full run, not left stale."""
+    import numpy as np
+    import tifffile
+
+    from itasc.napari import nucleus_atom_extraction_widget as atom_mod
+
+    cellpose = tmp_path / "1_cellpose"
+    cellpose.mkdir()
+    rng = np.random.default_rng(0)
+    fg = np.clip(rng.normal(0.6, 0.1, (2, 16, 16)), 0, 1).astype(np.float32)
+    contours = np.abs(rng.normal(0, 1, (2, 16, 16))).astype(np.float32)
+    tifffile.imwrite(cellpose / "nucleus_foreground.tif", fg)
+    tifffile.imwrite(cellpose / "nucleus_contours.tif", contours)
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    widget.viewer = _HeadlessViewer()
+    widget.viewer.add_labels(
+        np.zeros((2, 16, 16), dtype=np.int32), name=atom_mod._ATOM_PREVIEW_LAYER
+    )
+
+    widget._run_atom_extraction()
+
+    layer = widget.viewer.layers[atom_mod._ATOM_PREVIEW_LAYER]
+    assert np.asarray(layer.data).shape == (2, 16, 16)
+    # Refreshed in place — still only the one layer the user opened.
+    assert list(widget.viewer.layers) == [atom_mod._ATOM_PREVIEW_LAYER]
 
 
 def test_correction_save_refreshes_pipeline_files(viewer, tmp_path):
@@ -415,3 +481,49 @@ def test_finalize_promotes_nucleus_tracked_labels_to_base_folder(viewer, tmp_pat
     committed = tmp_path / "nucleus_labels.tif"
     assert committed.is_file()
     np.testing.assert_array_equal(tifffile.imread(str(committed)), arr)
+
+
+def test_ultrack_solve_leaves_the_layer_list_alone(viewer, tmp_path):
+    """A finished Ultrack solve adds nothing to the viewer.
+
+    ``export_tracked_labels`` already wrote ``tracked_labels.tif``; the solve is
+    not also a load. Opening the result is an explicit move (the catalog rail's
+    stage dots, or correction mode), so run/run/run/run leaves the layer list
+    exactly as the user left it.
+    """
+    import numpy as np
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    pipeline = widget.nucleus_pipeline_widget
+    pipeline.viewer = _HeadlessViewer()
+
+    pipeline._on_run_ultrack_done(np.zeros((3, 8, 8), dtype=np.uint32))
+
+    assert list(pipeline.viewer.layers) == []
+    assert "3 frame(s)" in widget.pipeline_status_lbl.text()
+
+
+def test_ultrack_solve_refreshes_a_tracked_layer_the_user_already_has_open(
+    viewer, tmp_path
+):
+    """Update-only: an open Tracked layer is kept in step with the fresh solve."""
+    import numpy as np
+
+    from itasc.napari import nucleus_pipeline_widget as pipe_mod
+
+    widget = mod.NucleusWorkflowWidget(viewer)
+    widget.refresh(tmp_path)
+    pipeline = widget.nucleus_pipeline_widget
+    pipeline.viewer = _HeadlessViewer()
+    pipeline.viewer.add_labels(
+        np.zeros((3, 8, 8), dtype=np.uint32), name=pipe_mod._TRACKED_LAYER
+    )
+
+    labels = np.zeros((3, 8, 8), dtype=np.uint32)
+    labels[:, 2:5, 2:5] = 7
+    pipeline._on_run_ultrack_done(labels)
+
+    layer = pipeline.viewer.layers[pipe_mod._TRACKED_LAYER]
+    assert int(np.asarray(layer.data).max()) == 7
+    assert list(pipeline.viewer.layers) == [pipe_mod._TRACKED_LAYER]

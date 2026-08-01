@@ -302,24 +302,20 @@ class NucleusPipelineWidget(QWidget):
             self.viewer.layers.remove(name)
         self.viewer.add_labels(data, name=name, metadata=dict(metadata or {}))
 
-    def _update_tracked_display(
-        self, labels: np.ndarray, t: int | None = None,
-    ) -> None:
-        if _TRACKED_LAYER in self.viewer.layers and t is not None:
-            layer = self.viewer.layers[_TRACKED_LAYER]
-            if layer.data.ndim == 3:
-                if t < layer.data.shape[0]:
-                    new_data = layer.data.copy()
-                    new_data[t] = labels
-                    layer.data = new_data
-                    return
-                new_data = np.concatenate(
-                    [layer.data, labels[np.newaxis].astype(layer.data.dtype)], axis=0,
-                )
-                layer.data = new_data
-                return
+    def _refresh_tracked_display(self, labels: np.ndarray) -> bool:
+        """Update the Tracked layer's data **only if that layer already exists**.
+
+        Deliberately update-only: a solve writes ``tracked_labels.tif`` and does
+        not open it, so a run never adds anything to the layer list. Whatever the
+        user already has open is kept in step; an empty viewer stays empty, and
+        loading is done explicitly (the catalog rail's stage dots, or correction
+        mode). Returns whether a layer was updated.
+        """
+        if _TRACKED_LAYER not in self.viewer.layers:
+            return False
         display = labels[np.newaxis].copy() if labels.ndim == 2 else labels
         self._update_labels_layer(_TRACKED_LAYER, display)
+        return True
 
     def _ensure_tracked_layer_data(self) -> np.ndarray | None:
         """Return the tracked labelmap from the viewer layer if present, else
@@ -542,7 +538,7 @@ class NucleusPipelineWidget(QWidget):
         if labels.ndim == 4 and labels.shape[1] == 1:
             labels = labels[:, 0]
         nt = labels.shape[0]
-        self._update_tracked_display(labels)
+        self._refresh_tracked_display(labels)
         self._refresh_files_callback()
         self._status(f"Tracking done: {nt} frame(s).")
         self._set_running_stage(None)
